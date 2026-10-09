@@ -1,6 +1,7 @@
 // Pure game logic for a single room. No networking here, so it can be unit tested.
 
-export const MAX_PLAYERS = 2;
+export const MIN_PLAYERS = 2;
+export const MAX_PLAYERS = 8;
 export const MAX_HP = 100;
 export const DAMAGE = { body: 20, head: 50 };
 export const SHOT_COOLDOWN_MS = 350;
@@ -10,7 +11,7 @@ export class Room {
   constructor(code, { now = Date.now } = {}) {
     this.code = code;
     this.now = now;
-    this.players = new Map(); // id -> { id, name, hp, wins, lastShotAt }
+    this.players = new Map(); // id -> { id, name, gallery, hp, wins, alive, lastShotAt }
     this.status = 'waiting'; // waiting | countdown | playing | over
     this.startsAt = null;
     this.winner = null;
@@ -20,29 +21,43 @@ export class Room {
     return this.players.size === 0;
   }
 
-  join(id, name) {
-    if (this.players.size >= MAX_PLAYERS) {
-      return { ok: false, error: 'Room is full' };
+  // gallery is the appearance signature captured during enrolment: an array of
+  // { hist, grid } samples, one per angle the player was scanned from.
+  join(id, name, gallery) {
+    if (this.status === 'countdown' || this.status === 'playing') {
+      return { ok: false, error: 'Round already running' };
     }
-    this.players.set(id, { id, name, hp: MAX_HP, wins: 0, lastShotAt: -Infinity });
-    if (this.players.size === MAX_PLAYERS) this.startCountdown();
+    if (this.players.size >= MAX_PLAYERS) return { ok: false, error: 'Room is full' };
+    this.players.set(id, { id, name, gallery, hp: MAX_HP, wins: 0, alive: true, lastShotAt: -Infinity });
     return { ok: true };
   }
 
   leave(id) {
     this.players.delete(id);
-    // The remaining player waits for a new opponent with a fresh round.
+    // Whoever's left waits in the lobby for the next round.
     this.status = 'waiting';
     this.startsAt = null;
     this.winner = null;
-    for (const p of this.players.values()) p.hp = MAX_HP;
+    for (const p of this.players.values()) {
+      p.hp = MAX_HP;
+      p.alive = true;
+    }
   }
 
-  startCountdown() {
-    for (const p of this.players.values()) p.hp = MAX_HP;
+  // Starts a round (first one, or the next one after 'over'). Any joined player can call this.
+  start() {
+    if (this.status === 'countdown' || this.status === 'playing') {
+      return { ok: false, error: 'Round already running' };
+    }
+    if (this.players.size < MIN_PLAYERS) return { ok: false, error: 'Need at least two players' };
+    for (const p of this.players.values()) {
+      p.hp = MAX_HP;
+      p.alive = true;
+    }
     this.winner = null;
     this.status = 'countdown';
     this.startsAt = this.now() + COUNTDOWN_MS;
+    return { ok: true };
   }
 
   // Moves countdown -> playing once the start time has passed. Call before reading state.
@@ -53,18 +68,16 @@ export class Room {
     }
   }
 
-  opponentOf(id) {
-    for (const p of this.players.values()) if (p.id !== id) return p;
-    return null;
-  }
-
-  // The shooter's phone decides whether the crosshair was on a person; the server applies it.
-  shoot(id, zone) {
+  // The shooter's phone decides who (if anyone) was under the crosshair - vision-based player
+  // identification, not just "the one other person in the room" - and tells us the targetId.
+  shoot(id, targetId, zone) {
     this.update();
     const shooter = this.players.get(id);
-    const victim = this.opponentOf(id);
-    if (!shooter || !victim) return { ok: false, error: 'No opponent' };
+    const target = this.players.get(targetId);
+    if (!shooter || !target) return { ok: false, error: 'Unknown player' };
+    if (target.id === shooter.id) return { ok: false, error: "Can't target yourself" };
     if (this.status !== 'playing') return { ok: false, error: 'Round not running' };
+    if (!shooter.alive || !target.alive) return { ok: false, error: 'Target is down' };
     if (!(zone in DAMAGE)) return { ok: false, error: 'Unknown zone' };
 
     const t = this.now();
@@ -72,20 +85,21 @@ export class Room {
     shooter.lastShotAt = t;
 
     const damage = DAMAGE[zone];
-    victim.hp = Math.max(0, victim.hp - damage);
-    const ko = victim.hp === 0;
+    target.hp = Math.max(0, target.hp - damage);
+    const ko = target.hp === 0;
     if (ko) {
-      shooter.wins += 1;
-      this.status = 'over';
-      this.winner = shooter.id;
+      target.alive = false;
+      const survivors = [...this.players.values()].filter((p) => p.alive);
+      if (survivors.length <= 1) {
+        this.status = 'over';
+        this.winner = survivors[0]?.id ?? null;
+        if (this.winner) this.players.get(this.winner).wins += 1;
+      }
     }
-    return { ok: true, victimId: victim.id, damage, zone, ko };
+    return { ok: true, victimId: target.id, damage, zone, ko };
   }
 
-  rematch() {
-    if (this.status === 'over' && this.players.size === MAX_PLAYERS) this.startCountdown();
-  }
-
+  // Frequent broadcast: game state only, no gallery data.
   snapshot() {
     this.update();
     return {
@@ -94,7 +108,14 @@ export class Room {
       startsInMs: this.startsAt === null ? null : Math.max(0, this.startsAt - this.now()),
       winner: this.winner,
       maxHp: MAX_HP,
-      players: [...this.players.values()].map(({ id, name, hp, wins }) => ({ id, name, hp, wins })),
+      minPlayers: MIN_PLAYERS,
+      maxPlayers: MAX_PLAYERS,
+      players: [...this.players.values()].map(({ id, name, hp, wins, alive }) => ({ id, name, hp, wins, alive })),
     };
+  }
+
+  // Sent only when membership changes: everyone's appearance gallery, for on-device matching.
+  roster() {
+    return [...this.players.values()].map(({ id, name, gallery }) => ({ id, name, gallery }));
   }
 }

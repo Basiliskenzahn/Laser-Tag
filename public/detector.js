@@ -42,7 +42,7 @@ export function headBox(box) {
   return { x: box.x + (box.w - w) / 2, y: box.y, w, h: box.h * HEAD_HEIGHT };
 }
 
-function contains(box, px, py) {
+export function contains(box, px, py) {
   return px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h;
 }
 

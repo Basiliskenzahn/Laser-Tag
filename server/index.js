@@ -109,12 +109,33 @@ function broadcastState(room) {
   }
 }
 
+// Appearance galleries only change when who's in the room changes, so they're pushed
+// separately from the frequent state updates above instead of riding along on every shot.
+function broadcastRoster(room) {
+  const players = room.roster();
+  for (const id of room.players.keys()) send(sockets.get(id), { type: 'roster', players });
+}
+
 function cleanRoomCode(code) {
   return String(code || 'demo').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 16) || 'demo';
 }
 
 function cleanName(name) {
   return String(name || '').trim().slice(0, 20) || 'Player';
+}
+
+// Appearance gallery from enrolment: at most a handful of angle samples, each a couple of
+// short numeric vectors. Capped defensively since it comes straight from the client.
+function cleanVector(v, maxLen) {
+  return Array.isArray(v) ? v.slice(0, maxLen).map(Number).filter(Number.isFinite) : [];
+}
+
+function cleanGallery(gallery) {
+  if (!Array.isArray(gallery)) return [];
+  return gallery.slice(0, 8).map((sample) => ({
+    hist: cleanVector(sample?.hist, 64),
+    grid: cleanVector(sample?.grid, 256),
+  }));
 }
 
 function handleConnection(ws) {
@@ -134,7 +155,7 @@ function handleConnection(ws) {
     if (msg.type === 'join' && !room) {
       const code = cleanRoomCode(msg.room);
       const target = rooms.get(code) ?? new Room(code);
-      const result = target.join(id, cleanName(msg.name));
+      const result = target.join(id, cleanName(msg.name), cleanGallery(msg.gallery));
       if (!result.ok) {
         send(ws, { type: 'error', message: result.error });
         return;
@@ -144,19 +165,24 @@ function handleConnection(ws) {
       room = target;
       send(ws, { type: 'welcome', id });
       broadcastState(room);
+      broadcastRoster(room);
       return;
     }
 
     if (!room) return;
 
     if (msg.type === 'shoot') {
-      const result = room.shoot(id, msg.zone);
+      const result = room.shoot(id, msg.targetId, msg.zone);
       if (!result.ok) return;
       send(ws, { type: 'hitConfirmed', zone: result.zone, damage: result.damage, ko: result.ko });
       send(sockets.get(result.victimId), { type: 'gotHit', zone: result.zone, damage: result.damage, ko: result.ko });
       broadcastState(room);
-    } else if (msg.type === 'rematch') {
-      room.rematch();
+    } else if (msg.type === 'start') {
+      const result = room.start();
+      if (!result.ok) {
+        send(ws, { type: 'error', message: result.error });
+        return;
+      }
       broadcastState(room);
     }
   });
@@ -170,6 +196,7 @@ function handleConnection(ws) {
       rooms.delete(room.code);
     } else {
       broadcastState(room);
+      broadcastRoster(room);
     }
   });
 }

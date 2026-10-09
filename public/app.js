@@ -1,4 +1,5 @@
-import { createDetector, detectPeople, headBox, hitTest } from './detector.js';
+import { createDetector, detectPeople, headBox, contains } from './detector.js';
+import { extractSignature, Tracker } from './identify.js';
 import * as sound from './sound.js';
 
 const $ = (id) => document.getElementById(id);
@@ -10,15 +11,28 @@ const video = $('video');
 const canvas = $('overlay');
 const ctx = canvas.getContext('2d');
 
+// Face the camera, then rotate - so enrolment has a sample from every side a shooter might see.
+const SCAN_STEPS = [
+  'Stand where your whole body is visible, then face the camera.',
+  'Turn to show your right side.',
+  'Turn around - show your back.',
+  'Turn to show your left side.',
+];
+
 const state = {
   name: '',
   room: '',
   ws: null,
   myId: null,
-  game: null, // latest snapshot from the server
+  game: null, // latest state snapshot from the server (hp, status, ...)
+  roster: [], // latest roster from the server (id, name, gallery)
   detector: null,
   delegate: '',
+  mode: 'scan', // 'scan' | 'game' - which screen the shared camera loop renders for
   boxes: [], // people in the latest camera frame, in video pixels
+  tracker: new Tracker(),
+  tracks: [],
+  gallery: [], // signatures captured so far during enrolment
   lastShotAt: 0,
   countdownEndsAt: null,
   lastCountdownBeep: null,
@@ -52,11 +66,13 @@ $('join-form').addEventListener('submit', async (event) => {
     return;
   }
 
+  video.hidden = false;
+  canvas.hidden = false;
   $('join-screen').hidden = true;
-  $('game-screen').hidden = false;
+  $('scan-screen').hidden = false;
   $('debug').hidden = !DEBUG;
   keepScreenOn();
-  connect();
+  startScanStep(0);
   requestAnimationFrame(loop);
 });
 
@@ -94,12 +110,63 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.detector) keepScreenOn();
 });
 
+// ---- Scan screen (enrolment) ----
+//
+// Before the match, each player is scanned from a few angles so later, during the match,
+// other phones can tell *who* is under the crosshair rather than just seeing "a person".
+
+function startScanStep(i) {
+  $('scan-instruction').textContent = SCAN_STEPS[i] ?? '';
+  $('scan-capture-btn').hidden = i >= SCAN_STEPS.length;
+  $('scan-join-btn').hidden = i < SCAN_STEPS.length;
+}
+
+function biggestBox(boxes) {
+  return boxes.reduce((best, b) => (!best || b.w * b.h > best.w * best.h ? b : best), null);
+}
+
+function cropThumbnail(box) {
+  const c = document.createElement('canvas');
+  c.width = 48;
+  c.height = 64;
+  c.getContext('2d').drawImage(video, box.x, box.y, box.w, box.h, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.7);
+}
+
+$('scan-capture-btn').addEventListener('click', () => {
+  const box = biggestBox(state.boxes);
+  if (!box) {
+    $('scan-instruction').textContent = `${SCAN_STEPS[state.gallery.length]} (no one detected - step back a little)`;
+    return;
+  }
+  state.gallery.push(extractSignature(video, box));
+
+  const thumb = document.createElement('img');
+  thumb.src = cropThumbnail(box);
+  thumb.title = 'Tap to redo this and later angles';
+  thumb.addEventListener('click', () => {
+    const i = [...$('scan-thumbs').children].indexOf(thumb);
+    state.gallery.length = i;
+    [...$('scan-thumbs').children].slice(i).forEach((el) => el.remove());
+    startScanStep(i);
+  });
+  $('scan-thumbs').append(thumb);
+  startScanStep(state.gallery.length);
+});
+
+$('scan-join-btn').addEventListener('click', () => {
+  $('scan-screen').hidden = true;
+  $('game-screen').hidden = false;
+  state.mode = 'game';
+  connect();
+});
+
 // ---- Networking ----
 
 function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   state.ws = ws;
-  ws.onopen = () => send({ type: 'join', name: state.name, room: state.room });
+  ws.onopen = () => send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery });
   ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
   ws.onclose = () => {
     if (state.ws !== ws) return;
@@ -121,10 +188,11 @@ function handleMessage(msg) {
       state.bannerOverride = null;
       break;
     case 'error':
-      state.bannerOverride = msg.message === 'Room is full'
-        ? `Room "${state.room}" already has two players. Reload and pick another code.`
-        : msg.message;
+      state.bannerOverride = msg.message;
       renderHud();
+      break;
+    case 'roster':
+      state.roster = msg.players;
       break;
     case 'state':
       onState(msg.state);
@@ -158,30 +226,41 @@ function onState(game) {
 
 function renderHud() {
   const game = state.game;
-  const me = game?.players.find((p) => p.id === state.myId);
-  const opponent = game?.players.find((p) => p.id !== state.myId);
+  const hud = $('hud');
+  hud.innerHTML = '';
+  for (const p of game?.players ?? []) {
+    const row = document.createElement('div');
+    row.className = `player${p.id === state.myId ? ' me' : ''}${!p.alive ? ' down' : ''}`;
+    row.innerHTML = `
+      <div class="label"><span>${escapeHtml(p.name)}${p.id === state.myId ? ' (you)' : ''}</span>${p.wins ? `<span class="wins">★${p.wins}</span>` : ''}</div>
+      <div class="hp"><div class="hp-fill${p.hp / game.maxHp <= 0.3 ? ' low' : ''}" style="width:${(p.hp / game.maxHp) * 100}%"></div></div>`;
+    hud.append(row);
+  }
 
-  renderPlayer('me', me, game?.maxHp);
-  renderPlayer('opp', opponent, game?.maxHp);
+  const startBtn = $('start-btn');
+  const canStart = game && (game.status === 'waiting' || game.status === 'over') && game.players.length >= game.minPlayers;
+  startBtn.hidden = !game || (game.status !== 'waiting' && game.status !== 'over');
+  startBtn.disabled = !canStart;
+  startBtn.textContent = game?.status === 'over' ? 'Play again' : 'Start game';
 
-  const over = game?.status === 'over';
-  $('rematch-btn').hidden = !over;
   const text = $('banner-text');
   text.classList.remove('big');
   if (state.bannerOverride) text.textContent = state.bannerOverride;
   else if (!game) text.textContent = 'Connecting…';
-  else if (game.status === 'waiting') text.textContent = `Waiting for an opponent… Room code: ${game.code}`;
-  else if (over) text.textContent = game.winner === state.myId ? 'You win!' : 'You got tagged!';
-  else text.textContent = ''; // countdown is drawn every frame in loop()
+  else if (game.status === 'waiting') {
+    text.textContent =
+      game.players.length < game.minPlayers
+        ? `Waiting for more players… Room code: ${game.code} (${game.players.length}/${game.minPlayers})`
+        : `Ready - room code: ${game.code}`;
+  } else if (game.status === 'over') {
+    text.textContent = game.winner === state.myId ? 'You win!' : 'You got tagged!';
+  } else {
+    text.textContent = ''; // countdown is drawn every frame in loop()
+  }
 }
 
-function renderPlayer(prefix, player, maxHp) {
-  $(`${prefix}-name`).textContent = player?.name ?? (prefix === 'me' ? state.name : 'Waiting…');
-  $(`${prefix}-wins`).textContent = player?.wins ? `★${player.wins}` : '';
-  const fraction = player ? player.hp / maxHp : 1;
-  const fill = $(`${prefix}-hp`);
-  fill.style.width = `${fraction * 100}%`;
-  fill.classList.toggle('low', fraction <= 0.3);
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
 function updateCountdown() {
@@ -218,7 +297,20 @@ function restartAnimation(el, className) {
   el.classList.add(className);
 }
 
+$('start-btn').addEventListener('click', () => send({ type: 'start' }));
+
 // ---- Shooting ----
+
+// Which (if any) tracked person is under the crosshair, and which zone of them.
+function targetUnderCrosshair(px, py) {
+  let bodyTrack = null;
+  for (const t of state.tracks) {
+    if (!contains(t.box, px, py)) continue;
+    if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
+    bodyTrack = t;
+  }
+  return bodyTrack ? { track: bodyTrack, zone: 'body' } : null;
+}
 
 function fire() {
   const now = performance.now();
@@ -229,8 +321,10 @@ function fire() {
 
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.
-  const zone = hitTest(state.boxes, video.videoWidth / 2, video.videoHeight / 2);
-  if (zone && state.game?.status === 'playing') send({ type: 'shoot', zone });
+  const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
+  if (hit?.track.playerId && state.game?.status === 'playing') {
+    send({ type: 'shoot', targetId: hit.track.playerId, zone: hit.zone });
+  }
 }
 
 $('fire-btn').addEventListener('pointerdown', (event) => {
@@ -241,9 +335,8 @@ $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.rem
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && !$('game-screen').hidden) fire();
 });
-$('rematch-btn').addEventListener('click', () => send({ type: 'rematch' }));
 
-// ---- Detection and drawing loop ----
+// ---- Detection, identification and drawing loop ----
 
 let lastVideoTime = -1;
 let frames = 0;
@@ -258,12 +351,15 @@ function loop() {
     lastVideoTime = video.currentTime;
     const t0 = performance.now();
     state.boxes = detectPeople(state.detector, video, t0);
+    if (state.mode === 'game') {
+      state.tracks = state.tracker.update(state.boxes, video, state.roster, state.myId, t0);
+    }
     inferenceMs = performance.now() - t0;
     frames++;
   }
 
   draw();
-  updateCountdown();
+  if (state.mode === 'game') updateCountdown();
 
   if (DEBUG) {
     const now = performance.now();
@@ -274,11 +370,12 @@ function loop() {
     }
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
-      `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people`;
+      `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people` +
+      (state.mode === 'game' ? ` · ${state.tracks.filter((t) => t.playerId).length} identified` : '');
   }
 }
 
-function draw() {
+function fitCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const cw = canvas.clientWidth;
   const ch = canvas.clientHeight;
@@ -288,37 +385,61 @@ function draw() {
   }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
+  return { cw, ch };
+}
 
+// Same mapping as object-fit: cover, from video pixels to screen pixels.
+function videoToScreen(cw, ch) {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
-  if (!vw || !vh) return;
-
-  // Same mapping as object-fit: cover, from video pixels to screen pixels.
+  if (!vw || !vh) return null;
   const scale = Math.max(cw / vw, ch / vh);
   const ox = (cw - vw * scale) / 2;
   const oy = (ch - vh * scale) / 2;
-  const toScreen = (b) => [ox + b.x * scale, oy + b.y * scale, b.w * scale, b.h * scale];
+  return { vw, vh, toScreen: (b) => [ox + b.x * scale, oy + b.y * scale, b.w * scale, b.h * scale] };
+}
 
+function draw() {
+  const { cw, ch } = fitCanvas();
+  const mapping = videoToScreen(cw, ch);
+  if (!mapping) return;
+  if (state.mode === 'scan') drawScan(mapping);
+  else drawGame(mapping);
+}
+
+// Scan screen: just highlight whoever would be captured if "Capture" were tapped now.
+function drawScan({ toScreen }) {
+  const target = biggestBox(state.boxes);
+  ctx.lineWidth = 3;
+  for (const box of state.boxes) {
+    ctx.strokeStyle = box === target ? '#39ff88' : 'rgba(255,255,255,0.4)';
+    ctx.strokeRect(...toScreen(box));
+  }
+}
+
+function drawGame({ vw, vh, toScreen }) {
   const cx = vw / 2;
   const cy = vh / 2;
-  const zone = hitTest(state.boxes, cx, cy);
-  $('crosshair').classList.toggle('on-target', zone !== null);
+  const hit = targetUnderCrosshair(cx, cy);
+  $('crosshair').classList.toggle('on-target', hit !== null);
 
   ctx.lineWidth = 3;
   ctx.font = '600 13px system-ui, sans-serif';
-  for (const box of state.boxes) {
-    const targeted = hitTest([box], cx, cy) !== null;
-    const color = targeted ? '#ff2e4d' : '#39ff88';
+  for (const track of state.tracks) {
+    const targeted = hit?.track === track;
+    const known = track.playerId !== null;
+    const color = targeted ? '#ff2e4d' : known ? '#39ff88' : '#8a97a6';
     ctx.strokeStyle = color;
-    ctx.setLineDash([]);
-    ctx.strokeRect(...toScreen(box));
+    ctx.setLineDash(known ? [] : [4, 4]);
+    ctx.strokeRect(...toScreen(track.box));
 
     ctx.setLineDash([6, 4]);
-    ctx.strokeRect(...toScreen(headBox(box)));
+    ctx.strokeRect(...toScreen(headBox(track.box)));
 
-    const [x, y] = toScreen(box);
+    const [x, y] = toScreen(track.box);
     ctx.fillStyle = color;
-    ctx.fillText(`${Math.round(box.score * 100)}%`, x + 4, y + 16);
+    ctx.setLineDash([]);
+    ctx.fillText(track.name ?? 'unknown', x + 4, y + 16);
   }
 }
 

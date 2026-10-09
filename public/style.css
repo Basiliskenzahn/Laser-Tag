@@ -106,27 +106,99 @@ input {
   font-size: 14px;
 }
 
+/* ---- Shared camera layer (scan screen + game screen) ---- */
+
+#video,
+#overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+#video {
+  object-fit: cover;
+}
+
+/* ---- Scan screen ---- */
+
+#scan-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  touch-action: none;
+}
+
+#scan-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 16px 16px max(16px, env(safe-area-inset-bottom));
+  background: linear-gradient(transparent, var(--panel) 40%);
+  text-align: center;
+}
+
+#scan-instruction {
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 700;
+  text-shadow: 0 1px 3px #000;
+}
+
+#scan-thumbs {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-height: 48px;
+}
+
+#scan-thumbs img {
+  width: 36px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 2px solid var(--target);
+}
+
+#scan-buttons {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+}
+
+#scan-capture-btn,
+#scan-join-btn {
+  padding: 14px 28px;
+  border: 0;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+#scan-capture-btn {
+  background: var(--accent);
+  color: #fff;
+}
+
+#scan-join-btn {
+  background: var(--target);
+  color: #06210f;
+}
+
 /* ---- Game screen ---- */
 
 #game-screen {
   position: fixed;
   inset: 0;
+  z-index: 1;
   overflow: hidden;
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
-}
-
-#video,
-#overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-}
-
-#video {
-  object-fit: cover;
 }
 
 #damage {
@@ -212,15 +284,20 @@ input {
   left: 0;
   right: 0;
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   padding: max(12px, env(safe-area-inset-top)) 16px 12px;
   background: linear-gradient(var(--panel), transparent);
   pointer-events: none;
 }
 
 .player {
-  flex: 1;
+  flex: 1 1 120px;
   min-width: 0;
+}
+
+.player.down {
+  opacity: 0.45;
 }
 
 .label {
@@ -234,8 +311,8 @@ input {
   text-shadow: 0 1px 2px #000;
 }
 
-.opponent .label {
-  justify-content: flex-end;
+.player.me .label {
+  color: var(--target);
 }
 
 .wins {
@@ -247,10 +324,6 @@ input {
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.15);
   overflow: hidden;
-}
-
-.opponent .hp {
-  transform: scaleX(-1);
 }
 
 .hp-fill {
@@ -293,7 +366,7 @@ input {
   text-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
 }
 
-#rematch-btn {
+#start-btn {
   display: block;
   margin: 16px auto 0;
   padding: 12px 28px;
@@ -303,6 +376,10 @@ input {
   color: #000;
   font-weight: 700;
   pointer-events: auto;
+}
+
+#start-btn:disabled {
+  opacity: 0.5;
 }
 
 #popups {
