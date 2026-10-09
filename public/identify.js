@@ -4,12 +4,16 @@
 // Two cheap, canvas-pixel-only features are extracted per sample - no extra ML model/download,
 // so this stays fast enough to run on a phone several times a second:
 //
-//   hist  - hue/saturation histogram of the torso band. Clothing colour barely changes with
-//           viewing angle, so this is the main angle-*invariant* signal.
-//   grid  - a coarse colour grid over the whole body box. It's a rough shape+colour
+//   hist  - colour/brightness histogram of the upper body. Clothing colour barely changes
+//           with viewing angle, so this is the main angle-*invariant* signal.
+//   lower - same descriptor for the lower body. This is a strong false-positive guard:
+//           a similar shirt is not enough if trousers/skirt/background layout differ.
+//   grid  - a coarse brightness/chroma grid over the whole body box. It's a rough shape+colour
 //           fingerprint that DOES change with viewing angle, which is exactly why enrolment
 //           takes one grid per angle (front/right/back/left) and matching takes whichever
 //           enrolled angle looks closest to the current view.
+//   shape - coarse box proportions, used only as a guard. It helps reject partial bodies and
+//           people with very different pose/framing without depending on distance from camera.
 //
 // A learned person re-identification embedding would be more discriminative than `grid` and
 // can be dropped in later - extractSignature() is the one place to add it; everything
@@ -17,17 +21,78 @@
 
 const HUE_BINS = 12;
 const SAT_BINS = 4;
+const LUMA_BINS = 8;
+const SAT_DETAIL_BINS = 8;
 const GRID_W = 6;
-const GRID_H = 10;
+const GRID_H = 8;
+const GRID_FEATURES = 4;
+const MIN_SCAN_HEIGHT_RATIO = 0.24;
+const MIN_MATCH_HEIGHT_RATIO = 0.18;
+const MIN_BOX_WIDTH_RATIO = 0.035;
+const MIN_ASPECT = 0.9;
+const MAX_ASPECT = 5.4;
 
 let sampleCanvas = null;
-function readPixels(video, box, w, h) {
+function sourceWidth(source) {
+  return source.videoWidth || source.width || 1;
+}
+
+function sourceHeight(source) {
+  return source.videoHeight || source.height || 1;
+}
+
+function readPixels(source, box, w, h) {
   sampleCanvas ??= document.createElement('canvas');
   sampleCanvas.width = w;
   sampleCanvas.height = h;
   const ctx = sampleCanvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(video, box.x, box.y, box.w, box.h, 0, 0, w, h);
+  const sx = Math.max(0, box.x);
+  const sy = Math.max(0, box.y);
+  const sw = Math.min(sourceWidth(source) - sx, box.w - (sx - box.x));
+  const sh = Math.min(sourceHeight(source) - sy, box.h - (sy - box.y));
+  if (sw <= 1 || sh <= 1) return new Uint8ClampedArray(w * h * 4);
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
   return ctx.getImageData(0, 0, w, h).data;
+}
+
+function subBox(box, x, y, w, h) {
+  return { x: box.x + box.w * x, y: box.y + box.h * y, w: box.w * w, h: box.h * h };
+}
+
+function boxMetrics(source, box) {
+  const vw = sourceWidth(source);
+  const vh = sourceHeight(source);
+  const aspect = box.h / Math.max(1, box.w);
+  const heightRatio = box.h / vh;
+  const widthRatio = box.w / vw;
+  const edgePad = Math.min(vw, vh) * 0.01;
+  const clipped =
+    box.x <= edgePad || box.y <= edgePad || box.x + box.w >= vw - edgePad || box.y + box.h >= vh - edgePad;
+  return { aspect, heightRatio, widthRatio, clipped };
+}
+
+function boxQuality(source, box, minHeightRatio) {
+  const m = boxMetrics(source, box);
+  if (m.heightRatio < minHeightRatio || m.widthRatio < MIN_BOX_WIDTH_RATIO) return 'too-far';
+  if (m.aspect < MIN_ASPECT || m.aspect > MAX_ASPECT) return 'partial-body';
+  if (m.clipped && m.heightRatio < 0.55) return 'edge-clipped';
+  return 'ok';
+}
+
+function usableBox(source, box, minHeightRatio) {
+  return boxQuality(source, box, minHeightRatio) === 'ok';
+}
+
+export function usableScanBox(source, box) {
+  return usableBox(source, box, MIN_SCAN_HEIGHT_RATIO);
+}
+
+export function scanBoxProblem(source, box) {
+  return box ? boxQuality(source, box, MIN_SCAN_HEIGHT_RATIO) : 'no-person';
+}
+
+function usableMatchBox(source, box) {
+  return usableBox(source, box, MIN_MATCH_HEIGHT_RATIO);
 }
 
 function rgbToHueSat(r, g, b) {
@@ -42,85 +107,186 @@ function rgbToHueSat(r, g, b) {
 
 function normalize(vec) {
   let sumSq = 0;
-  for (const v of vec) sumSq += v * v;
+  for (const v of vec) if (Number.isFinite(v)) sumSq += v * v;
   const norm = Math.sqrt(sumSq) || 1;
-  return vec.map((v) => v / norm);
+  return vec.map((v) => (Number.isFinite(v) ? v / norm : 0));
 }
 
-// Hue/saturation histogram of the torso - the band just below the head box.
-function torsoHistogram(video, box) {
-  const torso = { x: box.x + box.w * 0.2, y: box.y + box.h * 0.22, w: box.w * 0.6, h: box.h * 0.38 };
-  const px = readPixels(video, torso, 12, 20);
-  const hist = new Array(HUE_BINS * SAT_BINS).fill(0);
+// Appearance histogram for one body region. The first 48 bins are hue/saturation for
+// colourful clothing; the last 16 bins keep neutral clothing useful.
+function appearanceHistogram(source, box) {
+  const px = readPixels(source, box, 18, 24);
+  const hist = new Array(HUE_BINS * SAT_BINS + LUMA_BINS + SAT_DETAIL_BINS).fill(0);
   for (let i = 0; i < px.length; i += 4) {
-    const [hue, sat] = rgbToHueSat(px[i] / 255, px[i + 1] / 255, px[i + 2] / 255);
-    if (sat < 0.12) continue; // greys/whites/blacks carry ~no hue information
+    const r = px[i] / 255;
+    const g = px[i + 1] / 255;
+    const b = px[i + 2] / 255;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const [hue, sat] = rgbToHueSat(r, g, b);
+
     const hb = Math.min(HUE_BINS - 1, Math.floor((hue / 360) * HUE_BINS));
     const sb = Math.min(SAT_BINS - 1, Math.floor(sat * SAT_BINS));
-    hist[hb * SAT_BINS + sb] += 1;
+    const sdb = Math.min(SAT_DETAIL_BINS - 1, Math.floor(sat * SAT_DETAIL_BINS));
+    const lb = Math.min(LUMA_BINS - 1, Math.floor(luma * LUMA_BINS));
+
+    if (sat >= 0.08) hist[hb * SAT_BINS + sb] += 0.4 + sat;
+    hist[HUE_BINS * SAT_BINS + lb] += 0.8;
+    hist[HUE_BINS * SAT_BINS + LUMA_BINS + sdb] += 0.45;
   }
   return normalize(hist);
 }
 
-// Coarse colour grid over the whole body box.
-function bodyGrid(video, box) {
-  const px = readPixels(video, box, GRID_W, GRID_H);
-  const grid = new Array(GRID_W * GRID_H * 3);
+// Coarse brightness/chroma grid over the central body box. Hue is encoded as sin/cos, weighted
+// by saturation, so grey/black/white clothes do not invent meaningless hue features.
+function bodyGrid(source, box) {
+  const px = readPixels(source, subBox(box, 0.08, 0.06, 0.84, 0.88), GRID_W, GRID_H);
+  const grid = new Array(GRID_W * GRID_H * GRID_FEATURES);
   for (let i = 0; i < GRID_W * GRID_H; i++) {
-    grid[i * 3] = px[i * 4] / 255;
-    grid[i * 3 + 1] = px[i * 4 + 1] / 255;
-    grid[i * 3 + 2] = px[i * 4 + 2] / 255;
+    const r = px[i * 4] / 255;
+    const g = px[i * 4 + 1] / 255;
+    const b = px[i * 4 + 2] / 255;
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const [hue, sat] = rgbToHueSat(r, g, b);
+    const radians = (hue / 180) * Math.PI;
+    grid[i * GRID_FEATURES] = luma;
+    grid[i * GRID_FEATURES + 1] = sat;
+    grid[i * GRID_FEATURES + 2] = Math.cos(radians) * sat;
+    grid[i * GRID_FEATURES + 3] = Math.sin(radians) * sat;
   }
   return normalize(grid);
 }
 
-// { hist, grid } for one video frame + box. Used both at enrolment (one per angle) and live.
-export function extractSignature(video, box) {
-  return { hist: torsoHistogram(video, box), grid: bodyGrid(video, box) };
+function shapeSignature(source, box) {
+  const { aspect, heightRatio, widthRatio } = boxMetrics(source, box);
+  return [aspect, heightRatio / Math.max(widthRatio, 0.001)];
+}
+
+// { hist, lower, grid } for one video frame + box. Used both at enrolment and live.
+export function extractSignature(source, box) {
+  return {
+    hist: appearanceHistogram(source, subBox(box, 0.16, 0.2, 0.68, 0.42)),
+    lower: appearanceHistogram(source, subBox(box, 0.18, 0.58, 0.64, 0.34)),
+    grid: bodyGrid(source, box),
+    shape: shapeSignature(source, box),
+    usable: usableMatchBox(source, box),
+  };
+}
+
+function averageVectors(vectors) {
+  const len = Math.max(0, ...vectors.map((v) => v?.length ?? 0));
+  const avg = new Array(len).fill(0);
+  if (!len || !vectors.length) return avg;
+  for (const vector of vectors) {
+    for (let i = 0; i < len; i++) avg[i] += Number.isFinite(vector?.[i]) ? vector[i] : 0;
+  }
+  return normalize(avg.map((v) => v / vectors.length));
+}
+
+export function averageSignatures(signatures) {
+  return {
+    hist: averageVectors(signatures.map((s) => s.hist)),
+    lower: averageVectors(signatures.map((s) => s.lower)),
+    grid: averageVectors(signatures.map((s) => s.grid)),
+    shape: averageVectors(signatures.map((s) => s.shape)),
+    usable: signatures.some((s) => s.usable !== false),
+  };
 }
 
 function cosine(a, b) {
   let dot = 0;
-  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
-  return dot; // both vectors are already L2-normalised
+  let normA = 0;
+  let normB = 0;
+  const n = Math.min(a?.length ?? 0, b?.length ?? 0);
+  for (let i = 0; i < n; i++) {
+    const av = Number.isFinite(a[i]) ? a[i] : 0;
+    const bv = Number.isFinite(b[i]) ? b[i] : 0;
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  return normA && normB ? dot / Math.sqrt(normA * normB) : 0;
 }
 
-const HIST_WEIGHT = 0.6;
-const GRID_WEIGHT = 0.4;
+function shapeSimilarity(a, b) {
+  const aspectA = a?.[0];
+  const aspectB = b?.[0];
+  if (!Number.isFinite(aspectA) || !Number.isFinite(aspectB) || aspectA <= 0 || aspectB <= 0) return 0;
+  return Math.max(0, 1 - Math.abs(Math.log(aspectA / aspectB)) / Math.log(2.2));
+}
 
-function similarity(a, b) {
-  return HIST_WEIGHT * cosine(a.hist, b.hist) + GRID_WEIGHT * cosine(a.grid, b.grid);
+const HIST_WEIGHT = 0.42;
+const LOWER_WEIGHT = 0.24;
+const GRID_WEIGHT = 0.24;
+const SHAPE_WEIGHT = 0.1;
+
+function similarityParts(a, b) {
+  const upper = cosine(a.hist, b.hist);
+  const lower = cosine(a.lower, b.lower);
+  const grid = cosine(a.grid, b.grid);
+  const shape = shapeSimilarity(a.shape, b.shape);
+  return {
+    upper,
+    lower,
+    grid,
+    shape,
+    score: HIST_WEIGHT * upper + LOWER_WEIGHT * lower + GRID_WEIGHT * grid + SHAPE_WEIGHT * shape,
+  };
 }
 
 // The best-matching enrolled angle wins - this is what makes matching tolerant of whatever
 // angle the camera currently sees the player from.
 function bestAngleScore(signature, gallery) {
-  let best = -Infinity;
-  for (const sample of gallery) best = Math.max(best, similarity(signature, sample));
+  let best = null;
+  if (signature.usable === false) return null;
+  for (const sample of gallery) {
+    if (!sample?.hist?.length || !sample?.grid?.length || !sample?.lower?.length || !sample?.shape?.length) continue;
+    const candidate = similarityParts(signature, sample);
+    if (!best || candidate.score > best.score) best = candidate;
+  }
   return best;
 }
 
-const MATCH_THRESHOLD = 0.72; // below this, call it unknown rather than guess
-const MATCH_MARGIN = 0.05; // the winner must clear the runner-up by this much
+const MATCH_THRESHOLD = 0.78; // below this, call it unknown rather than guess
+const SINGLE_PLAYER_THRESHOLD = 0.86; // when there is no rival to compare against, be stricter
+const MATCH_MARGIN = 0.09; // the winner must clear the runner-up by this much
+const MIN_UPPER_SCORE = 0.72;
+const MIN_LOWER_SCORE = 0.62;
+const MIN_GRID_SCORE = 0.64;
+const MIN_SHAPE_SCORE = 0.68;
+
+function rejectionReason(best, candidates, secondScore) {
+  if (!best) return 'no-candidate';
+  const threshold = candidates <= 1 ? SINGLE_PLAYER_THRESHOLD : MATCH_THRESHOLD;
+  if (best.score < threshold) return 'score';
+  if (best.upper < MIN_UPPER_SCORE) return 'upper';
+  if (best.lower < MIN_LOWER_SCORE) return 'lower';
+  if (best.grid < MIN_GRID_SCORE) return 'grid';
+  if (best.shape < MIN_SHAPE_SCORE) return 'shape';
+  if (candidates > 1 && best.score - secondScore < MATCH_MARGIN) return 'margin';
+  return null;
+}
 
 // players: [{ id, name, gallery: [{hist, grid}, ...] }, ...]
 // excludeId: the local player - never matched against their own gallery.
-export function matchGallery(signature, players, excludeId) {
+export function matchGallery(signature, players, excludeId, { includeRejected = false } = {}) {
   let best = null;
   let secondScore = -Infinity;
+  let candidates = 0;
   for (const player of players) {
     if (player.id === excludeId || !player.gallery?.length) continue;
-    const score = bestAngleScore(signature, player.gallery);
-    if (!best || score > best.score) {
+    const match = bestAngleScore(signature, player.gallery);
+    if (!match) continue;
+    candidates++;
+    if (!best || match.score > best.score) {
       if (best) secondScore = best.score;
-      best = { id: player.id, name: player.name, score };
-    } else if (score > secondScore) {
-      secondScore = score;
+      best = { id: player.id, name: player.name, ...match };
+    } else if (match.score > secondScore) {
+      secondScore = match.score;
     }
   }
-  if (!best || best.score < MATCH_THRESHOLD) return null;
-  if (best.score - secondScore < MATCH_MARGIN) return null; // too close to call
-  return best;
+  const reason = rejectionReason(best, candidates, secondScore);
+  if (!reason) return { ...best, accepted: true };
+  return includeRejected && best ? { ...best, accepted: false, reason } : null;
 }
 
 function iou(a, b) {
@@ -134,10 +300,61 @@ function iou(a, b) {
 }
 
 const IOU_MATCH = 0.3;
-const TRACK_TIMEOUT_MS = 500;
+const TRACK_TIMEOUT_MS = 1200;
 const RECHECK_MS = 400; // re-identify an established track about every 0.4s
 const SETTLE_CHECKS = 3; // identify fast on a brand new track: check every frame at first
-const SWITCH_STREAK = 3; // a rival id must win this many checks in a row before we switch
+const INITIAL_STREAK = 3; // a new track must agree a few times before getting a name
+const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
+const CLEAR_STREAK = 8; // repeated unknown checks clear a stale identity
+const EVIDENCE_DECAY = 0.82;
+const EVIDENCE_ACCEPT = 2.4;
+const EVIDENCE_MARGIN = 0.55;
+const EVIDENCE_MIN_SCORE = 0.7;
+const EVIDENCE_MIN_PART = 0.54;
+
+function decayEvidence(track) {
+  for (const [id, value] of track.evidence) {
+    const decayed = value * EVIDENCE_DECAY;
+    if (decayed < 0.05) track.evidence.delete(id);
+    else track.evidence.set(id, decayed);
+  }
+}
+
+function evidenceWeight(match) {
+  if (!match) return 0;
+  if (
+    match.score < EVIDENCE_MIN_SCORE ||
+    match.upper < EVIDENCE_MIN_PART ||
+    match.lower < EVIDENCE_MIN_PART ||
+    match.grid < EVIDENCE_MIN_PART ||
+    match.shape < EVIDENCE_MIN_PART
+  ) {
+    return 0;
+  }
+  return match.accepted ? 1.25 : 0.45 + Math.max(0, match.score - EVIDENCE_MIN_SCORE);
+}
+
+function addEvidence(track, match) {
+  const weight = evidenceWeight(match);
+  if (!weight) return;
+  track.evidence.set(match.id, (track.evidence.get(match.id) ?? 0) + weight);
+  track.evidenceDetails.set(match.id, match);
+}
+
+function evidenceWinner(track) {
+  let best = null;
+  let second = 0;
+  for (const [id, value] of track.evidence) {
+    if (!best || value > best.value) {
+      if (best) second = best.value;
+      best = { id, value };
+    } else if (value > second) {
+      second = value;
+    }
+  }
+  if (!best || best.value < EVIDENCE_ACCEPT || best.value - second < EVIDENCE_MARGIN) return null;
+  return track.evidenceDetails.get(best.id) ?? null;
+}
 
 // Tracks people across frames (cheap IOU matching) and only re-runs identification per track
 // on a schedule, not on every box of every frame. This is what keeps per-frame cost low even
@@ -150,7 +367,7 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
-  update(boxes, video, players, selfId, now = performance.now()) {
+  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false } = {}) {
     const unmatched = new Set(boxes.map((_, i) => i));
     for (const track of this.tracks) {
       let bestI = -1;
@@ -179,8 +396,16 @@ export class Tracker {
         playerId: null,
         name: null,
         score: 0,
+        upper: 0,
+        lower: 0,
+        grid: 0,
+        shape: 0,
+        debugMatch: null,
+        evidence: new Map(),
+        evidenceDetails: new Map(),
         streakId: undefined,
         streak: 0,
+        misses: 0,
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
@@ -192,18 +417,48 @@ export class Tracker {
       track.lastCheck = now;
 
       const signature = extractSignature(video, track.box);
-      const match = matchGallery(signature, players, selfId);
-      const candidateId = match?.id ?? null;
+      const match = matchGallery(signature, players, selfId, { includeRejected: true });
+      decayEvidence(track);
+      addEvidence(track, match);
+      const evidenceMatch = evidenceWinner(track);
+      const candidateMatch = match?.accepted ? match : evidenceMatch;
+      const candidateId = candidateMatch?.id ?? null;
+      track.debugMatch = includeRejected && !match?.accepted ? (match ?? null) : null;
 
-      if (candidateId === track.playerId) {
+      if (!candidateId) {
+        track.misses++;
+        if (track.misses >= CLEAR_STREAK) {
+          track.playerId = null;
+          track.name = null;
+          track.score = 0;
+          track.upper = 0;
+          track.lower = 0;
+          track.grid = 0;
+          track.shape = 0;
+        }
         track.streak = 0;
-        if (match) track.score = match.score;
+        track.streakId = undefined;
+      } else if (candidateId === track.playerId) {
+        track.misses = 0;
+        track.streak = 0;
+        track.name = candidateMatch.name;
+        track.score = candidateMatch.score;
+        track.upper = candidateMatch.upper;
+        track.lower = candidateMatch.lower;
+        track.grid = candidateMatch.grid;
+        track.shape = candidateMatch.shape;
       } else if (candidateId === track.streakId) {
         track.streak++;
-        if (!track.playerId || track.streak >= SWITCH_STREAK) {
+        const needed = track.playerId ? SWITCH_STREAK : INITIAL_STREAK;
+        if (track.streak >= needed) {
           track.playerId = candidateId;
-          track.name = match?.name ?? null;
-          track.score = match?.score ?? 0;
+          track.name = candidateMatch?.name ?? null;
+          track.score = candidateMatch?.score ?? 0;
+          track.upper = candidateMatch?.upper ?? 0;
+          track.lower = candidateMatch?.lower ?? 0;
+          track.grid = candidateMatch?.grid ?? 0;
+          track.shape = candidateMatch?.shape ?? 0;
+          track.misses = 0;
           track.streak = 0;
           track.streakId = undefined;
         }

@@ -160,10 +160,14 @@ input {
 
 #scan-thumbs {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
+  max-width: min(520px, calc(100vw - 32px));
   margin-bottom: 12px;
   min-height: 48px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 #scan-thumbs img {
@@ -174,14 +178,25 @@ input {
   border: 2px solid var(--target);
 }
 
+#saved-scan {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 #scan-buttons {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 12px;
 }
 
 #scan-capture-btn,
-#scan-join-btn {
+#scan-auto-btn,
+#scan-join-btn,
+#use-saved-scan-btn,
+#clear-saved-scan-btn {
   padding: 14px 28px;
   border: 0;
   border-radius: 10px;
@@ -194,9 +209,24 @@ input {
   color: #fff;
 }
 
+#scan-auto-btn {
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
+}
+
 #scan-join-btn {
   background: var(--target);
   color: #06210f;
+}
+
+#use-saved-scan-btn {
+  background: var(--target);
+  color: #06210f;
+}
+
+#clear-saved-scan-btn {
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
 }
 
 /* ---- Game screen ---- */

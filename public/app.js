@@ -1,5 +1,5 @@
 import { createDetector, detectPeople, headBox, contains } from './detector.js';
-import { extractSignature, Tracker } from './identify.js';
+import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
 import { openPolling, openWebSocket } from './transport.js';
 import * as sound from './sound.js';
 
@@ -7,18 +7,21 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
 const FIRE_COOLDOWN_MS = 350;
+const SCAN_SAMPLE_COUNT = 6;
+const SCAN_SAMPLE_INTERVAL_MS = 70;
+const SCAN_CACHE_VERSION = 6;
+const SCAN_MIN_SAMPLES = 8;
+const SCAN_TARGET_SAMPLES = 12;
+const ROTATION_SCAN_COUNTDOWN_MS = 1800;
+const ROTATION_SCAN_DURATION_MS = 9000;
+const ROTATION_RECORD_FRAME_MS = 320;
+const ROTATION_FRAME_MAX_WIDTH = 640;
 
 const video = $('video');
 const canvas = $('overlay');
 const ctx = canvas.getContext('2d');
 
-// Face the camera, then rotate - so enrolment has a sample from every side a shooter might see.
-const SCAN_STEPS = [
-  'Stand where your whole body is visible, then face the camera.',
-  'Turn to show your right side.',
-  'Turn around - show your back.',
-  'Turn to show your left side.',
-];
+const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible, then slowly turn in one full circle.';
 
 const state = {
   name: '',
@@ -35,6 +38,10 @@ const state = {
   tracker: new Tracker(),
   tracks: [],
   gallery: [], // signatures captured so far during enrolment
+  scanThumbs: [], // data URLs matching gallery samples, used for the reusable debug cache
+  savedScan: null,
+  autoScanning: false,
+  postProcessingScan: false,
   scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
@@ -52,6 +59,7 @@ $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   state.name = $('name').value.trim();
   state.room = $('room').value.trim().toLowerCase();
+  state.savedScan = loadScanCache();
   save('name', state.name);
   save('room', state.room);
 
@@ -76,10 +84,11 @@ $('join-form').addEventListener('submit', async (event) => {
   $('scan-screen').hidden = false;
   $('debug').hidden = !DEBUG;
   keepScreenOn();
-  startScanStep(0);
+  renderSavedScan();
+  startScanStep();
   requestAnimationFrame(loop);
   // Connect now rather than after scanning, so a server that can't be reached shows up
-  // straight away instead of after the player has scanned all four sides.
+  // straight away instead of after the player has finished scanning.
   connect();
 });
 
@@ -122,43 +131,387 @@ document.addEventListener('visibilitychange', () => {
 // Before the match, each player is scanned from a few angles so later, during the match,
 // other phones can tell *who* is under the crosshair rather than just seeing "a person".
 
-function startScanStep(i) {
-  $('scan-instruction').textContent = SCAN_STEPS[i] ?? '';
-  $('scan-capture-btn').hidden = i >= SCAN_STEPS.length;
-  $('scan-join-btn').hidden = i < SCAN_STEPS.length;
+function startScanStep() {
+  const count = state.gallery.length;
+  const ready = count >= SCAN_MIN_SAMPLES;
+  const scanBusy = state.autoScanning || state.postProcessingScan;
+  if (state.postProcessingScan) {
+    $('scan-instruction').textContent = 'Processing recorded rotation...';
+  } else if (state.autoScanning) {
+    $('scan-instruction').textContent = ROTATION_SCAN_PROMPT;
+  } else if (ready) {
+    $('scan-instruction').textContent =
+      count >= SCAN_TARGET_SAMPLES
+        ? 'Rotation scan complete. Join when ready, or rescan to replace it.'
+        : `${count}/${SCAN_TARGET_SAMPLES} samples captured. Join now or add more angles.`;
+  } else if (count > 0) {
+    $('scan-instruction').textContent =
+      `${count}/${SCAN_TARGET_SAMPLES} samples captured. Keep rotating and add more angles.`;
+  } else {
+    $('scan-instruction').textContent =
+      state.savedScan ? 'Use your saved scan, or rescan with a slow rotation.' : ROTATION_SCAN_PROMPT;
+  }
+  $('scan-capture-btn').hidden = count >= SCAN_TARGET_SAMPLES;
+  $('scan-auto-btn').hidden = false;
+  $('scan-join-btn').hidden = !ready || scanBusy;
+  updateScanButtons();
+  renderSavedScan();
+}
+
+function updateScanButtons() {
+  $('scan-capture-btn').disabled = state.autoScanning || state.postProcessingScan || state.gallery.length >= SCAN_TARGET_SAMPLES;
 }
 
 function biggestBox(boxes) {
   return boxes.reduce((best, b) => (!best || b.w * b.h > best.w * best.h ? b : best), null);
 }
 
-function cropThumbnail(box) {
+function cropThumbnail(box, source = video) {
   const c = document.createElement('canvas');
   c.width = 48;
   c.height = 64;
-  c.getContext('2d').drawImage(video, box.x, box.y, box.w, box.h, 0, 0, c.width, c.height);
+  c.getContext('2d').drawImage(source, box.x, box.y, box.w, box.h, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', 0.7);
 }
 
-$('scan-capture-btn').addEventListener('click', () => {
-  const box = biggestBox(state.boxes);
-  if (!box) {
-    $('scan-instruction').textContent = `${SCAN_STEPS[state.gallery.length]} (no one detected - step back a little)`;
-    return;
-  }
-  state.gallery.push(extractSignature(video, box));
+function scanCacheKey() {
+  return `scan:${state.room}:${state.name.toLowerCase()}`;
+}
 
+function validScanCache(cache) {
+  return (
+    cache?.version === SCAN_CACHE_VERSION &&
+    cache.name === state.name &&
+    cache.room === state.room &&
+    Array.isArray(cache.gallery) &&
+    cache.gallery.length >= SCAN_MIN_SAMPLES &&
+    cache.gallery.length <= SCAN_TARGET_SAMPLES &&
+    cache.gallery.every(
+      (s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape),
+    ) &&
+    Array.isArray(cache.thumbs)
+  );
+}
+
+function loadScanCache() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(`laser-tag:${scanCacheKey()}`));
+    return validScanCache(cache) ? cache : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveScanCache() {
+  if (state.gallery.length < SCAN_MIN_SAMPLES) return;
+  try {
+    const cache = {
+      version: SCAN_CACHE_VERSION,
+      name: state.name,
+      room: state.room,
+      savedAt: Date.now(),
+      gallery: state.gallery,
+      thumbs: state.scanThumbs,
+    };
+    localStorage.setItem(`laser-tag:${scanCacheKey()}`, JSON.stringify(cache));
+    state.savedScan = cache;
+    renderSavedScan();
+  } catch {
+    // The scan cache is only a debug convenience; the live scan still works.
+  }
+}
+
+function clearScanCache() {
+  try {
+    localStorage.removeItem(`laser-tag:${scanCacheKey()}`);
+  } catch {
+    // Ignore storage errors; clearing the in-memory copy is enough for this run.
+  }
+  state.savedScan = null;
+  state.autoScanning = false;
+  state.postProcessingScan = false;
+  state.gallery = [];
+  state.scanThumbs = [];
+  $('scan-thumbs').innerHTML = '';
+  startScanStep();
+}
+
+function appendScanThumb(src) {
   const thumb = document.createElement('img');
-  thumb.src = cropThumbnail(box);
+  thumb.src = src;
   thumb.title = 'Tap to redo this and later angles';
   thumb.addEventListener('click', () => {
     const i = [...$('scan-thumbs').children].indexOf(thumb);
     state.gallery.length = i;
+    state.scanThumbs.length = i;
     [...$('scan-thumbs').children].slice(i).forEach((el) => el.remove());
-    startScanStep(i);
+    startScanStep();
   });
   $('scan-thumbs').append(thumb);
-  startScanStep(state.gallery.length);
+}
+
+function renderSavedScan() {
+  const readyToUse = Boolean(state.savedScan) && state.gallery.length === 0;
+  $('saved-scan').hidden = !state.savedScan;
+  $('use-saved-scan-btn').hidden = !readyToUse;
+  $('clear-saved-scan-btn').textContent = readyToUse ? 'Rescan' : 'Clear saved scan';
+}
+
+function useSavedScan() {
+  if (!state.savedScan) return;
+  state.gallery = state.savedScan.gallery;
+  state.scanThumbs = state.savedScan.thumbs ?? [];
+  $('scan-thumbs').innerHTML = '';
+  for (const thumb of state.scanThumbs) appendScanThumb(thumb);
+  startScanStep();
+}
+
+function recordScanCapture(captured) {
+  if (state.gallery.length >= SCAN_TARGET_SAMPLES) return;
+  state.gallery.push(captured.signature);
+  const thumb = cropThumbnail(captured.box);
+  state.scanThumbs.push(thumb);
+  appendScanThumb(thumb);
+  startScanStep();
+  saveScanCache();
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+
+async function captureScanSignature() {
+  const samples = [];
+  let thumbnailBox = null;
+  let problem = 'no-person';
+  for (let i = 0; i < SCAN_SAMPLE_COUNT; i++) {
+    await nextFrame();
+    const box = biggestBox(state.boxes);
+    if (box && usableScanBox(video, box)) {
+      samples.push(extractSignature(video, box));
+      thumbnailBox = box;
+      problem = 'ok';
+    } else {
+      problem = scanBoxProblem(video, box);
+    }
+    if (i < SCAN_SAMPLE_COUNT - 1) await wait(SCAN_SAMPLE_INTERVAL_MS);
+  }
+  return samples.length >= Math.ceil(SCAN_SAMPLE_COUNT / 2)
+    ? { signature: averageSignatures(samples), box: thumbnailBox }
+    : { problem };
+}
+
+function scanProblemMessage(problem) {
+  if (problem === 'too-far') return 'step a little closer';
+  if (problem === 'edge-clipped') return 'move fully inside the frame';
+  if (problem === 'partial-body') return 'stand straighter or show more of your body';
+  return 'no person detected';
+}
+
+function sourceWidth(source) {
+  return source.videoWidth || source.width || 1;
+}
+
+function sourceHeight(source) {
+  return source.videoHeight || source.height || 1;
+}
+
+function boxScanQuality(box, source = video) {
+  if (!sourceWidth(source) || !sourceHeight(source) || !box) return 0;
+  const sw = sourceWidth(source);
+  const sh = sourceHeight(source);
+  const area = (box.w * box.h) / (sw * sh);
+  const height = box.h / sh;
+  const cx = (box.x + box.w / 2) / sw;
+  const cy = (box.y + box.h / 2) / sh;
+  const centered = 1 - Math.min(1, Math.hypot(cx - 0.5, cy - 0.53) * 1.5);
+  return area * 2 + height + centered * 0.5;
+}
+
+function selectRotationSamples(candidates, targetCount) {
+  if (candidates.length <= targetCount) return candidates;
+  const first = candidates[0].time;
+  const span = Math.max(1, candidates.at(-1).time - first);
+  const buckets = Array.from({ length: targetCount }, () => []);
+  for (const candidate of candidates) {
+    const index = Math.min(targetCount - 1, Math.floor(((candidate.time - first) / span) * targetCount));
+    buckets[index].push(candidate);
+  }
+
+  const selected = [];
+  for (const bucket of buckets) {
+    bucket.sort((a, b) => b.quality - a.quality);
+    if (bucket[0]) selected.push(bucket[0]);
+  }
+
+  if (selected.length < targetCount) {
+    const used = new Set(selected);
+    const extras = candidates.filter((candidate) => !used.has(candidate)).sort((a, b) => b.quality - a.quality);
+    selected.push(...extras.slice(0, targetCount - selected.length));
+  }
+
+  return selected.sort((a, b) => a.time - b.time).slice(0, targetCount);
+}
+
+function mostCommonProblem(problemCounts, fallback) {
+  let best = fallback;
+  let bestCount = 0;
+  for (const [problem, count] of problemCounts) {
+    if (count > bestCount) {
+      best = problem;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
+function recordedFrameSize() {
+  const vw = video.videoWidth || 1;
+  const vh = video.videoHeight || 1;
+  const scale = Math.min(1, ROTATION_FRAME_MAX_WIDTH / vw);
+  return { w: Math.max(1, Math.round(vw * scale)), h: Math.max(1, Math.round(vh * scale)) };
+}
+
+function captureRecordedFrame(time) {
+  const { w, h } = recordedFrameSize();
+  const image = document.createElement('canvas');
+  image.width = w;
+  image.height = h;
+  image.getContext('2d').drawImage(video, 0, 0, w, h);
+  return { image, time };
+}
+
+async function recordRotationVideo() {
+  const frames = [];
+  const startedAt = performance.now();
+  const endsAt = startedAt + ROTATION_SCAN_DURATION_MS;
+
+  while (state.autoScanning && performance.now() < endsAt) {
+    await nextFrame();
+    const now = performance.now();
+    const remaining = Math.max(0, Math.ceil((endsAt - now) / 1000));
+    frames.push(captureRecordedFrame(now - startedAt));
+    $('scan-instruction').textContent = `Recording rotation... ${remaining}s left, ${frames.length} frames`;
+    await wait(ROTATION_RECORD_FRAME_MS);
+  }
+
+  return state.autoScanning ? frames : null;
+}
+
+async function processRotationVideo(frames) {
+  const candidates = [];
+  const problemCounts = new Map();
+  let lastProblem = 'no-person';
+  state.postProcessingScan = true;
+  updateScanButtons();
+
+  try {
+    for (let i = 0; state.autoScanning && i < frames.length; i++) {
+      await nextFrame();
+      const frame = frames[i];
+      const boxes = detectPeople(state.detector, frame.image, performance.now());
+      const box = biggestBox(boxes);
+
+      if (box && usableScanBox(frame.image, box)) {
+        candidates.push({
+          signature: extractSignature(frame.image, box),
+          box: { ...box },
+          thumb: cropThumbnail(box, frame.image),
+          quality: boxScanQuality(box, frame.image),
+          time: frame.time,
+        });
+      } else {
+        lastProblem = scanBoxProblem(frame.image, box);
+        problemCounts.set(lastProblem, (problemCounts.get(lastProblem) ?? 0) + 1);
+      }
+
+      $('scan-instruction').textContent =
+        `Processing recorded rotation... ${i + 1}/${frames.length}, ${candidates.length} usable frames`;
+    }
+  } finally {
+    state.postProcessingScan = false;
+    updateScanButtons();
+  }
+
+  if (!state.autoScanning) return null;
+  const samples = selectRotationSamples(candidates, SCAN_TARGET_SAMPLES);
+  if (samples.length < SCAN_MIN_SAMPLES) {
+    return { problem: mostCommonProblem(problemCounts, lastProblem), samples };
+  }
+  return { samples };
+}
+
+$('scan-capture-btn').addEventListener('click', async () => {
+  const step = state.gallery.length;
+  $('scan-capture-btn').disabled = true;
+  $('scan-instruction').textContent = 'Capturing this angle...';
+  const captured = await captureScanSignature();
+  $('scan-capture-btn').disabled = false;
+  if (state.gallery.length !== step) return;
+  if (!captured.signature) {
+    $('scan-instruction').textContent = `${ROTATION_SCAN_PROMPT} (${scanProblemMessage(captured.problem)})`;
+    return;
+  }
+  recordScanCapture(captured);
+});
+
+async function runAutoScan() {
+  if (state.autoScanning) return;
+  let finalMessage = null;
+  state.autoScanning = true;
+  state.gallery = [];
+  state.scanThumbs = [];
+  $('scan-thumbs').innerHTML = '';
+  updateScanButtons();
+  $('scan-auto-btn').textContent = 'Stop';
+
+  try {
+    const readyAt = performance.now() + ROTATION_SCAN_COUNTDOWN_MS;
+    while (state.autoScanning && performance.now() < readyAt) {
+      const seconds = Math.ceil((readyAt - performance.now()) / 1000);
+      $('scan-instruction').textContent = `${ROTATION_SCAN_PROMPT} Starting in ${seconds}...`;
+      await wait(120);
+    }
+    if (!state.autoScanning) return;
+
+    const frames = await recordRotationVideo();
+    if (!state.autoScanning || !frames) return;
+
+    $('scan-instruction').textContent = `Recorded ${frames.length} frames. Processing usable angles...`;
+    const result = await processRotationVideo(frames);
+    if (!state.autoScanning || !result) return;
+
+    if (result.samples.length < SCAN_MIN_SAMPLES) {
+      state.gallery = result.samples.map((sample) => sample.signature);
+      state.scanThumbs = result.samples.map((sample) => sample.thumb);
+      $('scan-thumbs').innerHTML = '';
+      for (const thumb of state.scanThumbs) appendScanThumb(thumb);
+      finalMessage =
+        `Only got ${result.samples.length}/${SCAN_MIN_SAMPLES} usable frames: ${scanProblemMessage(result.problem)}. Try again slower.`;
+      return;
+    }
+
+    state.gallery = result.samples.map((sample) => sample.signature);
+    state.scanThumbs = result.samples.map((sample) => sample.thumb);
+    $('scan-thumbs').innerHTML = '';
+    for (const thumb of state.scanThumbs) appendScanThumb(thumb);
+    saveScanCache();
+  } catch (err) {
+    console.error(err);
+    finalMessage = `Could not process the rotation video: ${err.message || err}`;
+  } finally {
+    state.autoScanning = false;
+    $('scan-auto-btn').textContent = 'Scan rotation';
+    updateScanButtons();
+    startScanStep();
+    if (finalMessage) $('scan-instruction').textContent = finalMessage;
+  }
+}
+
+$('use-saved-scan-btn').addEventListener('click', useSavedScan);
+$('clear-saved-scan-btn').addEventListener('click', clearScanCache);
+$('scan-auto-btn').addEventListener('click', () => {
+  if (state.autoScanning) state.autoScanning = false;
+  else runAutoScan();
 });
 
 $('scan-join-btn').addEventListener('click', () => {
@@ -339,9 +692,10 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 // ---- Shooting ----
 
 // Which (if any) tracked person is under the crosshair, and which zone of them.
-function targetUnderCrosshair(px, py) {
+function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   let bodyTrack = null;
   for (const t of state.tracks) {
+    if (!includeSelf && t.playerId === state.myId) continue;
     if (!contains(t.box, px, py)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
     bodyTrack = t;
@@ -384,12 +738,14 @@ let inferenceMs = 0;
 function loop() {
   requestAnimationFrame(loop);
 
-  if (video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const t0 = performance.now();
     state.boxes = detectPeople(state.detector, video, t0);
     if (state.mode === 'game') {
-      state.tracks = state.tracker.update(state.boxes, video, state.roster, state.myId, t0);
+      state.tracks = state.tracker.update(state.boxes, video, state.roster, DEBUG ? null : state.myId, t0, {
+        includeRejected: DEBUG,
+      });
     }
     inferenceMs = performance.now() - t0;
     frames++;
@@ -405,10 +761,30 @@ function loop() {
       frames = 0;
       fpsWindowStart = now;
     }
+    const identified = state.tracks.filter((t) => t.playerId);
+    const rejected = state.tracks.filter((t) => !t.playerId && t.debugMatch);
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people` +
-      (state.mode === 'game' ? ` · ${state.tracks.filter((t) => t.playerId).length} identified` : '');
+      (state.mode === 'game'
+        ? ` · ${identified.length} identified` +
+          (identified.length
+            ? `\n${identified
+                .map(
+                  (t) =>
+                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)}`,
+                )
+                .join(' ')}`
+            : '')
+        : '') +
+      (rejected.length
+        ? `\nRejected ${rejected
+            .map(
+              (t) =>
+                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)}`,
+            )
+            .join(' ')}`
+        : '');
   }
 }
 
@@ -457,7 +833,7 @@ function drawScan({ toScreen }) {
 function drawGame({ vw, vh, toScreen }) {
   const cx = vw / 2;
   const cy = vh / 2;
-  const hit = targetUnderCrosshair(cx, cy);
+  const hit = targetUnderCrosshair(cx, cy, { includeSelf: true });
   $('crosshair').classList.toggle('on-target', hit !== null);
 
   ctx.lineWidth = 3;
@@ -465,9 +841,10 @@ function drawGame({ vw, vh, toScreen }) {
   for (const track of state.tracks) {
     const targeted = hit?.track === track;
     const known = track.playerId !== null;
-    const color = targeted ? '#ff2e4d' : known ? '#39ff88' : '#8a97a6';
+    const debugMatch = DEBUG && !known ? track.debugMatch : null;
+    const color = targeted ? '#ff2e4d' : known ? '#39ff88' : debugMatch ? '#ffd166' : '#8a97a6';
     ctx.strokeStyle = color;
-    ctx.setLineDash(known ? [] : [4, 4]);
+    ctx.setLineDash(known ? [] : debugMatch ? [8, 4] : [4, 4]);
     ctx.strokeRect(...toScreen(track.box));
 
     ctx.setLineDash([6, 4]);
@@ -476,7 +853,7 @@ function drawGame({ vw, vh, toScreen }) {
     const [x, y] = toScreen(track.box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
-    ctx.fillText(track.name ?? 'unknown', x + 4, y + 16);
+    ctx.fillText(track.name ?? (debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'unknown'), x + 4, y + 16);
   }
 }
 

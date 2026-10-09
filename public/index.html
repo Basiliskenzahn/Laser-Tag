@@ -39,11 +39,16 @@
         <p id="scan-connection" class="connection-problem" role="alert" hidden></p>
         <p id="scan-instruction">Stand where your whole body is visible, then face the camera.</p>
         <div id="scan-thumbs"></div>
+        <div id="saved-scan" hidden>
+          <button id="use-saved-scan-btn" type="button">Use saved scan</button>
+          <button id="clear-saved-scan-btn" type="button">Rescan</button>
+        </div>
         <div id="scan-buttons">
-          <button id="scan-capture-btn" type="button">Capture</button>
+          <button id="scan-capture-btn" type="button">Add angle</button>
+          <button id="scan-auto-btn" type="button">Scan rotation</button>
           <button id="scan-join-btn" type="button" hidden>Join game</button>
         </div>
-        <p class="hint">Hand the phone to someone else so it can see your whole body while you turn. Scanning a few angles lets the game recognise you later from the side or behind, not just face-on.</p>
+        <p class="hint">Hand the phone to someone else so it can see your whole body. Use Scan rotation, then turn slowly once; the game keeps the best angles.</p>
       </div>
     </main>
 

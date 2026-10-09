@@ -11,17 +11,52 @@
 // Ordinary fetch() requests get through both.
 
 export function openWebSocket({ onOpen, onMessage, onClose }) {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  ws.onopen = onOpen;
-  ws.onmessage = (event) => onMessage(JSON.parse(event.data));
-  ws.onclose = onClose;
+  let closedByClient = false;
+  let opened = false;
+  let ws;
+
+  const connectTimer = setTimeout(() => {
+    if (!opened && ws?.readyState === WebSocket.CONNECTING) ws.close();
+  }, 2500);
+
+  try {
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  } catch {
+    clearTimeout(connectTimer);
+    setTimeout(onClose, 0);
+    return {
+      send() {},
+      close() {},
+    };
+  }
+
+  ws.onopen = () => {
+    opened = true;
+    clearTimeout(connectTimer);
+    onOpen();
+  };
+  ws.onerror = () => {
+    if (!opened && ws.readyState === WebSocket.CONNECTING) ws.close();
+  };
+  ws.onmessage = (event) => {
+    try {
+      onMessage(JSON.parse(event.data));
+    } catch {
+      // Ignore malformed frames; the next valid server update will resync the UI.
+    }
+  };
+  ws.onclose = () => {
+    clearTimeout(connectTimer);
+    if (!closedByClient) onClose();
+  };
   return {
     send(msg) {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
     },
     close() {
-      ws.onclose = null;
-      ws.close();
+      closedByClient = true;
+      clearTimeout(connectTimer);
+      if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close();
     },
   };
 }
@@ -51,7 +86,7 @@ export function openPolling({ onOpen, onMessage, onClose }) {
       token = (await (await request('/api/connect', { method: 'POST' })).json()).token;
       onOpen();
       while (!closed) {
-        const messages = await (await request(`/api/poll?token=${token}`)).json();
+        const messages = await (await request(`/api/poll?token=${encodeURIComponent(token)}`)).json();
         for (const msg of messages) {
           if (closed) break;
           onMessage(msg);
@@ -67,7 +102,7 @@ export function openPolling({ onOpen, onMessage, onClose }) {
       if (closed || !token) return;
       sending = sending
         .then(() =>
-          request(`/api/send?token=${token}`, {
+          request(`/api/send?token=${encodeURIComponent(token)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(msg),

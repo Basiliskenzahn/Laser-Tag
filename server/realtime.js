@@ -55,10 +55,17 @@ function cleanVector(v, maxLen) {
 
 function cleanGallery(gallery) {
   if (!Array.isArray(gallery)) return [];
-  return gallery.slice(0, 8).map((sample) => ({
-    hist: cleanVector(sample?.hist, 64),
-    grid: cleanVector(sample?.grid, 256),
-  }));
+  return gallery.slice(0, 12).map((sample) => {
+    const clean = {
+      hist: cleanVector(sample?.hist, 64),
+      grid: cleanVector(sample?.grid, 256),
+    };
+    const lower = cleanVector(sample?.lower, 64);
+    const shape = cleanVector(sample?.shape, 8);
+    if (lower.length) clean.lower = lower;
+    if (shape.length) clean.shape = shape;
+    return clean;
+  });
 }
 
 // One connected phone, independent of transport. `conn.send(msg)` delivers a message to it;
