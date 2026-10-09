@@ -1,28 +1,66 @@
 # Laser Tag
 
-Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at an opponent, pull the trigger, and the game works out whether you hit.
+Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at your opponent, hit **FIRE**, and the phone works out whether the crosshair was on them.
 
 Built during a 42-hour hackathon.
 
-## Idea
+## How it works
 
-- **Gun = phone camera.** A crosshair sits in the middle of the live camera view. Tap to shoot.
-- **Hit detection.** When you shoot, the frame is checked to see whether a player is under the crosshair, and which player it is.
-- **Game state.** A small realtime server tracks lobbies, players, health, score, and the round timer, and pushes updates to every phone.
+- **The phone camera is the gun.** A crosshair sits in the middle of the live camera view.
+- **Hitboxes come from image recognition.** Each phone runs a person detector ([MediaPipe](https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector) EfficientDet-Lite0) on every camera frame, in the browser. Each person it finds gets a body hitbox, plus a head hitbox in the top-centre of the body box.
+- **Shooting.** When you fire, the phone checks whether the crosshair is inside a hitbox. A body hit does 20 damage and a headshot does 50, starting from 100 HP.
+- **Game server.** A small Node.js server keeps the two phones in sync over WebSockets. It handles the room, countdown, health, knockouts and rematches.
 
-## Proposed architecture
+The current version is a demo for **two players**. Anyone the camera sees counts as the opponent, so keep bystanders out of the shot.
 
-| Part | Choice | Why |
-| --- | --- | --- |
-| Client | Web app (PWA) | Works on iOS and Android with no app-store install. Camera access via `getUserMedia`. |
-| Player detection | On-device ML (e.g. MediaPipe / TensorFlow.js person detection) | Runs in the browser, no server round-trip per shot. |
-| Player identification | Coloured shirts/armbands or printed markers (ArUco/QR) | Much more reliable to build in 42h than recognising faces. |
-| Realtime backend | Node.js + WebSockets (e.g. Socket.IO) | Simple lobby and state sync. |
-| Hosting | Any HTTPS host | Browsers only allow camera access over HTTPS. |
+## Running it
 
-## Getting started
+You need Node.js 20 or newer.
 
-_TBD once the stack is scaffolded._
+```bash
+npm install
+npm start
+```
+
+The server prints two kinds of address:
+
+```
+  Laptop:  http://localhost:3000
+  Phones:  https://192.168.x.x:3443
+```
+
+**Playing on phones (same Wi-Fi):** open the `https://` address on both phones. They'll warn that the certificate isn't trusted, because the server makes its own. Continue anyway: on iPhone, tap *Show Details → visit this website*; on Android, tap *Advanced → Proceed*. Enter a name and the same room code on both phones, then allow camera access.
+
+**If the Wi-Fi blocks phones from reaching each other, or iPhone has trouble with the certificate:** run an HTTPS tunnel and open its URL on both phones instead:
+
+```bash
+brew install cloudflared            # once
+cloudflared tunnel --url http://localhost:3000
+```
+
+**Testing on a laptop:** `http://localhost:3000` works with the webcam (browsers allow camera access on localhost). Press space to fire. Add `?debug` to the URL to show detector FPS and inference time.
+
+## Project layout
+
+```
+server/
+  index.js        HTTP/HTTPS static server + WebSocket game server
+  game.js         Room logic (players, HP, countdown, knockouts); no networking
+  game.test.js    Unit tests: npm test
+public/
+  index.html      Join screen and game screen
+  app.js          Camera, render loop, HUD, shooting, networking
+  detector.js     MediaPipe person detection and hitbox maths
+  sound.js        Synthesised sound effects (Web Audio)
+  models/         EfficientDet-Lite0 model, committed so the game works offline
+```
+
+## Limitations and ideas for next steps
+
+- **Hitboxes are rectangles,** so the gap between outstretched arms counts as a hit. MediaPipe's pose landmarker would give body-shaped hitboxes and a precise head position.
+- **Players aren't identified.** For more than two players, tell people apart by shirt colour or printed markers.
+- **The shooter's phone decides whether a shot hit,** and the server trusts it. That's fine for a demo, but it's open to cheating.
+- **Phones can't vibrate on iOS.** Safari doesn't support `navigator.vibrate`, so iPhones only get the red flash and sound when hit.
 
 ## Team
 
@@ -30,4 +68,4 @@ _TBD once the stack is scaffolded._
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The EfficientDet-Lite0 model is from Google MediaPipe and is licensed under Apache 2.0.
