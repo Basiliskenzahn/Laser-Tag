@@ -40,9 +40,7 @@ The server prints two kinds of address:
   Phones:  https://192.168.x.x:3443
 ```
 
-**Playing on phones (same Wi-Fi):** open the `https://` address on both phones. They'll warn that the certificate isn't trusted, because the server makes its own. Continue anyway: on iPhone, tap *Show Details → visit this website*; on Android, tap *Advanced → Proceed*. Enter a name and the same room code on both phones, then allow camera access.
-
-**If the Wi-Fi blocks phones from reaching each other, or iPhone has trouble with the certificate:** run an HTTPS tunnel and open its URL on both phones instead:
+**Playing on phones: use a trusted HTTPS address.** The `https://…:3443` address uses a self-signed certificate. You can click through the warning to load the page, but phone browsers (iPhone Safari especially) still block the game's WebSocket on it, so the game gets stuck on "Connection lost. Reconnecting…". Run an HTTPS tunnel instead and open its URL on every phone; this also works when the Wi-Fi blocks phones from reaching each other:
 
 ```bash
 brew install cloudflared            # once
@@ -64,9 +62,9 @@ Docker splits the app into two containers instead of one process:
 docker compose up --build
 ```
 
-This publishes the same two ports `npm start` would: `http://localhost:3000` and `https://localhost:3443` (both now served by the `frontend` container). A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
+This publishes `http://localhost:8080` and `https://localhost:3443` (both served by the `frontend` container), and starts a `tunnel` container that gives phones a trusted HTTPS address. Get it with `docker compose logs tunnel | grep trycloudflare.com`; it changes whenever the container restarts. A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
 
-For phones on the LAN, use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - look it up yourself (`ip addr` / `ipconfig`); nothing in the containers' logs gives you the host's address.
+The self-signed LAN address still works for Android phones and laptops: use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - look it up yourself (`ip addr` / `ipconfig`); nothing in the containers' logs gives you the host's address.
 
 Without compose, build and run each image and connect them manually:
 

@@ -19,5 +19,18 @@ services:
     depends_on:
       - backend
 
+  tunnel:
+    # Trusted HTTPS for phones. The frontend's self-signed certificate lets the page load once
+    # you click through the warning, but phone browsers (iPhone Safari especially) still refuse
+    # the game's WebSocket on it, which shows up as "Connection lost. Reconnecting…".
+    # A Cloudflare quick tunnel gives a real certificate. Find the URL with:
+    #   docker compose logs tunnel | grep trycloudflare.com
+    # The URL changes every time this container restarts.
+    image: cloudflare/cloudflared:2026.9.2
+    command: tunnel --no-autoupdate --url http://frontend:80
+    restart: unless-stopped
+    depends_on:
+      - frontend
+
 volumes:
   certs:

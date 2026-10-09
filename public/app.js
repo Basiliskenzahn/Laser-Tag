@@ -33,6 +33,8 @@ const state = {
   tracker: new Tracker(),
   tracks: [],
   gallery: [], // signatures captured so far during enrolment
+  scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
+  failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
   countdownEndsAt: null,
   lastCountdownBeep: null,
@@ -74,6 +76,9 @@ $('join-form').addEventListener('submit', async (event) => {
   keepScreenOn();
   startScanStep(0);
   requestAnimationFrame(loop);
+  // Connect now rather than after scanning, so a server that can't be reached shows up
+  // straight away instead of after the player has scanned all four sides.
+  connect();
 });
 
 function setJoinStatus(text) {
@@ -158,23 +163,50 @@ $('scan-join-btn').addEventListener('click', () => {
   $('scan-screen').hidden = true;
   $('game-screen').hidden = false;
   state.mode = 'game';
-  connect();
+  state.scanDone = true;
+  sendJoin(); // if the socket isn't open yet, onopen sends it
+  renderHud();
 });
 
 // ---- Networking ----
 
+// Shown when the socket keeps failing before it ever opens. The usual cause is a phone browser
+// (iPhone Safari especially) that let the player past the self-signed certificate warning for
+// the page, but still silently refuses the WebSocket to the same address.
+const UNREACHABLE_MESSAGE =
+  "Can't connect to the game server. If you opened the self-signed https:// address, your browser " +
+  'may be blocking the game connection: use the trusted https:// link instead (see the README). Still retrying…';
+
 function connect() {
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+  let opened = false;
   state.ws = ws;
-  ws.onopen = () => send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery });
+  ws.onopen = () => {
+    opened = true;
+    state.failedConnects = 0;
+    showConnectionProblem(null);
+    sendJoin();
+  };
   ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
   ws.onclose = () => {
     if (state.ws !== ws) return;
     state.game = null;
-    state.bannerOverride = 'Connection lost. Reconnecting…';
-    renderHud();
+    if (!opened) state.failedConnects++;
+    showConnectionProblem(state.failedConnects >= 2 ? UNREACHABLE_MESSAGE : 'Connection lost. Reconnecting…');
     setTimeout(connect, 1500);
   };
+}
+
+function sendJoin() {
+  if (state.scanDone) send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery });
+}
+
+// Connection problems go on whichever screen is showing: the scan panel or the game banner.
+function showConnectionProblem(text) {
+  $('scan-connection').textContent = text ?? '';
+  $('scan-connection').hidden = !text || state.mode !== 'scan';
+  state.bannerOverride = text;
+  renderHud();
 }
 
 function send(msg) {
