@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import selfsigned from 'selfsigned';
-import { attachGameServer } from './realtime.js';
+import { attachGameServer, handleHttp } from './realtime.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 3000;
@@ -95,8 +95,10 @@ function lanAddresses() {
     .map((a) => a.address);
 }
 
-const httpServer = http.createServer(serveStatic);
-const httpsServer = https.createServer(await loadCertificate(), serveStatic);
+// /api/* is the game's HTTP polling fallback; everything else is a static file.
+const handleRequest = (req, res) => handleHttp(req, res) || serveStatic(req, res);
+const httpServer = http.createServer(handleRequest);
+const httpsServer = https.createServer(await loadCertificate(), handleRequest);
 
 for (const server of [httpServer, httpsServer]) attachGameServer(server);
 

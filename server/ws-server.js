@@ -5,11 +5,12 @@
 // runs server/index.js and serves everything from one process.
 
 import http from 'node:http';
-import { attachGameServer } from './realtime.js';
+import { attachGameServer, handleHttp } from './realtime.js';
 
 const PORT = Number(process.env.PORT) || 4000;
 
 const server = http.createServer((req, res) => {
+  if (handleHttp(req, res)) return; // /api/*: the game's HTTP polling fallback
   res.writeHead(200, { 'Content-Type': 'text/plain' }).end('laser-tag backend\n');
 });
 

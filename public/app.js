@@ -1,5 +1,6 @@
 import { createDetector, detectPeople, headBox, contains } from './detector.js';
 import { extractSignature, Tracker } from './identify.js';
+import { openPolling, openWebSocket } from './transport.js';
 import * as sound from './sound.js';
 
 const $ = (id) => document.getElementById(id);
@@ -22,7 +23,8 @@ const SCAN_STEPS = [
 const state = {
   name: '',
   room: '',
-  ws: null,
+  conn: null, // connection to the game server (transport.js)
+  usePolling: false, // set once WebSocket has failed to connect on this network
   myId: null,
   game: null, // latest state snapshot from the server (hp, status, ...)
   roster: [], // latest roster from the server (id, name, gallery)
@@ -164,37 +166,40 @@ $('scan-join-btn').addEventListener('click', () => {
   $('game-screen').hidden = false;
   state.mode = 'game';
   state.scanDone = true;
-  sendJoin(); // if the socket isn't open yet, onopen sends it
+  sendJoin(); // if the connection isn't open yet, onOpen sends it
   renderHud();
 });
 
 // ---- Networking ----
 
-// Shown when the socket keeps failing before it ever opens. The usual cause is a phone browser
-// (iPhone Safari especially) that let the player past the self-signed certificate warning for
-// the page, but still silently refuses the WebSocket to the same address.
-const UNREACHABLE_MESSAGE =
-  "Can't connect to the game server. If you opened the self-signed https:// address, your browser " +
-  'may be blocking the game connection: use the trusted https:// link instead (see the README). Still retrying…';
+const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 
+// Tries WebSocket first. If it never opens, this network blocks it (some proxies reject the
+// upgrade outright), so retry straight away with HTTP polling and stick with that.
 function connect() {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   let opened = false;
-  state.ws = ws;
-  ws.onopen = () => {
-    opened = true;
-    state.failedConnects = 0;
-    showConnectionProblem(null);
-    sendJoin();
-  };
-  ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
-  ws.onclose = () => {
-    if (state.ws !== ws) return;
-    state.game = null;
-    if (!opened) state.failedConnects++;
-    showConnectionProblem(state.failedConnects >= 2 ? UNREACHABLE_MESSAGE : 'Connection lost. Reconnecting…');
-    setTimeout(connect, 1500);
-  };
+  const conn = (state.usePolling ? openPolling : openWebSocket)({
+    onOpen() {
+      opened = true;
+      state.failedConnects = 0;
+      showConnectionProblem(null);
+      sendJoin();
+    },
+    onMessage: handleMessage,
+    onClose() {
+      if (state.conn !== conn) return;
+      state.game = null;
+      if (!opened && !state.usePolling) {
+        state.usePolling = true;
+        connect();
+        return;
+      }
+      if (!opened) state.failedConnects++;
+      showConnectionProblem(state.failedConnects >= 2 ? UNREACHABLE_MESSAGE : 'Connection lost. Reconnecting…');
+      setTimeout(connect, 1500);
+    },
+  });
+  state.conn = conn;
 }
 
 function sendJoin() {
@@ -210,7 +215,7 @@ function showConnectionProblem(text) {
 }
 
 function send(msg) {
-  if (state.ws?.readyState === WebSocket.OPEN) state.ws.send(JSON.stringify(msg));
+  state.conn?.send(msg);
 }
 
 function handleMessage(msg) {
