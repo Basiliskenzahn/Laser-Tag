@@ -42,36 +42,50 @@ cloudflared tunnel --url http://localhost:3000
 
 ### Running it with Docker
 
+Docker splits the app into two containers instead of one process:
+
+- **`backend`** - just the realtime game server (`server/ws-server.js`), plain HTTP/WS, reachable only from inside the Docker network.
+- **`frontend`** - nginx serving the static client and reverse-proxying `/ws` to `backend`. It also terminates TLS (self-signed, generated on first start), so phones only ever talk to this one HTTPS origin - `app.js`'s same-origin WebSocket URL needs no change, and there's no mixed-content/second-certificate problem for phones to click through.
+
 ```bash
 docker compose up --build
 ```
 
-This builds the image and publishes the same two ports as `npm start`: `http://localhost:3000` and `https://localhost:3443`. A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
+This publishes the same two ports `npm start` would: `http://localhost:3000` and `https://localhost:3443` (both now served by the `frontend` container). A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
 
-For phones on the LAN, use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - the address the container prints to its own logs is its *internal* container IP, not something a phone on your Wi-Fi can reach, so ignore that line and look up the host's IP yourself (`ip addr` / `ipconfig`).
+For phones on the LAN, use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - look it up yourself (`ip addr` / `ipconfig`); nothing in the containers' logs gives you the host's address.
 
-Without compose:
+Without compose, build and run each image and connect them manually:
 
 ```bash
-docker build -t laser-tag .
-docker run --rm -p 3000:3000 -p 3443:3443 laser-tag
+docker build -t laser-tag-backend -f backend/Dockerfile .
+docker build -t laser-tag-frontend -f frontend/Dockerfile .
+docker network create laser-tag
+docker run --rm -d --network laser-tag --name backend laser-tag-backend
+docker run --rm -p 3000:80 -p 3443:443 --network laser-tag laser-tag-frontend
 ```
 
 ## Project layout
 
 ```
 server/
-  index.js        HTTP/HTTPS static server + WebSocket game server
-  game.js         Room logic (players, HP, countdown, knockouts); no networking
-  game.test.js    Unit tests: npm test
+  index.js        Combined dev server (static files + game) for `npm start` - not used by Docker
+  ws-server.js     Backend container's entrypoint: just the realtime game server
+  realtime.js      WebSocket protocol + room/player bookkeeping, shared by both of the above
+  game.js          Room logic (players, HP, countdown, knockouts); no networking
+  game.test.js     Unit tests: npm test
 public/
   index.html      Join screen and game screen
   app.js          Camera, render loop, HUD, shooting, networking
   detector.js     MediaPipe person detection and hitbox maths
   sound.js        Synthesised sound effects (Web Audio)
   models/         EfficientDet-Lite0 model, committed so the game works offline
-Dockerfile          Single-stage image: npm ci --omit=dev, then `node server/index.js`
-docker-compose.yml  `docker compose up --build`, with a volume so the self-signed cert persists
+backend/Dockerfile    Backend container: node server/ws-server.js
+frontend/
+  Dockerfile        Frontend container: nginx serving public/ + reverse-proxying /ws to backend
+  nginx.conf        The static + reverse-proxy + TLS config above
+  entrypoint.sh     Generates the self-signed cert on first start, then execs nginx
+docker-compose.yml  `docker compose up --build` wires the two containers together
 ```
 
 ## Limitations and ideas for next steps

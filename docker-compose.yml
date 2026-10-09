@@ -1,12 +1,23 @@
 services:
-  laser-tag:
-    build: .
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    expose:
+      - '4000' # internal only - reached through the frontend's nginx reverse proxy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
-      - '3000:3000'
-      - '3443:3443'
+      - '3000:80'
+      - '3443:443'
     volumes:
       # Keep the self-signed cert across restarts so phones don't have to re-accept it.
-      - certs:/app/.certs
+      - certs:/certs
+    depends_on:
+      - backend
 
 volumes:
   certs:
