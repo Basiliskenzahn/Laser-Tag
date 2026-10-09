@@ -11,7 +11,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     ports:
-      - '3000:80'
+      - '8080:80'
       - '3443:443'
     volumes:
       # Keep the self-signed cert across restarts so phones don't have to re-accept it.
