@@ -40,6 +40,23 @@ cloudflared tunnel --url http://localhost:3000
 
 **Testing on a laptop:** `http://localhost:3000` works with the webcam (browsers allow camera access on localhost). Press space to fire. Add `?debug` to the URL to show detector FPS and inference time.
 
+### Running it with Docker
+
+```bash
+docker compose up --build
+```
+
+This builds the image and publishes the same two ports as `npm start`: `http://localhost:3000` and `https://localhost:3443`. A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
+
+For phones on the LAN, use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - the address the container prints to its own logs is its *internal* container IP, not something a phone on your Wi-Fi can reach, so ignore that line and look up the host's IP yourself (`ip addr` / `ipconfig`).
+
+Without compose:
+
+```bash
+docker build -t laser-tag .
+docker run --rm -p 3000:3000 -p 3443:3443 laser-tag
+```
+
 ## Project layout
 
 ```
@@ -53,6 +70,8 @@ public/
   detector.js     MediaPipe person detection and hitbox maths
   sound.js        Synthesised sound effects (Web Audio)
   models/         EfficientDet-Lite0 model, committed so the game works offline
+Dockerfile          Single-stage image: npm ci --omit=dev, then `node server/index.js`
+docker-compose.yml  `docker compose up --build`, with a volume so the self-signed cert persists
 ```
 
 ## Limitations and ideas for next steps
