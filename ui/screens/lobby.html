@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0f14" />
+    <link rel="icon" href="data:," />
+    <title>Lobby · Laser Tag</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="../components.css" />
+  </head>
+  <body>
+    <main class="screen">
+      <div class="stack stack--tight">
+        <h1 class="title">Laser Tag</h1>
+        <p class="subtitle">Two players. Phones only.</p>
+      </div>
+
+      <section class="card">
+        <span class="label">Room code</span>
+        <span class="room-code">K7QX</span>
+        <button class="btn btn--link" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="9" width="12" height="12" rx="2"></rect>
+            <path d="M5 15V5a2 2 0 0 1 2-2h10"></path>
+          </svg>
+          Copy invite link
+        </button>
+      </section>
+
+      <section class="list" aria-label="Players">
+        <div class="list__header"><span>Players</span><span>2 / 2</span></div>
+        <div class="list__row">
+          <span class="list__title">Nova <span class="muted">(you)</span></span>
+          <span class="status">Ready</span>
+        </div>
+        <div class="list__row">
+          <span class="list__title">Rex</span>
+          <span class="status status--inactive">Not ready</span>
+        </div>
+      </section>
+
+      <div class="spacer"></div>
+
+      <div class="stack">
+        <button class="btn btn--primary" type="button">I'm ready</button>
+        <p class="hint">The round starts when both players are ready.</p>
+      </div>
+    </main>
+  </body>
+</html>

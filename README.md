@@ -28,6 +28,8 @@ A working two-player demo lives on the [`demo`](https://github.com/Basiliskenzah
 
 _TBD once the stack is scaffolded._
 
+The visual design (colours, components, screens and hitbox drawing) lives in [`ui/`](ui/). See its [README](ui/README.md).
+
 ## Team
 
 - David Wermuth ([@Basiliskenzahn](https://github.com/Basiliskenzahn))

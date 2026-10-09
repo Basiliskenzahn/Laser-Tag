@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b0f14" />
+    <link rel="icon" href="data:," />
+    <title>Laser Tag UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="components.css" />
+    <style>
+      /* Style guide layout only; not part of the kit. */
+      .guide {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 48px 16px 96px;
+        display: flex;
+        flex-direction: column;
+        gap: 56px;
+      }
+      .guide h2 {
+        margin: 0 0 16px;
+        font-size: var(--text-xl);
+      }
+      .guide a {
+        color: var(--color-text);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+      }
+      .col {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-width: 380px;
+      }
+      .swatches {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+        gap: 12px;
+      }
+      .swatch {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: var(--text-xs);
+      }
+      .swatch::before {
+        content: '';
+        height: 56px;
+        border-radius: var(--radius-md);
+        border: 1px solid var(--color-border);
+        background: var(--c);
+      }
+      .swatch code {
+        color: var(--color-text-muted);
+      }
+      .camera-panel {
+        position: relative;
+        height: 200px;
+        border-radius: var(--radius-lg);
+        background: #5c5f66;
+        overflow: hidden;
+      }
+      .camera-panel .popup,
+      .camera-panel .crosshair {
+        animation: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="guide">
+      <header class="stack stack--tight">
+        <h1 class="title">Laser Tag UI</h1>
+        <p class="subtitle">
+          Screens: <a href="screens/join.html">Join</a> · <a href="screens/lobby.html">Lobby</a> ·
+          <a href="screens/game.html">In game</a> · <a href="screens/result.html">Result</a>
+        </p>
+      </header>
+
+      <section>
+        <h2>Colour</h2>
+        <div class="swatches">
+          <div class="swatch" style="--c: var(--color-bg)">Background<code>--color-bg</code></div>
+          <div class="swatch" style="--c: var(--color-surface)">Surface<code>--color-surface</code></div>
+          <div class="swatch" style="--c: var(--color-border-strong)">Border<code>--color-border-strong</code></div>
+          <div class="swatch" style="--c: var(--color-text)">Text<code>--color-text</code></div>
+          <div class="swatch" style="--c: var(--color-text-muted)">Muted text<code>--color-text-muted</code></div>
+          <div class="swatch" style="--c: var(--color-accent)">Accent, target<code>--color-accent</code></div>
+          <div class="swatch" style="--c: var(--color-positive)">Ready, health, idle hitbox<code>--color-positive</code></div>
+          <div class="swatch" style="--c: var(--color-star)">Wins, headshots<code>--color-star</code></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Type</h2>
+        <div class="col">
+          <span class="title title--xl">Title XL 48</span>
+          <span class="title">Title 40</span>
+          <span style="font-size: var(--text-lg); font-weight: 600">Body large 19</span>
+          <span>Body 17</span>
+          <span class="label">Label 13</span>
+          <span class="room-code">K7QX</span>
+        </div>
+      </section>
+
+      <section>
+        <h2>Buttons</h2>
+        <div class="row">
+          <button class="btn btn--primary" type="button">I'm ready</button>
+          <button class="btn btn--light" type="button">Rematch</button>
+          <button class="btn btn--ghost" type="button">Leave room</button>
+          <button class="btn btn--primary" type="button" disabled>Disabled</button>
+          <button class="btn btn--link" type="button">Copy invite link</button>
+          <button class="fire-btn" type="button">FIRE</button>
+          <button class="fire-btn" type="button" disabled>FIRE</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>Fields and lists</h2>
+        <div class="col">
+          <label class="field">Your name<input class="input" value="Nova" /></label>
+          <div class="list">
+            <div class="list__header"><span>Players</span><span>2 / 2</span></div>
+            <div class="list__row"><span class="list__title">Nova <span class="muted">(you)</span></span><span class="status">Ready</span></div>
+            <div class="list__row"><span class="list__title">Rex</span><span class="status status--inactive">Not ready</span></div>
+          </div>
+          <div class="list">
+            <div class="list__row"><span class="list__label">Accuracy</span><span class="list__value">64%</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Game overlay</h2>
+        <div class="stack">
+          <div class="camera-panel">
+            <header class="hud">
+              <div class="hud__player">
+                <div class="hud__name"><span>Nova</span><span class="hud__wins">★2</span></div>
+                <div class="hp"><div class="hp__fill" style="width: 80%"></div></div>
+              </div>
+              <div class="hud__player hud__player--opponent">
+                <div class="hud__name"><span class="hud__wins">★1</span><span>Rex</span></div>
+                <div class="hp"><div class="hp__fill is-low" style="width: 20%"></div></div>
+              </div>
+            </header>
+            <div class="crosshair" style="left: 25%; top: 65%"></div>
+            <div class="crosshair is-on-target" style="left: 50%; top: 65%"></div>
+            <div class="popups" style="left: 75%; top: 65%">
+              <div class="popup popup--headshot">HEADSHOT −50</div>
+            </div>
+          </div>
+          <div class="camera-panel">
+            <div class="banner" style="top: 24px">
+              <p class="banner__text">Waiting for an opponent… Room code: K7QX</p>
+              <p class="banner__text banner__text--countdown">3</p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

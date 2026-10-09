@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b0f14" />
+    <link rel="icon" href="data:," />
+    <title>Join · Laser Tag</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="../components.css" />
+  </head>
+  <body>
+    <form class="screen">
+      <div class="stack stack--tight">
+        <h1 class="title">Laser Tag</h1>
+        <p class="subtitle">Two players. Phones only.</p>
+      </div>
+
+      <div class="stack">
+        <label class="field">
+          Your name
+          <input class="input" name="name" maxlength="20" autocomplete="nickname" required />
+        </label>
+        <label class="field">
+          Room code
+          <input class="input mono" name="room" maxlength="16" autocapitalize="characters" autocomplete="off" spellcheck="false" required />
+        </label>
+      </div>
+
+      <div class="spacer"></div>
+
+      <div class="stack">
+        <button class="btn btn--primary" type="submit">Join game</button>
+        <p class="hint">Both players enter the same room code. You'll be asked for camera access.</p>
+      </div>
+    </form>
+  </body>
+</html>

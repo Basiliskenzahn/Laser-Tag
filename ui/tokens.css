@@ -1,0 +1,62 @@
+/* Design tokens for Laser Tag. Every colour, size and timing the UI uses is defined here. */
+
+:root {
+  color-scheme: dark;
+
+  /* Colour */
+  --color-bg: #0b0f14;
+  --color-surface: #121a23;
+  --color-border: #1f2a36;
+  --color-border-strong: #2a3542;
+  --color-text: #e8eef5;
+  --color-text-secondary: #c9d3de;
+  --color-text-muted: #8a97a6;
+  --color-accent: #ff2e4d;
+  --color-on-accent: #ffffff;
+  --color-positive: #39ff88; /* ready, health, idle hitbox */
+  --color-inactive: #4a5562;
+  --color-star: #ffd84d; /* round wins, headshots */
+  --color-scrim: rgba(11, 15, 20, 0.6);
+
+  /* Game overlay */
+  --hitbox-idle: var(--color-positive);
+  --hitbox-target: var(--color-accent);
+  --hitbox-line: 3;
+  --hp-track: rgba(255, 255, 255, 0.18);
+  --hp-fill: var(--color-positive);
+  --hp-fill-low: var(--color-accent);
+
+  /* Type */
+  --font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --text-xs: 13px;
+  --text-sm: 15px;
+  --text-md: 17px;
+  --text-lg: 19px;
+  --text-xl: 22px;
+  --text-2xl: 40px;
+  --text-3xl: 48px;
+  --text-countdown: 72px;
+
+  /* Space */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 36px;
+  --space-7: 64px;
+
+  /* Shape */
+  --radius-sm: 4px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+  --touch-target: 44px;
+
+  /* Motion */
+  --duration-fast: 80ms;
+  --duration: 200ms;
+  --duration-slow: 500ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}

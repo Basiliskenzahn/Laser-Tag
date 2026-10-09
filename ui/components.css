@@ -1,0 +1,569 @@
+/* Laser Tag components. Load tokens.css first. */
+
+/* ---- Base ---- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-text);
+  outline-offset: 2px;
+}
+
+/* ---- Layout ---- */
+
+/* A full-height phone screen: content at the top, actions pushed to the bottom with .spacer. */
+.screen {
+  min-height: 100dvh;
+  max-width: 480px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  padding: calc(var(--space-7) + env(safe-area-inset-top)) var(--space-5)
+    calc(var(--space-6) + env(safe-area-inset-bottom));
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.stack--tight {
+  gap: var(--space-2);
+}
+
+.spacer {
+  flex-grow: 1;
+}
+
+/* ---- Type ---- */
+
+.title {
+  margin: 0;
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.title--xl {
+  font-size: var(--text-3xl);
+}
+
+.subtitle {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
+}
+
+.label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.hint {
+  margin: 0;
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.muted {
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* ---- Card ---- */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.room-code {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  line-height: 1.1;
+}
+
+/* ---- Form fields ---- */
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.input {
+  height: 52px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-lg);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-text-muted);
+}
+
+/* ---- Buttons ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  min-height: var(--touch-target);
+  padding: 0 var(--space-5);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  font-size: var(--text-md);
+  font-weight: 600;
+  text-decoration: none;
+  transition: transform var(--duration-fast), filter var(--duration-fast);
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn--primary {
+  height: 56px;
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.btn--light {
+  height: 56px;
+  background: #ffffff;
+  color: var(--color-bg);
+  font-size: var(--text-lg);
+  font-weight: 700;
+}
+
+.btn--ghost {
+  height: 52px;
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-text);
+}
+
+.btn--link {
+  align-self: flex-start;
+  padding: 0;
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+}
+
+.btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---- Lists ---- */
+
+.list {
+  display: flex;
+  flex-direction: column;
+}
+
+.list__header {
+  display: flex;
+  justify-content: space-between;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.list__row:last-child {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.list__title {
+  flex-grow: 1;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.list__label {
+  flex-grow: 1;
+  color: var(--color-text-muted);
+}
+
+.list__value {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Ready / not ready, with a coloured dot. */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-positive);
+}
+
+.status--inactive {
+  color: var(--color-text-muted);
+}
+
+.status--inactive::before {
+  background: var(--color-inactive);
+}
+
+/* ---- Game screen ---- */
+
+/* Layers, back to front: camera video, hitbox canvas, effects, HUD, controls. */
+.game {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #000000;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.game__camera,
+.game__overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.game__camera {
+  object-fit: cover;
+}
+
+.game__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--space-6) + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+}
+
+/* Health and round wins for both players. */
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+  padding: calc(var(--space-4) + env(safe-area-inset-top)) var(--space-4) 14px;
+  background: var(--color-scrim);
+  pointer-events: none;
+}
+
+.hud__player {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hud__name {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 2px #000000;
+}
+
+.hud__wins {
+  color: var(--color-star);
+}
+
+.hud__player--opponent .hud__name {
+  justify-content: flex-end;
+}
+
+/* Health bar. Set the fill's width in %, and add .is-low at 30% or less. */
+.hp {
+  height: 8px;
+  border-radius: var(--radius-sm);
+  background: var(--hp-track);
+  overflow: hidden;
+}
+
+.hp__fill {
+  width: 100%;
+  height: 100%;
+  background: var(--hp-fill);
+  transition: width var(--duration) var(--ease-out);
+}
+
+.hp__fill.is-low {
+  background: var(--hp-fill-low);
+}
+
+.hud__player--opponent .hp {
+  transform: scaleX(-1);
+}
+
+/* Crosshair, always at the exact centre of the screen. States: .is-on-target, .is-hit. */
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  color: #ffffff;
+  pointer-events: none;
+  filter: drop-shadow(0 0 2px #000000);
+  transition: color var(--duration-fast), transform var(--duration-fast);
+}
+
+.crosshair::before,
+.crosshair::after {
+  content: '';
+  position: absolute;
+}
+
+.crosshair::before {
+  left: 50%;
+  top: -10px;
+  bottom: -10px;
+  width: 2px;
+  margin-left: -1px;
+  background: linear-gradient(currentColor 0 14px, transparent 14px calc(100% - 14px), currentColor 0);
+}
+
+.crosshair::after {
+  top: 50%;
+  left: -10px;
+  right: -10px;
+  height: 2px;
+  margin-top: -1px;
+  background: linear-gradient(90deg, currentColor 0 14px, transparent 14px calc(100% - 14px), currentColor 0);
+}
+
+.crosshair.is-on-target {
+  color: var(--hitbox-target);
+  transform: scale(0.85);
+}
+
+.crosshair.is-hit {
+  animation: crosshair-hit var(--duration) ease-out;
+}
+
+@keyframes crosshair-hit {
+  50% {
+    transform: scale(1.35);
+  }
+}
+
+/* Floating damage numbers above the crosshair. Append a .popup to .popups; remove it on animationend. */
+.popups {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 60px);
+  pointer-events: none;
+}
+
+.popup {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: var(--text-xl);
+  font-weight: 800;
+  color: #ffffff;
+  text-shadow: 0 1px 3px #000000;
+  animation: popup-rise 800ms ease-out forwards;
+}
+
+.popup--headshot {
+  color: var(--color-star);
+}
+
+@keyframes popup-rise {
+  to {
+    opacity: 0;
+    transform: translate(-50%, -40px);
+  }
+}
+
+/* Red edge flash when the player is hit. Re-add .is-active to replay it. */
+.damage-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 0, 30, 0.85));
+}
+
+.damage-flash.is-active {
+  animation: damage-flash var(--duration-slow) ease-out;
+}
+
+@keyframes damage-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Messages over the camera: waiting, countdown, round over. */
+.banner {
+  position: absolute;
+  left: var(--space-4);
+  right: var(--space-4);
+  top: 30%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  text-align: center;
+  pointer-events: none;
+}
+
+.banner__text {
+  margin: 0;
+  padding: 10px var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-scrim);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.banner__text--countdown {
+  padding: 0;
+  background: none;
+  font-size: var(--text-countdown);
+  text-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+}
+
+.banner .btn {
+  pointer-events: auto;
+}
+
+/* The round FIRE button. Add .is-firing on each shot; disable it during the cooldown. */
+.fire-btn {
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.85);
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  box-shadow: 0 0 24px rgba(255, 46, 77, 0.6);
+  touch-action: manipulation;
+  transition: transform var(--duration-fast), filter var(--duration-fast);
+}
+
+.fire-btn:active {
+  transform: scale(0.92);
+  filter: brightness(1.25);
+}
+
+.fire-btn.is-firing {
+  animation: fire-press 160ms ease-out;
+}
+
+@keyframes fire-press {
+  40% {
+    transform: scale(0.9);
+    filter: brightness(1.3);
+  }
+}
+
+.fire-btn:disabled {
+  filter: saturate(0.4) brightness(0.7);
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .crosshair.is-hit,
+  .popup,
+  .damage-flash.is-active {
+    animation-duration: 1ms;
+  }
+}

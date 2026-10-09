@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0b0f14" />
+    <link rel="icon" href="data:," />
+    <title>In game · Laser Tag</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="../tokens.css" />
+    <link rel="stylesheet" href="../components.css" />
+    <style>
+      /* Preview only: a stand-in for the camera feed with a person in the middle. */
+      .preview-camera {
+        background: linear-gradient(#6e7179 0 68%, #4c4f56 68%);
+      }
+      .preview-person {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+      }
+      .preview-person span {
+        position: absolute;
+        background: #2e3036;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="game">
+      <div class="game__camera preview-camera" aria-hidden="true">
+        <div class="preview-person">
+          <span style="left: -29px; top: -138px; width: 68px; height: 68px; border-radius: 50%"></span>
+          <span style="left: -67px; top: -62px; width: 144px; height: 262px; border-radius: 72px 72px 22px 22px"></span>
+          <span style="left: -55px; top: 188px; width: 56px; height: 180px; border-radius: 12px"></span>
+          <span style="left: 9px; top: 188px; width: 56px; height: 180px; border-radius: 12px"></span>
+        </div>
+      </div>
+      <canvas class="game__overlay"></canvas>
+      <div class="damage-flash"></div>
+      <div class="crosshair"></div>
+      <div class="popups"></div>
+
+      <header class="hud">
+        <div class="hud__player">
+          <div class="hud__name"><span>Nova</span><span class="hud__wins">★2</span></div>
+          <div class="hp"><div class="hp__fill" style="width: 80%"></div></div>
+        </div>
+        <div class="hud__player hud__player--opponent">
+          <div class="hud__name"><span class="hud__wins">★1</span><span>Rex</span></div>
+          <div class="hp"><div class="hp__fill" style="width: 40%"></div></div>
+        </div>
+      </header>
+
+      <div class="banner" hidden>
+        <p class="banner__text">Waiting for an opponent…</p>
+      </div>
+
+      <div class="game__controls">
+        <button class="fire-btn" type="button" aria-label="Fire">FIRE</button>
+      </div>
+    </main>
+
+    <script type="module">
+      // Preview behaviour: tap anywhere to toggle whether the crosshair is on the person; FIRE plays the shot effects.
+      import { drawHitboxes } from '../hitbox.js';
+
+      const game = document.querySelector('.game');
+      const canvas = document.querySelector('.game__overlay');
+      const crosshair = document.querySelector('.crosshair');
+      const fireButton = document.querySelector('.fire-btn');
+      let targeted = true;
+
+      function restartAnimation(el, className) {
+        el.classList.remove(className);
+        void el.offsetWidth; // reflow so the animation plays again
+        el.classList.add(className);
+      }
+
+      // No camera here, so the "video" is the screen itself, with the person centred on it.
+      function render() {
+        const w = canvas.clientWidth;
+        const h = canvas.clientHeight;
+        const cx = w / 2;
+        const cy = h / 2;
+        const person = {
+          x: cx - 79, y: cy - 152, w: 168, h: 520, score: 0.94, targeted,
+          head: { x: cx - 37, y: cy - 152, w: 84, h: 104 },
+        };
+        drawHitboxes(canvas, [person], { videoWidth: w, videoHeight: h });
+        crosshair.classList.toggle('is-on-target', targeted);
+      }
+
+      game.addEventListener('click', (event) => {
+        if (event.target.closest('.fire-btn')) return;
+        targeted = !targeted;
+        render();
+      });
+
+      fireButton.addEventListener('pointerdown', () => {
+        restartAnimation(fireButton, 'is-firing');
+        if (!targeted) return;
+        restartAnimation(crosshair, 'is-hit');
+        const popup = document.createElement('div');
+        popup.className = 'popup';
+        popup.textContent = '−20';
+        popup.addEventListener('animationend', () => popup.remove());
+        document.querySelector('.popups').append(popup);
+      });
+      fireButton.addEventListener('animationend', () => fireButton.classList.remove('is-firing'));
+
+      window.addEventListener('resize', render);
+      document.fonts.ready.then(render);
+      render();
+    </script>
+  </body>
+</html>
