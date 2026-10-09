@@ -1,0 +1,12 @@
+services:
+  laser-tag:
+    build: .
+    ports:
+      - '3000:3000'
+      - '3443:3443'
+    volumes:
+      # Keep the self-signed cert across restarts so phones don't have to re-accept it.
+      - certs:/app/.certs
+
+volumes:
+  certs:
