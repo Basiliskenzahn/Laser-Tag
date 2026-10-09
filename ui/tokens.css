@@ -1,4 +1,19 @@
-/* Design tokens for Laser Tag. Every colour, size and timing the UI uses is defined here. */
+/* Design tokens for Laser Tag. Every colour, font, size and timing the UI uses is defined here. */
+
+/* Fonts ship with the kit so the game looks the same without internet access. */
+@font-face {
+  font-family: 'Geist';
+  src: url('fonts/geist.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('fonts/geist-mono.woff2') format('woff2');
+  font-weight: 100 900;
+  font-display: swap;
+}
 
 :root {
   color-scheme: dark;
@@ -6,25 +21,41 @@
   /* Colour */
   --color-bg: #0b0f14;
   --color-surface: #121a23;
-  --color-border: #1f2a36;
-  --color-border-strong: #2a3542;
+  --color-border: #1f2a36; /* dividers */
+  --color-border-strong: #5c6878; /* inputs and outlined buttons; 3:1 against surface */
   --color-text: #e8eef5;
   --color-text-secondary: #c9d3de;
   --color-text-muted: #8a97a6;
   --color-accent: #ff2e4d;
   --color-on-accent: #ffffff;
   --color-positive: #39ff88; /* ready, health, idle hitbox */
-  --color-inactive: #4a5562;
+  --color-inactive: #5c6878;
   --color-star: #ffd84d; /* round wins, headshots */
-  --color-scrim: rgba(11, 15, 20, 0.6);
+  --color-danger-surface: #2a1218;
 
-  /* Game overlay */
+  /* On top of the camera feed, where the background can be anything */
+  --color-on-camera: #ffffff;
+  --shadow-on-camera: 0 1px 3px rgba(0, 0, 0, 0.75);
+  --color-scrim: rgba(11, 15, 20, 0.72);
+  --color-damage: rgba(255, 0, 30, 0.85);
+
+  /* Hitboxes (read by hitbox.js) */
   --hitbox-idle: var(--color-positive);
   --hitbox-target: var(--color-accent);
   --hitbox-line: 3;
+  --hitbox-line-target: 4; /* thicker, so targeting doesn't rely on colour alone */
+  --hitbox-halo: rgba(0, 0, 0, 0.55); /* keeps boxes visible on light walls */
+  --hitbox-label-bg: rgba(11, 15, 20, 0.8);
+
+  /* Health bars */
   --hp-track: rgba(255, 255, 255, 0.18);
   --hp-fill: var(--color-positive);
   --hp-fill-low: var(--color-accent);
+
+  /* FIRE button */
+  --fire-size: 104px;
+  --fire-ring: rgba(255, 255, 255, 0.85);
+  --fire-glow: rgba(255, 46, 77, 0.6);
 
   /* Type */
   --font-sans: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
@@ -47,11 +78,17 @@
   --space-6: 36px;
   --space-7: 64px;
 
+  /* Screen rhythm, tighter on short phones */
+  --screen-pad-top: clamp(var(--space-5), 7vh, var(--space-7));
+  --screen-pad-bottom: clamp(var(--space-4), 4vh, var(--space-6));
+  --screen-gap: clamp(20px, 4vh, var(--space-6));
+
   /* Shape */
   --radius-sm: 4px;
   --radius-md: 12px;
   --radius-lg: 14px;
   --radius-full: 999px;
+  --control-height: 56px;
   --touch-target: 44px;
 
   /* Motion */

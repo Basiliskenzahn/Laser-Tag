@@ -1,10 +1,10 @@
 // Draws detected people as hitboxes on a canvas, in the Laser Tag style:
 // a solid box around the person, a dashed head box, and the detection confidence.
-// Colours and line width come from tokens.css, so restyling happens there.
+// Colours and line widths come from tokens.css, so restyling happens there.
 //
 // Box format, in video pixel coordinates (whatever the detection code produces):
 //   { x, y, w, h, score?, head?: { x, y, w, h }, targeted?: boolean }
-// `targeted` boxes are drawn in the target colour, the rest in the idle colour.
+// `targeted` boxes are drawn thicker and in the target colour, the rest in the idle colour.
 
 // Maps video pixels to screen pixels the same way CSS `object-fit: cover` does.
 export function coverTransform(videoWidth, videoHeight, viewWidth, viewHeight) {
@@ -40,10 +40,24 @@ function readTokens() {
   tokens = {
     idle: get('--hitbox-idle', '#39ff88'),
     target: get('--hitbox-target', '#ff2e4d'),
-    lineWidth: parseFloat(get('--hitbox-line', '3')),
+    line: parseFloat(get('--hitbox-line', '3')),
+    lineTarget: parseFloat(get('--hitbox-line-target', '4')),
+    halo: get('--hitbox-halo', 'rgba(0, 0, 0, 0.55)'),
+    labelBg: get('--hitbox-label-bg', 'rgba(11, 15, 20, 0.8)'),
     font: `600 13px ${get('--font-sans', 'system-ui, sans-serif')}`,
   };
   return tokens;
+}
+
+// A coloured line over a wider dark one, so it stays visible on light and dark backgrounds.
+function strokeWithHalo(ctx, rect, color, width, halo, dash) {
+  ctx.setLineDash(dash);
+  ctx.strokeStyle = halo;
+  ctx.lineWidth = width + 3;
+  ctx.strokeRect(...rect);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.strokeRect(...rect);
 }
 
 // Clears the canvas and draws every box. Call once per frame.
@@ -54,25 +68,29 @@ export function drawHitboxes(canvas, boxes, { videoWidth, videoHeight }) {
   const { scale, offsetX, offsetY } = coverTransform(videoWidth, videoHeight, width, height);
   const toScreen = (r) => [offsetX + r.x * scale, offsetY + r.y * scale, r.w * scale, r.h * scale];
   const style = readTokens();
-
-  ctx.lineWidth = style.lineWidth;
   ctx.font = style.font;
+  ctx.textBaseline = 'middle';
+
   for (const box of boxes) {
     const color = box.targeted ? style.target : style.idle;
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
+    const line = box.targeted ? style.lineTarget : style.line;
+    const rect = toScreen(box);
 
-    ctx.setLineDash([]);
-    ctx.strokeRect(...toScreen(box));
-
-    if (box.head) {
-      ctx.setLineDash([6, 4]);
-      ctx.strokeRect(...toScreen(box.head));
-    }
+    strokeWithHalo(ctx, rect, color, line, style.halo, []);
+    if (box.head) strokeWithHalo(ctx, toScreen(box.head), color, line, style.halo, [6, 4]);
 
     if (box.score != null) {
-      const [x, y] = toScreen(box);
-      ctx.fillText(`${Math.round(box.score * 100)}%`, x + 4, y + 16);
+      // Tag sits on top of the box, or just inside it when the box touches the top edge.
+      const text = `${Math.round(box.score * 100)}%`;
+      const labelHeight = 20;
+      const x = rect[0] - line / 2;
+      const above = rect[1] - line / 2 - labelHeight;
+      const y = above >= 0 ? above : rect[1] + line;
+      const labelWidth = ctx.measureText(text).width + 10;
+      ctx.fillStyle = style.labelBg;
+      ctx.fillRect(x, y, labelWidth, labelHeight);
+      ctx.fillStyle = color;
+      ctx.fillText(text, x + 5, y + labelHeight / 2 + 0.5);
     }
   }
   ctx.setLineDash([]);

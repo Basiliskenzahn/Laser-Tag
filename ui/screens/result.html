@@ -6,9 +6,6 @@
     <meta name="theme-color" content="#0b0f14" />
     <link rel="icon" href="data:," />
     <title>Result · Laser Tag</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="../components.css" />
   </head>
@@ -16,16 +13,17 @@
     <main class="screen">
       <div class="stack stack--tight">
         <span class="label">Match over</span>
+        <!-- Losing player: "You lose" with the same styling. -->
         <h1 class="title title--xl">You win</h1>
         <p class="subtitle">3 rounds to 1 against Rex.</p>
       </div>
 
-      <section class="list" aria-label="Match stats">
-        <div class="list__row"><span class="list__label">Hits</span><span class="list__value">9 / 14</span></div>
-        <div class="list__row"><span class="list__label">Headshots</span><span class="list__value">3</span></div>
-        <div class="list__row"><span class="list__label">Accuracy</span><span class="list__value">64%</span></div>
-        <div class="list__row"><span class="list__label">Match time</span><span class="list__value">4:12</span></div>
-      </section>
+      <dl class="list" aria-label="Match stats">
+        <div class="list__row"><dt class="list__label">Hits</dt><dd class="list__value">9 / 14</dd></div>
+        <div class="list__row"><dt class="list__label">Headshots</dt><dd class="list__value">3</dd></div>
+        <div class="list__row"><dt class="list__label">Accuracy</dt><dd class="list__value">64%</dd></div>
+        <div class="list__row"><dt class="list__label">Match time</dt><dd class="list__value">4:12</dd></div>
+      </dl>
 
       <div class="spacer"></div>
 

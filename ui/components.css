@@ -19,6 +19,7 @@ body {
   font-size: var(--text-md);
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
   overscroll-behavior: none;
 }
 
@@ -45,14 +46,17 @@ button {
 
 /* A full-height phone screen: content at the top, actions pushed to the bottom with .spacer. */
 .screen {
+  min-height: 100vh;
   min-height: 100dvh;
   max-width: 480px;
   margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
-  padding: calc(var(--space-7) + env(safe-area-inset-top)) var(--space-5)
-    calc(var(--space-6) + env(safe-area-inset-bottom));
+  gap: var(--screen-gap);
+  padding: calc(var(--screen-pad-top) + env(safe-area-inset-top))
+    calc(var(--space-5) + env(safe-area-inset-right))
+    calc(var(--screen-pad-bottom) + env(safe-area-inset-bottom))
+    calc(var(--space-5) + env(safe-area-inset-left));
 }
 
 .stack {
@@ -77,6 +81,7 @@ button {
   font-weight: 700;
   line-height: 1.05;
   letter-spacing: -0.02em;
+  text-wrap: balance;
 }
 
 .title--xl {
@@ -99,6 +104,7 @@ button {
   text-align: center;
   font-size: var(--text-xs);
   color: var(--color-text-muted);
+  text-wrap: balance;
 }
 
 .muted {
@@ -116,7 +122,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: 18px;
+  padding: var(--space-4);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -128,6 +134,7 @@ button {
   font-weight: 600;
   letter-spacing: 0.14em;
   line-height: 1.1;
+  text-transform: uppercase;
 }
 
 /* ---- Form fields ---- */
@@ -135,29 +142,56 @@ button {
 .field {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
 
 .input {
-  height: 52px;
+  height: var(--control-height);
   padding: 0 var(--space-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface);
   color: var(--color-text);
-  font-size: var(--text-lg);
+  font-size: var(--text-lg); /* 16px or more stops iOS zooming in on focus */
+  transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
+}
+
+.input::placeholder {
+  color: var(--color-text-muted);
 }
 
 .input:focus {
   outline: none;
-  border-color: var(--color-text-muted);
+  border-color: var(--color-text);
+  box-shadow: 0 0 0 3px rgba(232, 238, 245, 0.15);
+}
+
+.input[aria-invalid='true'] {
+  border-color: var(--color-accent);
+}
+
+/* Status and error messages, e.g. "Camera access was blocked." */
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+}
+
+.notice--error {
+  background: var(--color-danger-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-accent);
 }
 
 /* ---- Buttons ---- */
 
 .btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -182,30 +216,38 @@ button {
   cursor: default;
 }
 
+@media (hover: hover) {
+  .btn:not(:disabled):hover {
+    filter: brightness(1.1);
+  }
+}
+
+.btn--primary,
+.btn--light,
+.btn--ghost {
+  height: var(--control-height);
+  font-size: var(--text-lg);
+}
+
 .btn--primary {
-  height: 56px;
   background: var(--color-accent);
   color: var(--color-on-accent);
-  font-size: var(--text-lg);
   font-weight: 700;
 }
 
 .btn--light {
-  height: 56px;
-  background: #ffffff;
+  background: var(--color-on-camera);
   color: var(--color-bg);
-  font-size: var(--text-lg);
   font-weight: 700;
 }
 
 .btn--ghost {
-  height: 52px;
   border: 1px solid var(--color-border-strong);
   color: var(--color-text);
 }
 
 .btn--link {
-  align-self: flex-start;
+  width: fit-content;
   padding: 0;
   color: var(--color-accent);
   font-size: var(--text-sm);
@@ -214,13 +256,48 @@ button {
 .btn svg {
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
+}
+
+/* Loading: set aria-busy="true" (and disabled) while something is starting up. */
+.btn[aria-busy='true'] {
+  color: transparent;
+  pointer-events: none;
+}
+
+.btn[aria-busy='true']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 3px solid var(--color-on-accent);
+  border-right-color: transparent;
+  animation: spin 700ms linear infinite;
+}
+
+.btn--light[aria-busy='true']::after {
+  border-color: var(--color-bg);
+  border-right-color: transparent;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ---- Lists ---- */
 
+/* Use on <ul> (players) or <dl> (stats); put a .list__header before it if needed. */
 .list {
   display: flex;
   flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .list__header {
@@ -236,33 +313,41 @@ button {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4) 0;
-  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
 }
 
-.list__row:last-child {
-  border-bottom: 1px solid var(--color-border);
+.list__row:first-child {
+  border-top: 1px solid var(--color-border);
 }
 
 .list__title {
   flex-grow: 1;
-  font-size: 18px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-lg);
   font-weight: 600;
 }
 
 .list__label {
   flex-grow: 1;
+  margin: 0;
   color: var(--color-text-muted);
 }
 
 .list__value {
+  margin: 0;
   font-family: var(--font-mono);
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Ready / not ready, with a coloured dot. */
+/* Ready / not ready, with a dot. The text carries the meaning; the dot is a reinforcement. */
 .status {
   display: inline-flex;
+  flex-shrink: 0;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--text-sm);
@@ -293,6 +378,7 @@ button {
   inset: 0;
   overflow: hidden;
   background: #000000;
+  color: var(--color-on-camera);
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -326,9 +412,11 @@ button {
   left: 0;
   right: 0;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 320px));
+  justify-content: space-between;
   gap: var(--space-4);
-  padding: calc(var(--space-4) + env(safe-area-inset-top)) var(--space-4) 14px;
+  padding: calc(var(--space-4) + env(safe-area-inset-top)) calc(var(--space-4) + env(safe-area-inset-right))
+    var(--space-3) calc(var(--space-4) + env(safe-area-inset-left));
   background: var(--color-scrim);
   pointer-events: none;
 }
@@ -336,7 +424,7 @@ button {
 .hud__player {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -345,10 +433,11 @@ button {
   gap: var(--space-2);
   font-size: var(--text-sm);
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 2px #000000;
+  text-shadow: var(--shadow-on-camera);
 }
 
 .hud__wins {
@@ -359,7 +448,8 @@ button {
   justify-content: flex-end;
 }
 
-/* Health bar. Set the fill's width in %, and add .is-low at 30% or less. */
+/* Health bar. Set the fill's width in %, add .is-low at 30% or less,
+   and keep aria-valuenow on the .hp element in sync. */
 .hp {
   height: 8px;
   border-radius: var(--radius-sm);
@@ -392,7 +482,7 @@ button {
   margin: -22px 0 0 -22px;
   border: 2px solid currentColor;
   border-radius: 50%;
-  color: #ffffff;
+  color: var(--color-on-camera);
   pointer-events: none;
   filter: drop-shadow(0 0 2px #000000);
   transition: color var(--duration-fast), transform var(--duration-fast);
@@ -451,8 +541,9 @@ button {
   white-space: nowrap;
   font-size: var(--text-xl);
   font-weight: 800;
-  color: #ffffff;
-  text-shadow: 0 1px 3px #000000;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-on-camera);
+  text-shadow: var(--shadow-on-camera);
   animation: popup-rise 800ms ease-out forwards;
 }
 
@@ -473,7 +564,7 @@ button {
   inset: 0;
   pointer-events: none;
   opacity: 0;
-  background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 0, 30, 0.85));
+  background: radial-gradient(ellipse at center, transparent 40%, var(--color-damage));
 }
 
 .damage-flash.is-active {
@@ -489,7 +580,7 @@ button {
   }
 }
 
-/* Messages over the camera: waiting, countdown, round over. */
+/* Messages over the camera: waiting, countdown, round over. Give it role="status". */
 .banner {
   position: absolute;
   left: var(--space-4);
@@ -508,14 +599,16 @@ button {
   padding: 10px var(--space-4);
   border-radius: var(--radius-md);
   background: var(--color-scrim);
-  font-size: 20px;
+  font-size: var(--text-lg);
   font-weight: 700;
+  text-wrap: balance;
 }
 
 .banner__text--countdown {
   padding: 0;
   background: none;
   font-size: var(--text-countdown);
+  font-variant-numeric: tabular-nums;
   text-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
 }
 
@@ -525,16 +618,16 @@ button {
 
 /* The round FIRE button. Add .is-firing on each shot; disable it during the cooldown. */
 .fire-btn {
-  width: 104px;
-  height: 104px;
+  width: var(--fire-size);
+  height: var(--fire-size);
   border-radius: 50%;
-  border: 4px solid rgba(255, 255, 255, 0.85);
+  border: 4px solid var(--fire-ring);
   background: var(--color-accent);
   color: var(--color-on-accent);
-  font-size: 18px;
+  font-size: var(--text-lg);
   font-weight: 800;
   letter-spacing: 0.08em;
-  box-shadow: 0 0 24px rgba(255, 46, 77, 0.6);
+  box-shadow: 0 0 24px var(--fire-glow);
   touch-action: manipulation;
   transition: transform var(--duration-fast), filter var(--duration-fast);
 }
@@ -560,8 +653,30 @@ button {
   cursor: default;
 }
 
+/* Landscape: FIRE moves under the right thumb so it doesn't cover the crosshair. */
+@media (orientation: landscape) and (max-height: 540px) {
+  .game__controls {
+    left: auto;
+    top: 50%;
+    right: calc(var(--space-6) + env(safe-area-inset-right));
+    bottom: auto;
+    transform: translateY(-50%);
+  }
+
+  .banner {
+    top: 22%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+  }
+
   .crosshair.is-hit,
+  .fire-btn.is-firing,
   .popup,
   .damage-flash.is-active {
     animation-duration: 1ms;

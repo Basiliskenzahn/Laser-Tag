@@ -6,9 +6,6 @@
     <meta name="theme-color" content="#0b0f14" />
     <link rel="icon" href="data:," />
     <title>Join · Laser Tag</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="../components.css" />
   </head>
@@ -30,9 +27,13 @@
         </label>
       </div>
 
+      <!-- Shown when something goes wrong, e.g. camera blocked or room full. -->
+      <p class="notice notice--error" role="alert" hidden></p>
+
       <div class="spacer"></div>
 
       <div class="stack">
+        <!-- While the camera and detector start: aria-busy="true" and disabled. -->
         <button class="btn btn--primary" type="submit">Join game</button>
         <p class="hint">Both players enter the same room code. You'll be asked for camera access.</p>
       </div>

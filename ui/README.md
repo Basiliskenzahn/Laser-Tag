@@ -5,6 +5,7 @@ The look of the game, separate from the game code. It's plain CSS plus one small
 | File | What it is |
 | --- | --- |
 | `tokens.css` | Every colour, font, size, spacing and timing. Change the look here. |
+| `fonts/` | Geist and Geist Mono, bundled so the game looks right without internet (SIL Open Font License). |
 | `components.css` | Styles for every UI piece: buttons, cards, lists, HUD, crosshair, popups, banners and the FIRE button. |
 | `hitbox.js` | Draws detected people as hitboxes on a canvas. |
 | `index.html` | Style guide showing every component. |
@@ -23,14 +24,11 @@ Then open http://localhost:8000. On the in-game screen, tap anywhere to toggle w
 ## Using it in the app
 
 ```html
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="ui/tokens.css" />
 <link rel="stylesheet" href="ui/components.css" />
 ```
 
-If the fonts can't load (for example offline), everything falls back to the system font.
+The fonts load from `ui/fonts/` through `tokens.css`, so keep the folder structure when copying the kit.
 
 ### Game screen structure
 
@@ -61,8 +59,16 @@ If the fonts can't load (for example offline), everything falls back to the syst
 | `.hp__fill` | `style.width = '<n>%'`, `.is-low` | Health changes; `.is-low` at 30% or less |
 | `.popups` | append `<div class="popup">−20</div>` (`.popup--headshot` for headshots) | A shot landed; remove it on `animationend` |
 | `.banner` | `hidden`; `.banner__text--countdown` for the 3-2-1 | Waiting, countdown, round over |
+| `.hp` | `aria-valuenow` | Keep in sync with the health shown, for screen readers |
+| `.btn` | `aria-busy="true"` plus `disabled` | Shows a spinner, e.g. while the camera and detector start |
+| `.input` | `aria-invalid="true"` | Red border for a rejected value, e.g. a full room |
+| `.notice` / `.notice--error` | `hidden` | Status or error message on the join screen |
 
 To replay an animation, remove the class, force a reflow with `el.offsetWidth`, then add the class again.
+
+In landscape, the FIRE button moves to the right edge, under the thumb, so it doesn't cover the crosshair. That's handled in CSS.
+
+Room codes are displayed in capitals (`.room-code`, and the room input capitalises as you type), so compare codes case-insensitively on the server.
 
 ### Hitboxes
 
@@ -75,6 +81,7 @@ drawHitboxes(canvas, [
 ], { videoWidth: video.videoWidth, videoHeight: video.videoHeight });
 ```
 
-- Boxes with `targeted: true` are drawn in `--hitbox-target` (red), the rest in `--hitbox-idle` (green).
-- `head` and `score` are optional.
+- Boxes with `targeted: true` are drawn thicker and in `--hitbox-target` (red), the rest in `--hitbox-idle` (green). The thickness difference means targeting doesn't rely on colour alone, for colour-blind players.
+- Every line has a dark outline, so boxes stay visible on light walls as well as dark clothing.
+- `head` and `score` are optional. The score tag sits on top of the box.
 - The mapping from video to screen matches `object-fit: cover`, so the boxes line up with the `.game__camera` video.

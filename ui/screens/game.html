@@ -6,15 +6,13 @@
     <meta name="theme-color" content="#0b0f14" />
     <link rel="icon" href="data:," />
     <title>In game · Laser Tag</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="../tokens.css" />
     <link rel="stylesheet" href="../components.css" />
     <style>
       /* Preview only: a stand-in for the camera feed with a person in the middle. */
       .preview-camera {
-        background: linear-gradient(#6e7179 0 68%, #4c4f56 68%);
+        /* A light wall, the hardest case for hitbox visibility. */
+        background: linear-gradient(#d4d6d9 0 68%, #8e9197 68%);
       }
       .preview-person {
         position: absolute;
@@ -37,23 +35,27 @@
           <span style="left: 9px; top: 188px; width: 56px; height: 180px; border-radius: 12px"></span>
         </div>
       </div>
-      <canvas class="game__overlay"></canvas>
-      <div class="damage-flash"></div>
-      <div class="crosshair"></div>
-      <div class="popups"></div>
+      <canvas class="game__overlay" aria-hidden="true"></canvas>
+      <div class="damage-flash" aria-hidden="true"></div>
+      <div class="crosshair" aria-hidden="true"></div>
+      <div class="popups" aria-hidden="true"></div>
 
       <header class="hud">
         <div class="hud__player">
-          <div class="hud__name"><span>Nova</span><span class="hud__wins">★2</span></div>
-          <div class="hp"><div class="hp__fill" style="width: 80%"></div></div>
+          <div class="hud__name"><span>Nova</span><span class="hud__wins" aria-label="2 round wins">★2</span></div>
+          <div class="hp" role="progressbar" aria-label="Your health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="80">
+            <div class="hp__fill" style="width: 80%"></div>
+          </div>
         </div>
         <div class="hud__player hud__player--opponent">
-          <div class="hud__name"><span class="hud__wins">★1</span><span>Rex</span></div>
-          <div class="hp"><div class="hp__fill" style="width: 40%"></div></div>
+          <div class="hud__name"><span class="hud__wins" aria-label="1 round win">★1</span><span>Rex</span></div>
+          <div class="hp" role="progressbar" aria-label="Rex's health" aria-valuemin="0" aria-valuemax="100" aria-valuenow="40">
+            <div class="hp__fill" style="width: 40%"></div>
+          </div>
         </div>
       </header>
 
-      <div class="banner" hidden>
+      <div class="banner" role="status" hidden>
         <p class="banner__text">Waiting for an opponent…</p>
       </div>
 

@@ -6,9 +6,6 @@
     <meta name="theme-color" content="#0b0f14" />
     <link rel="icon" href="data:," />
     <title>Laser Tag UI</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400..800&family=Geist+Mono:wght@500;600&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="tokens.css" />
     <link rel="stylesheet" href="components.css" />
     <style>
@@ -37,7 +34,7 @@
       .col {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 16px;
         max-width: 380px;
       }
       .swatches {
@@ -72,6 +69,23 @@
       .camera-panel .crosshair {
         animation: none;
       }
+      .hitbox-demos {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 12px;
+      }
+      .hitbox-demo {
+        position: relative;
+        height: 240px;
+        border-radius: var(--radius-lg);
+        overflow: hidden;
+      }
+      .hitbox-demo canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
     </style>
   </head>
   <body>
@@ -89,7 +103,7 @@
         <div class="swatches">
           <div class="swatch" style="--c: var(--color-bg)">Background<code>--color-bg</code></div>
           <div class="swatch" style="--c: var(--color-surface)">Surface<code>--color-surface</code></div>
-          <div class="swatch" style="--c: var(--color-border-strong)">Border<code>--color-border-strong</code></div>
+          <div class="swatch" style="--c: var(--color-border-strong)">Input border<code>--color-border-strong</code></div>
           <div class="swatch" style="--c: var(--color-text)">Text<code>--color-text</code></div>
           <div class="swatch" style="--c: var(--color-text-muted)">Muted text<code>--color-text-muted</code></div>
           <div class="swatch" style="--c: var(--color-accent)">Accent, target<code>--color-accent</code></div>
@@ -112,29 +126,49 @@
 
       <section>
         <h2>Buttons</h2>
-        <div class="row">
-          <button class="btn btn--primary" type="button">I'm ready</button>
-          <button class="btn btn--light" type="button">Rematch</button>
-          <button class="btn btn--ghost" type="button">Leave room</button>
-          <button class="btn btn--primary" type="button" disabled>Disabled</button>
-          <button class="btn btn--link" type="button">Copy invite link</button>
-          <button class="fire-btn" type="button">FIRE</button>
-          <button class="fire-btn" type="button" disabled>FIRE</button>
+        <div class="stack">
+          <div class="row">
+            <button class="btn btn--primary" type="button">I'm ready</button>
+            <button class="btn btn--primary" type="button" aria-busy="true" disabled>Join game</button>
+            <button class="btn btn--light" type="button">Rematch</button>
+            <button class="btn btn--ghost" type="button">Leave room</button>
+            <button class="btn btn--primary" type="button" disabled>Disabled</button>
+            <button class="btn btn--link" type="button">Copy invite link</button>
+          </div>
+          <div class="row">
+            <button class="fire-btn" type="button">FIRE</button>
+            <button class="fire-btn" type="button" disabled>FIRE</button>
+          </div>
         </div>
       </section>
 
       <section>
-        <h2>Fields and lists</h2>
+        <h2>Fields, notices and lists</h2>
         <div class="col">
           <label class="field">Your name<input class="input" value="Nova" /></label>
-          <div class="list">
+          <label class="field">Room code<input class="input mono" aria-invalid="true" value="K7QX" /></label>
+          <p class="notice">Starting camera and loading the detector…</p>
+          <p class="notice notice--error" role="alert">Room K7QX already has two players. Pick another code.</p>
+          <div>
             <div class="list__header"><span>Players</span><span>2 / 2</span></div>
-            <div class="list__row"><span class="list__title">Nova <span class="muted">(you)</span></span><span class="status">Ready</span></div>
-            <div class="list__row"><span class="list__title">Rex</span><span class="status status--inactive">Not ready</span></div>
+            <ul class="list">
+              <li class="list__row"><span class="list__title">Nova <span class="muted">(you)</span></span><span class="status">Ready</span></li>
+              <li class="list__row"><span class="list__title">Rex</span><span class="status status--inactive">Not ready</span></li>
+            </ul>
           </div>
-          <div class="list">
-            <div class="list__row"><span class="list__label">Accuracy</span><span class="list__value">64%</span></div>
-          </div>
+          <dl class="list">
+            <div class="list__row"><dt class="list__label">Accuracy</dt><dd class="list__value">64%</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section>
+        <h2>Hitboxes</h2>
+        <div class="hitbox-demos">
+          <div class="hitbox-demo" style="background: #d4d6d9"><canvas data-targeted="false"></canvas></div>
+          <div class="hitbox-demo" style="background: #d4d6d9"><canvas data-targeted="true"></canvas></div>
+          <div class="hitbox-demo" style="background: #2e3036"><canvas data-targeted="false"></canvas></div>
+          <div class="hitbox-demo" style="background: #2e3036"><canvas data-targeted="true"></canvas></div>
         </div>
       </section>
 
@@ -167,5 +201,21 @@
         </div>
       </section>
     </main>
+
+    <script type="module">
+      import { drawHitboxes } from './hitbox.js';
+
+      function render() {
+        for (const canvas of document.querySelectorAll('.hitbox-demo canvas')) {
+          const w = canvas.clientWidth;
+          const h = canvas.clientHeight;
+          const box = { x: w / 2 - 60, y: 24, w: 120, h: h - 48, score: 0.94, targeted: canvas.dataset.targeted === 'true' };
+          box.head = { x: box.x + 30, y: box.y, w: 60, h: box.h * 0.2 };
+          drawHitboxes(canvas, [box], { videoWidth: w, videoHeight: h });
+        }
+      }
+      window.addEventListener('resize', render);
+      document.fonts.ready.then(render);
+    </script>
   </body>
 </html>
