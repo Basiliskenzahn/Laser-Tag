@@ -1,11 +1,11 @@
 // The live round: the frame loop, the overlay, the HUD and the shot.
 //
-// One requestAnimationFrame loop drives every screen that shows the camera. It runs detection
-// only as often as the situation needs - slower once everyone on screen is already identified,
-// and on a shrunken copy of the frame, and not at all on a frame where the browser already has a
-// tap waiting - then draws the overlay for whichever screen is up. A shot is simply "whose hitbox
-// is in the middle of the screen right now", resolved against the same projected boxes the
-// crosshair was drawn from and with no inference of its own, and the server judges the damage.
+// One requestAnimationFrame loop drives every screen that shows the camera. It runs detection as
+// fast as the phone can stand - on a shrunken copy of the frame, aiming for the target cadence and
+// backing off only when the phone cannot keep up (see DETECT_MAX_BUSY_SHARE) - then draws the
+// overlay for whichever screen is up. A shot is simply "whose hitbox is in the middle of the screen
+// right now", resolved against the same projected boxes the crosshair was drawn from and with no
+// inference of its own, and the server judges the damage.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
@@ -33,15 +33,6 @@ const GAME_TRACK_DETECT_INTERVAL_MS = 180;
 const DETECT_MAX_BUSY_SHARE = 0.7;
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
 const GAME_DETECT_MAX_WIDTH = 512;
-// A detection that has come due may be held back this long while the browser has input waiting,
-// so a tap is not queued behind an inference that had not started yet. Bounded, because the
-// alternative starves detection: a finger resting on the FIRE button produces input events
-// indefinitely, and with no bound the boxes would stop updating for as long as it rested there.
-// Past this much lateness the detection runs regardless of what is pending.
-//
-// Sized just over one acquire interval, so at worst this halves the detection rate for as long as
-// input keeps arriving - the boxes get staler, and liveBox() projects further, but neither stops.
-const DETECT_INPUT_DEFER_MAX_MS = 140;
 // The scan screen's preview detection - the green box round whoever a scan would use. It used to
 // run on every new video frame, through detectScanPeople (object detector *plus* pose landmarker)
 // and on the full-resolution video, which made the idle scan screen by far the most expensive
@@ -121,52 +112,6 @@ function refreshScanPreview() {
   state.boxes = scaleBoxes(detectTrackedPeopleFast(state.detector, source, now), scaleX, scaleY);
   inferenceMs = performance.now() - now;
   frames++;
-}
-
-// Is there a tap (or key, or scroll) the browser has taken off the platform queue but not yet
-// dispatched to us? If so, starting a detection now would make it wait for the whole inference -
-// which is the reported bug: "there is some kind of lag if i press the button since other stuff
-// needs to be processed as well". Returning from the frame instead lets the browser dispatch it
-// first, and the detection runs on the next frame about 16 ms later.
-//
-// Chromium-only (`navigator.scheduling.isInputPending`), so it is feature-detected rather than
-// assumed: on any browser without it - every iPhone - this reads false and the loop behaves
-// exactly as it did before. The try/catch is a second line of defence for a build where the
-// method exists but refuses to run (it is documented as restricted in some contexts).
-//
-// Those two guards overlap: the try/catch alone would also turn a missing method into `false`,
-// via a TypeError. The feature check stays because catching an exception on every frame of a
-// 60 Hz loop is not a way to answer a question you can answer with a typeof - but it does mean
-// removing either one on its own leaves the suite green, which is recorded deliberately in
-// test/helpers/mutate-input-latency.py rather than left for someone to discover.
-function inputPending() {
-  const scheduling = globalThis.navigator?.scheduling;
-  if (typeof scheduling?.isInputPending !== 'function') return false;
-  try {
-    return scheduling.isInputPending() === true;
-  } catch {
-    return false;
-  }
-}
-
-// When the detection now due first became due, or 0 when it is not being held back. Only ever
-// set while input is pending, and cleared the moment the detection runs, so it cannot accumulate.
-let detectDueSince = 0;
-
-// Whether to skip this frame's detection because input is waiting. Bounded by
-// DETECT_INPUT_DEFER_MAX_MS from when the detection first came due, so sustained input delays
-// detection but cannot stop it.
-export function deferDetectionForInput(now, { pending = inputPending } = {}) {
-  if (!pending()) {
-    detectDueSince = 0;
-    return false;
-  }
-  if (!detectDueSince) detectDueSince = now;
-  if (now - detectDueSince >= DETECT_INPUT_DEFER_MAX_MS) {
-    detectDueSince = 0;
-    return false;
-  }
-  return true;
 }
 
 function gameDetectInterval(now) {
@@ -449,9 +394,7 @@ export function loop() {
       refreshScanPreview();
     } else if (state.mode === 'game') {
       const now = performance.now();
-      if (now - state.lastGameDetectAt >= gameDetectInterval(now) && !deferDetectionForInput(now)) {
-        refreshGameDetection();
-      }
+      if (now - state.lastGameDetectAt >= gameDetectInterval(now)) refreshGameDetection();
     }
   }
 
