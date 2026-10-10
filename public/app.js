@@ -601,16 +601,19 @@ function gameDetectInterval(now) {
     : GAME_ACQUIRE_DETECT_INTERVAL_MS;
 }
 
-function aliveOpponentCount() {
-  const selfId = localSelfId();
-  const players = state.game?.players ?? state.roster;
-  return players.filter((player) => player.id !== selfId && player.alive !== false).length;
+function rosterCandidateCount() {
+  const ids = new Set();
+  for (const player of state.roster) {
+    if (player.gallery?.length) ids.add(player.id);
+  }
+  if (state.gallery.length) ids.add(localSelfId());
+  return ids.size;
 }
 
 function shouldUsePoseFallback(now, forcePose = false) {
   if (!state.poseDetector) return false;
   if (forcePose) return true;
-  if (aliveOpponentCount() < 2) return false;
+  if (rosterCandidateCount() < 2) return false;
   return now - state.lastGamePoseDetectAt >= GAME_POSE_DETECT_INTERVAL_MS;
 }
 
@@ -817,7 +820,7 @@ function matchingRoster() {
   const selfId = localSelfId();
   const roster = state.roster.filter((player) => player.id !== selfId);
   if (!state.gallery.length) return roster;
-  const self = { id: selfId, name: state.name || 'You', gallery: state.gallery };
+  const self = { id: selfId, name: 'Person', gallery: state.gallery };
   return [...roster, self];
 }
 
@@ -942,6 +945,11 @@ function renderHud() {
   } else {
     text.textContent = ''; // countdown is drawn every frame in loop()
   }
+
+  const fireBtn = $('fire-btn');
+  const canFire = canLocalPlayerFire();
+  fireBtn.hidden = !canFire;
+  fireBtn.disabled = !canFire;
 }
 
 function escapeHtml(s) {
@@ -998,6 +1006,14 @@ function isAlivePlayer(playerId) {
   return gamePlayer(playerId)?.alive === true;
 }
 
+function isDeadPlayer(playerId) {
+  return gamePlayer(playerId)?.alive === false;
+}
+
+function canLocalPlayerFire() {
+  return state.mode === 'game' && state.game?.status === 'playing' && isAlivePlayer(localSelfId());
+}
+
 function isStableTarget(track, now = performance.now()) {
   return Boolean(
     track.playerId &&
@@ -1029,6 +1045,7 @@ function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
 }
 
 function fire() {
+  if (!canLocalPlayerFire()) return;
   const now = performance.now();
   if (now - state.lastShotAt < FIRE_COOLDOWN_MS) return;
   state.lastShotAt = now;
@@ -1038,7 +1055,7 @@ function fire() {
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.
   if (performance.now() - state.lastGameDetectAt > SHOT_REFRESH_MAX_AGE_MS) {
-    refreshGameDetection({ forcePose: aliveOpponentCount() > 1 });
+    refreshGameDetection({ forcePose: rosterCandidateCount() > 1 });
   }
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
   if (hit?.track.playerId && state.game?.status === 'playing') {
@@ -1124,9 +1141,10 @@ function loop() {
       fpsWindowStart = now;
     }
     const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
-    const identified = visibleTracks.filter((t) => t.playerId);
+    const identified = visibleTracks.filter((t) => t.playerId && t.playerId !== localSelfId());
     const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
+    const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
@@ -1147,7 +1165,7 @@ function loop() {
               (t) =>
                 `#${t.id} ${t.rankings
                   .slice(0, 3)
-                  .map((r) => `${r.name}:${r.score.toFixed(2)}/${(r.margin ?? 0).toFixed(2)}`)
+                  .map((r) => `${rankName(r)}:${r.score.toFixed(2)}/${(r.margin ?? 0).toFixed(2)}`)
                   .join(',')}`,
             )
             .join(' | ')}`
@@ -1156,7 +1174,7 @@ function loop() {
         ? `\nRejected ${rejected
             .map(
               (t) =>
-                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)}`,
+                `${rankName(t.debugMatch)}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)}`,
             )
             .join(' ')}`
         : '');
@@ -1216,10 +1234,11 @@ function drawGame({ vw, vh, toScreen }) {
   const now = performance.now();
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
-    const known = track.playerId !== null;
-    const alive = known && isAlivePlayer(track.playerId);
-    const targeted = alive && hit?.track === track;
-    const debugMatch = DEBUG && !known ? track.debugMatch : null;
+    const known = track.playerId !== null && track.playerId !== localSelfId();
+    const dead = known && isDeadPlayer(track.playerId);
+    const alive = known && !dead;
+    const targeted = !dead && hit?.track === track;
+    const debugMatch = DEBUG && !known && !track.selfRejected ? track.debugMatch : null;
     const color = targeted ? '#ff2e4d' : known && alive ? '#39ff88' : known ? '#6b7280' : debugMatch ? '#ffd166' : '#8a97a6';
     ctx.strokeStyle = color;
     ctx.setLineDash(known && !alive ? [2, 5] : known ? [] : debugMatch ? [8, 4] : [4, 4]);
@@ -1236,7 +1255,7 @@ function drawGame({ vw, vh, toScreen }) {
     const [x, y] = toScreen(track.box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
-    const label = track.name ? `${track.name}${alive ? '' : ' down'}` : debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'unknown';
+    const label = known ? `${track.name}${dead ? ' down' : ''}` : debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'Person';
     ctx.fillText(label, x + 4, y + 16);
   }
 }

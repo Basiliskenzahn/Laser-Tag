@@ -391,6 +391,10 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
   const candidates = rankings.length;
   const secondScore = rankings[1]?.score ?? -Infinity;
   const reason = rejectionReason(best, candidates, secondScore);
+  if (best?.id === excludeId) {
+    const selfMatch = { ...best, accepted: false, reason: 'self', candidates, rankings };
+    return includeRejected || closedSet ? selfMatch : null;
+  }
   if (closedSet && best) return { ...best, accepted: true, reason, candidates, rankings };
   if (!reason) return { ...best, accepted: true, candidates };
   return includeRejected && best ? { ...best, accepted: false, reason, candidates, rankings } : null;
@@ -492,6 +496,7 @@ function clearIdentity(track) {
   track.identifiedAt = null;
   track.identityHits = 0;
   track.lastEnrichedAt = 0;
+  track.selfRejected = false;
 }
 
 function resolveDuplicateIdentities(tracks, now) {
@@ -509,13 +514,14 @@ function resolveDuplicateIdentities(tracks, now) {
   }
 }
 
-function resolveClosedSetIdentities(tracks, now) {
-  const visible = tracks.filter((track) => track.lastSeen === now && track.rankings?.length);
+function resolveClosedSetIdentities(tracks, now, selfId) {
+  const visible = tracks.filter((track) => track.lastSeen === now && !track.selfRejected && track.rankings?.length);
   if (visible.length < 2) return;
 
   const pairs = [];
   for (const track of visible) {
     for (const candidate of track.rankings) {
+      if (candidate.id === selfId) continue;
       const sticky = candidate.id === track.playerId ? 0.035 : 0;
       const evidence = (track.evidence?.get(candidate.id) ?? 0) * 0.025;
       const margin = Number.isFinite(candidate.margin) ? Math.max(-0.12, Math.min(0.12, candidate.margin)) * 0.35 : 0;
@@ -617,6 +623,7 @@ function evidenceWinner(track) {
 
 function assignIdentity(track, match) {
   const previousId = track.playerId;
+  track.selfRejected = false;
   track.playerId = match?.id ?? null;
   track.name = match?.name ?? null;
   track.score = match?.score ?? 0;
@@ -717,6 +724,7 @@ export class Tracker {
         identifiedAt: null,
         identityHits: 0,
         lastEnrichedAt: 0,
+        selfRejected: false,
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
@@ -732,6 +740,17 @@ export class Tracker {
       const signature = extractSignature(video, track.box, embedder, now);
       const match = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
       track.rankings = match?.rankings ?? (match ? [match] : []);
+      if (match?.reason === 'self' && match.id === selfId) {
+        const rankings = track.rankings;
+        clearIdentity(track);
+        track.evidence.clear();
+        track.evidenceDetails.clear();
+        track.rankings = rankings;
+        track.debugMatch = match;
+        track.selfRejected = true;
+        continue;
+      }
+      track.selfRejected = false;
       decayEvidence(track);
       addEvidence(track, match);
       const evidenceMatch = evidenceWinner(track);
@@ -766,7 +785,7 @@ export class Tracker {
         }
       }
     }
-    if (closedSet) resolveClosedSetIdentities(this.tracks, now);
+    if (closedSet) resolveClosedSetIdentities(this.tracks, now, selfId);
     else resolveDuplicateIdentities(this.tracks, now);
     return this.tracks;
   }
