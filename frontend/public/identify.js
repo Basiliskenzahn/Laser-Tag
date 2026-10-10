@@ -219,7 +219,20 @@ const reidInitialLock = () => Math.max(0.8, reidMatchThreshold + 0.08);
 const REID_HISTORY_MS = 3000;
 
 // -- tracker association and lifecycle: matching boxes to tracks frame to frame --
-const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
+// Minimum association score to call a box the same person. A faster detection rate raises every
+// correct pair's score - boxes move less between frames, so overlap is higher - which looks like
+// an argument for tightening this to keep two people crossing from being mixed up. It is not,
+// for two reasons. The threshold does not decide a crossing: pairs are scored, sorted and taken
+// best-first, so when both candidates clear 0.3 comfortably - which they do, two people close
+// enough to confuse are close enough to score well above it - the *order* decides and the gate is
+// never consulted. All raising it can do is reject a pair that was the best available, which costs
+// a real track its identity and spawns a stranger in its place. And the margin it would be
+// defending improved anyway: a wrong pair's score is set by how far apart the two people are, not
+// by the detection interval, so shortening the interval lifts the right pair and leaves the wrong
+// one where it was. test/track-motion.test.js has both halves of that: raising this to 0.45
+// leaves a crossing resolved exactly as it was and loses a correct re-association after a 300 ms
+// occlusion, while taking the velocity prediction away swaps the crossing outright. 0.3 stays.
+const ASSOCIATION_MATCH = 0.3;
 const TRACK_TIMEOUT_MS = 900;
 // How often an established track's identity is recomputed: 100 ms is 10 Hz, the identification
 // floor the game aims for. Exported so the ?debug readout can print the achieved rate against the
