@@ -9,7 +9,8 @@
 export const $ = (id) => document.getElementById(id);
 export const params = new URLSearchParams(location.search);
 export const DEBUG = params.has('debug');
-// Scan export is opt-in: ?export shows an Export button on each scanned player in the lobby.
+// Scan export is opt-in: ?export shows Import on every player in the lobby, and Export and a
+// delete (✕) button on each scanned one.
 export const SCAN_EXPORT = params.has('export');
 const motionMode = params.get('motion');
 // Motion tracking is opt-in. ?motion=on enables phone-motion identity fusion, and

@@ -75,7 +75,7 @@ export function renderLobby() {
       scanBtn.disabled = roundRunning;
       scanBtn.addEventListener('click', () => beginPlayerScan(rosterPlayer));
       actions.append(scanBtn);
-      if (scanned) {
+      if (scanned && SCAN_EXPORT) {
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
         deleteBtn.className = 'lobby-delete-btn';
