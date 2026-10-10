@@ -12,6 +12,18 @@ const connections = new Map(); // player id -> { send(msg) }, whichever transpor
 const startTimers = new Map(); // room code -> timeout
 const eventStreams = new Map(); // room code -> Set<http.ServerResponse> for local-dev SSE
 
+// Motion activity from a phone: [[t_ms, activity], ...], capped since it comes from the client.
+const MAX_MOTION_SAMPLES = 32;
+
+function cleanMotionSamples(samples) {
+  if (!Array.isArray(samples)) return [];
+  return samples
+    .slice(0, MAX_MOTION_SAMPLES)
+    .filter((s) => Array.isArray(s) && s.length >= 2)
+    .map(([t, v]) => [Math.trunc(Number(t)), Math.round(Number(v) * 100) / 100])
+    .filter(([t, v]) => Number.isFinite(t) && Number.isFinite(v) && v >= 0);
+}
+
 function sendTo(id, msg) {
   connections.get(id)?.send(msg);
 }
@@ -169,6 +181,10 @@ function openSession(conn) {
       conn.send({ type: 'scanSaved', targetId: msg.targetId });
       broadcastRoster(room);
       broadcastState(room);
+    } else if (msg.type === 'motion') {
+      // Relay this phone's motion activity to everyone else in the room for motion matching.
+      const s = cleanMotionSamples(msg.s);
+      if (s.length) for (const other of room.players.keys()) if (other !== id) sendTo(other, { type: 'motion', from: id, s });
     } else if (msg.type === 'start') {
       const result = room.start();
       if (!result.ok) {

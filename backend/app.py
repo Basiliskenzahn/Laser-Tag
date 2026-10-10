@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import os
 import time
 import uuid
@@ -275,6 +276,26 @@ def json_response(data, status=200):
     return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
 
 
+MAX_MOTION_SAMPLES = 32  # per relayed message (~3 s at 10 Hz)
+
+
+def clean_motion_samples(samples):
+    """[[t_ms, activity], ...] from a phone's motion sensor: finite numbers, capped length."""
+    if not isinstance(samples, list):
+        return []
+    clean = []
+    for item in samples[:MAX_MOTION_SAMPLES]:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        try:
+            t, v = float(item[0]), float(item[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(t) and math.isfinite(v) and v >= 0:
+            clean.append([int(t), round(v, 2)])
+    return clean
+
+
 async def send_to(player_id, msg):
     conn = connections.get(player_id)
     if conn is not None:
@@ -415,6 +436,15 @@ class Session:
             await self.send({"type": "scanSaved", "targetId": target_id})
             await broadcast_roster(self.room)
             await broadcast_state(self.room)
+        elif msg.get("type") == "motion":
+            # This phone's motion activity, relayed to the others for motion matching
+            # (public/motion/). Every phone checks whose phone moves with whom it sees.
+            samples = clean_motion_samples(msg.get("s"))
+            if samples:
+                relay = {"type": "motion", "from": self.id, "s": samples}
+                for player_id in list(self.room.players.keys()):
+                    if player_id != self.id:
+                        await send_to(player_id, relay)
         elif msg.get("type") == "start":
             result = self.room.start()
             if not result["ok"]:

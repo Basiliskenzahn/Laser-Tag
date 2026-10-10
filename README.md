@@ -30,6 +30,19 @@ Plain person detection only answers "is there a person here?" - with more than t
 
 This is deliberately built from cheap, model-free signals so it runs smoothly on a phone browser alongside the person detector. `public/identify.js` isolates it behind `extractSignature()` / `matchGallery()`, so a learned person re-identification embedding (e.g. a small MobileNet-based model in TensorFlow.js) could later replace or augment the colour/grid signature without touching the tracking or enrolment code around it.
 
+## Motion matching
+
+A second check on top of the classifier: is the person in view moving the way a player's phone moves? Every phone condenses its accelerometer into an activity level (how hard it's being moved, 10x a second) and shares it through the server (`motion` messages; `public/motion/sensor.js`). For each tracked person, the shooter's phone measures the same from the image: how fast their box moves, in body heights per second, which doesn't depend on distance. `public/motion/matching.js` correlates the two over the last 6 s, allowing up to +-0.4 s of clock offset between phones:
+
+| Classifier says | Motion | Result |
+| --- | --- | --- |
+| Rex | Rex's phone moves with the person (correlation >= 0.75) | Hit Rex, confirmed. Also makes a tentative classifier guess shootable. |
+| Rex | no usable motion (everyone still, shooter panning, no data) | The classifier decides alone |
+| Rex | Rex's phone clearly doesn't match (<= 0.3) | Vetoed. Another candidate whose phone matches gets it instead. |
+| nobody | exactly one phone matches | That player |
+
+Motion is only judged while the shooter holds the camera steady (turning under 10 deg/s): following a target with the camera hides their movement in the image. In simulation (random walk/stand patterns, detector jitter) the real player matched every time, bystanders matched in about 1% of cases, and 60% of bystanders were vetoed outright. Not yet tested on real phones. iPhones ask for motion access on the join tap. `?motion=strict` refuses shots motion hasn't confirmed; `?debug` shows the correlations.
+
 ## Person re-identification (OSNet)
 
 The colour features and generic MobileNet embedding over-classify: bystanders get labelled as players. Each scan sample and each tracked person now also gets an embedding from **OSNet x0.25** (`public/reid.js`, `public/models/osnet_x0_25_msmt17.onnx`, 0.9 MB), a network trained specifically for person re-identification. It comes from the Torchreid authors (MIT licence), trained on MSMT17, and was exported to ONNX. It runs in the browser with ONNX Runtime Web, in about 9 ms per person in desktop Chrome.
