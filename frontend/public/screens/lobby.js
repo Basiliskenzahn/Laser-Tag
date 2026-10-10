@@ -92,6 +92,7 @@ export function leaveLobby() {
   hideScanCountdown();
   clearGameCountdown();
   closeLeaveDialog();
+  hideResults();
   state.launchingFromLobby = false;
   stopCamera();
   state.mode = 'join';

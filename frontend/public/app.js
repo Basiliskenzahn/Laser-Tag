@@ -84,6 +84,7 @@ for (const id of ['game-screen', 'scan-screen']) {
 }
 // Clears both, so a lingering `hit` never masks the next `firing` (or the other way round).
 $('crosshair').addEventListener('animationend', () => $('crosshair').classList.remove('firing', 'hit'));
+$('damage').addEventListener('animationend', () => $('damage').classList.remove('flash'));
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && !$('game-screen').hidden && !$('leave-dialog').open) fire();
 });

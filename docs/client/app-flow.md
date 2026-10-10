@@ -72,7 +72,7 @@ A **✕** button in the corner calls `cancelScan()`, which just sets `state.auto
 - Every frame, `loop()` runs detection when due, then `drawGame()` draws each live track with its hitboxes and label (see [Feedback](feedback.md#track-outlines)).
 - A tap anywhere but a button (pointer down) or **Space** calls `fire()`. See [Shooting](#shooting).
 - **No zooming on fast taps.** Every element has `touch-action: manipulation`, since iOS ignores the viewport's `user-scalable=no`. On top of that the game and scan screens cancel `touchend` everywhere except their buttons and the leave dialog, because rapid firing can still trigger a double-tap zoom on some iPhones. Firing uses `pointerdown`, so the click the cancelled touch would have made isn't needed.
-- As soon as the round is over for this phone — a `state` message shows it knocked out, or says `over` — it switches to [Results](#results-results).
+- As soon as the round is over for this phone — a `state` message shows it knocked out, or says `over` — it switches to [Results](#results-results), after a 400 ms pause so the shot that ended the round (hitmarker, damage number, red flash) plays out first.
 
 ### Results (`#results`)
 

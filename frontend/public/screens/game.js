@@ -28,6 +28,11 @@ export function enterGame() {
   $('scan-screen').hidden = true;
   $('lobby-screen').hidden = true;
   hideResults();
+  // A hit effect cut short by the screen hiding (Leave right after a hit) never got its
+  // animationend, and would replay the moment the screen shows again.
+  $('damage').classList.remove('flash');
+  $('crosshair').classList.remove('firing', 'hit');
+  $('popups').replaceChildren();
   $('game-screen').hidden = false;
   video.hidden = false;
   canvas.hidden = false;

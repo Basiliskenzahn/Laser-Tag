@@ -15,7 +15,7 @@ import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
-import { showResults, updateResults } from './screens/results.js';
+import { showResultsSoon, updateResults } from './screens/results.js';
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 const LOBBY_RUNNING_MESSAGE = 'Lobby is already running.';
@@ -165,7 +165,7 @@ function onState(game) {
   }
   // The round is over for us: knocked out, or the last one standing.
   if (state.mode === 'game' && (game.status === 'over' || (game.status === 'playing' && me && !me.alive))) {
-    showResults(game);
+    showResultsSoon(game);
     return;
   }
   if (game.status === 'over') {

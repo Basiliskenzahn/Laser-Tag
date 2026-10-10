@@ -1,7 +1,7 @@
 // The end of your round: a flash, then your placing and your stats over the live camera.
 //
-// It opens the moment the round is over for you - knocked out mid-round, or the round ending
-// while you are still up - and stays until you pick "Done" (back to the lobby) or "Rematch".
+// It opens once the round is over for you - knocked out mid-round, or the round ending while you
+// are still up - just after the shot that did it has played out, and stays until you pick "Done" (back to the lobby) or "Rematch".
 // Detection stops while it is up (state.mode is 'results'), but the camera keeps running behind
 // it. The flash, the fade to dark and the line-by-line reveal are all CSS animations; this
 // module only fills the text in and sets each line's delay.
@@ -26,6 +26,28 @@ const PLACEHOLDER_STATS = [
 const RANK_AT = 450;
 const FIRST_STAT_AT = 850;
 const STAT_STEP = 110;
+// How long the shot that ended your round (hitmarker, damage number, red flash) stays on screen
+// before the results cover it. Hiding them mid-animation would also leave them to replay later.
+const FINAL_HIT_MS = 400;
+
+let pendingGame = null; // the latest state while the final hit is still showing
+let pendingTimer = null;
+
+// The round is over for us: let the final hit land, then open the results with the newest state.
+export function showResultsSoon(game) {
+  pendingGame = game;
+  pendingTimer ??= setTimeout(() => {
+    const latest = pendingGame;
+    cancelPendingResults();
+    showResults(latest);
+  }, FINAL_HIT_MS);
+}
+
+function cancelPendingResults() {
+  clearTimeout(pendingTimer);
+  pendingTimer = null;
+  pendingGame = null;
+}
 
 export function showResults(game) {
   const won = game.status === 'over' && game.winner === state.myId;
@@ -80,7 +102,10 @@ export function updateResults(game) {
       : '';
 }
 
+// Also drops a results screen that is still waiting on the final hit, since every way off the
+// game screen comes through here.
 export function hideResults() {
+  cancelPendingResults();
   $('results').hidden = true;
   $('game-screen').classList.remove('show-results');
 }
