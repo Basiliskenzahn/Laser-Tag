@@ -220,8 +220,9 @@ const EVIDENCE_ACCEPT = 0.58; // bucket level at which the leader can name the t
 const EVIDENCE_MARGIN = 0.12; // ...and by how much it must lead the runner-up
 const EVIDENCE_MIN_SCORE = 0.42; // colour-path floor for a check to count as evidence
 // ...and the floor for each individual colour part. `shape` used to be stuck at 0 here too, which
-// meant no colour-only check ever counted as evidence at all; left unchanged for the same reason as
-// MIN_SHAPE_SCORE, so the fix restores the accumulator rather than retuning it.
+// meant no check without a re-identification embedding counted as evidence at all; left unchanged
+// for the same reason as MIN_SHAPE_SCORE, so the fix restores the accumulator rather than retuning
+// it.
 const EVIDENCE_MIN_PART = 0.24;
 const EVIDENCE_WEIGHT_ACCEPTED = 1.25; // an accepted check is worth more than a near miss
 const EVIDENCE_WEIGHT_SOFT = 0.45; // a near miss still counts, scaled by how near it was
@@ -461,8 +462,10 @@ function averageVectors(vectors) {
 // shapeSignature's second component is just the aspect times the frame's own aspect ratio, that
 // divisor collapsed every enrolled person to the same constant (0.600 in a 4:3 frame). A standing
 // person's live aspect of 2-3 against a gallery 0.600 is more than the log(2.2) tolerance, so
-// `shape` scored 0 for the correct person and both MIN_SHAPE_SCORE and EVIDENCE_MIN_PART were
-// unreachable on the colour path. See docs/shape-feature-bug.md.
+// `shape` scored 0 for the correct person, and both MIN_SHAPE_SCORE and EVIDENCE_MIN_PART were
+// unreachable on every path that applies them - which is both model-free ones, since
+// rejectionReason and evidenceWeight skip the per-part floors only for hasReid.
+// See docs/shape-feature-bug.md.
 export function averageSignatures(signatures) {
   return {
     hist: averageVectors(signatures.map((s) => s.hist)),
