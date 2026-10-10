@@ -46,7 +46,7 @@ Both runtime services are `restart: unless-stopped`. Nothing but a CI deploy eve
 
 `frontend` waits on `depends_on: backend: {condition: service_healthy}`. The short list form (`depends_on: [backend]`) waits only for the container to be *created and started* — not for aiohttp to be listening — so every deploy had a window where nginx was up and `backend:4000` refused the connection and both `/api/` and `/events/` answered **502**. For a phone mid-game that is its poll loop and its SSE stream failing at the same moment.
 
-The backend probe uses `python -c` rather than `curl`: `python:3.12-slim` has neither `curl` nor `wget`, and adding one means a new apt layer to carry a request the interpreter can already make. It requests `GET /`, which `backend/app.py` routes to `health()`; nginx proxies only `/api/` and `/events/`, so that route stays unreachable from outside and needs no auth. `test/deploy-robustness.test.js` cross-checks the probe's URL path against the route in `app.py`, so moving the route fails the suite instead of the deploy.
+The backend probe uses `python -c` rather than `curl`: `python:3.12-slim` has neither `curl` nor `wget`, and adding one means a new apt layer to carry a request the interpreter can already make. It requests `GET /`, which `backend/app.py` routes to `health()`; nginx proxies only `/api/` and `/events/`, so that route stays unreachable from outside and needs no auth. Moving that route would break the probe, so keep the two in step.
 
 The frontend probe re-checks the certificate's expiry as well as nginx's liveness. The entrypoint renews on start, so this is what catches a container that has been up long enough to outlive its own certificate without ever re-running the entrypoint.
 
@@ -60,7 +60,7 @@ docker compose run --rm tests
 
 It mounts the repo into a `node:22-bookworm-slim` container and runs `npm test`. See [Testing](../development/testing.md).
 
-There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. Dropping it takes the network off the path to running the tests. If a test ever does need a dependency, it has to come back — nothing currently installs one.
 
 There used to be an empty `test-node-modules` volume mounted over `/app/node_modules` to mask the host's copy. It was deleted along with `npm ci`: it cached nothing (`npm ci` deletes `node_modules` first anyway), and since no test resolves a bare specifier there is nothing for the host's copy to shadow. One less named volume to clean up.
 
@@ -87,7 +87,7 @@ every `.task`/`.tflite`/`.onnx` file lives under `/models/` and every `.mjs`/`.w
 > **Careful with `/models/` and `/vendor/`:** keep the `^~` modifier on both. nginx tries regex
 > locations *before* prefix ones, so if anyone adds a `location ~* \.tflite$` (or `.mjs`,
 > `.wasm`) it would win over a plain `location /models/` and quietly put the models back on
-> `no-store`. `^~` forecloses that. `test/asset-delivery.test.js` asserts it is still there.
+> `no-store`. `^~` forecloses that.
 >
 > One consequence of dropping those blocks: nginx's stock `mime.types` has **no entry for
 > `.mjs`** (it maps `js` and `wasm`, verified against nginx 1.27.3's `conf/mime.types`). So an
@@ -183,7 +183,7 @@ keep them safe:
 Verified end to end: with `Accept-Encoding: gzip` on the request, the SSE response still carries
 **no `Content-Encoding`** and its first payload byte arrives in **0.75 ms** while the stream stays
 open for another 1.2 s, and `/api/` returns `application/json` with no `Content-Encoding`.
-`test/asset-delivery.test.js` fails if either `gzip off` or `proxy_buffering off` is removed.
+Removing either `gzip off` or `proxy_buffering off` breaks the live game, so verify with `nginx -t` plus a real request before changing them.
 
 ### No preload hints
 
@@ -223,9 +223,11 @@ curl -sI -H 'Accept-Encoding: gzip' http://localhost:8080/vendor/ort/ort-wasm-si
 curl -sN -D - --max-time 2 http://localhost:8080/events/testroom
 ```
 
-`npm test` also runs `test/asset-delivery.test.js`, which checks the shipped config as text —
-no Docker needed, so it runs on a laptop. It cannot prove nginx *accepts* the file, which is
-what `nginx -t` above is for; it pins the policy decisions so they are not quietly undone.
+`npm test` runs `test/deploy-wiring.test.js`, which guards the three text-checkable failures that
+have actually bitten: an invalid `if_modified_since`, an `include` of a file the image never
+copies, and a vendored `COPY` destination that does not cover the `/vendor/` URLs the client
+imports. It cannot prove the config is *valid* — that is `nginx -t` below, which is why the ~650
+lines of broader text assertions that used to live here were deleted rather than maintained.
 
 ## TLS certificate
 

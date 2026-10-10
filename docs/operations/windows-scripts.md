@@ -34,7 +34,15 @@ Handy for repeatedly testing on the laptop with [debug mode](../development/debu
 
 ## One-time setup
 
-Docker Desktop on Windows needs WSL 2. This used to be three scripts — `install-docker-prereqs.ps1`, `install-wsl-admin.ps1` and `add-docker-path.ps1`. They were deleted: between them they were two DISM calls, a `winget install` and a `PATH` append, which are clearer as commands you can read before running them as Administrator. There is no Windows CI, so nothing exercised them either.
+Docker Desktop on Windows needs WSL 2. Run these as Administrator, once:
+
+```powershell
+dism /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+winget install -e --id Docker.DockerDesktop
+```
+
+They were scripts once; as four literal commands you can read them before running them.
 
 From an **Administrator** PowerShell:
 
