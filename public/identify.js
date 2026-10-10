@@ -1,8 +1,7 @@
 // Telling players apart, not just finding "a person".
 //
 // Plain person detection (detector.js) finds boxes; this module decides *who* is in each box.
-// Two cheap, canvas-pixel-only features are extracted per sample - no extra ML model/download,
-// so this stays fast enough to run on a phone several times a second:
+// Several body-appearance features are extracted per sample:
 //
 //   hist  - colour/brightness histogram of the upper body. Clothing colour barely changes
 //           with viewing angle, so this is the main angle-*invariant* signal.
@@ -15,9 +14,8 @@
 //   shape - coarse box proportions, used only as a guard. It helps reject partial bodies and
 //           people with very different pose/framing without depending on distance from camera.
 //
-// A learned person re-identification embedding would be more discriminative than `grid` and
-// can be dropped in later - extractSignature() is the one place to add it; everything
-// downstream (matchGallery, Tracker) just compares whatever vectors come back.
+//   embed - an optional learned image embedding. It is compacted before storage so larger
+//           multi-angle scans still fit comfortably in the join message and local cache.
 
 const HUE_BINS = 12;
 const SAT_BINS = 4;
@@ -26,6 +24,8 @@ const SAT_DETAIL_BINS = 8;
 const GRID_W = 6;
 const GRID_H = 8;
 const GRID_FEATURES = 4;
+const EMBED_DIMS = 256;
+const EMBED_PRECISION = 10_000;
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
 const MIN_MATCH_HEIGHT_RATIO = 0.18;
 const MIN_BOX_WIDTH_RATIO = 0.035;
@@ -118,6 +118,21 @@ function normalize(vec) {
   return vec.map((v) => (Number.isFinite(v) ? v / norm : 0));
 }
 
+function roundVector(vec, precision = EMBED_PRECISION) {
+  return vec.map((v) => Math.round(v * precision) / precision);
+}
+
+function compactEmbedding(vec) {
+  if (!vec?.length) return [];
+  if (vec.length <= EMBED_DIMS) return roundVector(normalize(vec));
+  const compact = new Array(EMBED_DIMS).fill(0);
+  for (let i = 0; i < vec.length; i++) {
+    const bucket = Math.min(EMBED_DIMS - 1, Math.floor((i / vec.length) * EMBED_DIMS));
+    compact[bucket] += Number.isFinite(vec[i]) ? vec[i] : 0;
+  }
+  return roundVector(normalize(compact));
+}
+
 // Appearance histogram for one body region. The first 48 bins are hue/saturation for
 // colourful clothing; the last 16 bins keep neutral clothing useful.
 function appearanceHistogram(source, box) {
@@ -167,13 +182,46 @@ function shapeSignature(source, box) {
   return [aspect, heightRatio / Math.max(widthRatio, 0.001)];
 }
 
-// { hist, lower, grid } for one video frame + box. Used both at enrolment and live.
-export function extractSignature(source, box) {
+function embedRegion(source, box) {
+  const sw = sourceWidth(source);
+  const sh = sourceHeight(source);
+  const padX = box.w * 0.08;
+  const padTop = box.h * 0.04;
+  const padBottom = box.h * 0.08;
+  const left = Math.max(0, (box.x - padX) / sw);
+  const top = Math.max(0, (box.y - padTop) / sh);
+  const right = Math.min(1, (box.x + box.w + padX) / sw);
+  const bottom = Math.min(1, (box.y + box.h + padBottom) / sh);
+  return right - left > 0.02 && bottom - top > 0.02 ? { left, top, right, bottom } : null;
+}
+
+let embedTimestamp = 0;
+function personEmbedding(source, box, embedder, timestamp) {
+  if (!embedder) return [];
+  const regionOfInterest = embedRegion(source, box);
+  if (!regionOfInterest) return [];
+  try {
+    embedTimestamp = Math.max(embedTimestamp + 1, Math.round(timestamp ?? performance.now()));
+    const result = embedder.embedForVideo(source, embedTimestamp, { regionOfInterest });
+    const embedding = result.embeddings?.[0];
+    if (embedding?.floatEmbedding?.length) return compactEmbedding(embedding.floatEmbedding);
+    if (embedding?.quantizedEmbedding?.length) {
+      return compactEmbedding(Array.from(embedding.quantizedEmbedding, (v) => (v - 128) / 128));
+    }
+  } catch (err) {
+    console.warn('Embedding failed', err);
+  }
+  return [];
+}
+
+// { hist, lower, grid, embed } for one video frame + box. Used both at enrolment and live.
+export function extractSignature(source, box, embedder = null, timestamp = performance.now()) {
   return {
     hist: appearanceHistogram(source, subBox(box, 0.16, 0.2, 0.68, 0.42)),
     lower: appearanceHistogram(source, subBox(box, 0.18, 0.58, 0.64, 0.34)),
     grid: bodyGrid(source, box),
     shape: shapeSignature(source, box),
+    embed: personEmbedding(source, box, embedder, timestamp),
     usable: usableMatchBox(source, box),
   };
 }
@@ -194,6 +242,7 @@ export function averageSignatures(signatures) {
     lower: averageVectors(signatures.map((s) => s.lower)),
     grid: averageVectors(signatures.map((s) => s.grid)),
     shape: averageVectors(signatures.map((s) => s.shape)),
+    embed: averageVectors(signatures.map((s) => s.embed).filter((v) => v?.length)),
     usable: signatures.some((s) => s.usable !== false),
   };
 }
@@ -224,18 +273,32 @@ const HIST_WEIGHT = 0.42;
 const LOWER_WEIGHT = 0.24;
 const GRID_WEIGHT = 0.24;
 const SHAPE_WEIGHT = 0.1;
+const EMBED_HIST_WEIGHT = 0.3;
+const EMBED_LOWER_WEIGHT = 0.18;
+const EMBED_GRID_WEIGHT = 0.16;
+const EMBED_SHAPE_WEIGHT = 0.06;
+const EMBED_WEIGHT = 0.3;
 
 function similarityParts(a, b) {
   const upper = cosine(a.hist, b.hist);
   const lower = cosine(a.lower, b.lower);
   const grid = cosine(a.grid, b.grid);
   const shape = shapeSimilarity(a.shape, b.shape);
+  const embed = cosine(a.embed, b.embed);
+  const hasEmbed = Boolean(a.embed?.length && b.embed?.length);
   return {
     upper,
     lower,
     grid,
     shape,
-    score: HIST_WEIGHT * upper + LOWER_WEIGHT * lower + GRID_WEIGHT * grid + SHAPE_WEIGHT * shape,
+    embed,
+    score: hasEmbed
+      ? EMBED_HIST_WEIGHT * upper +
+        EMBED_LOWER_WEIGHT * lower +
+        EMBED_GRID_WEIGHT * grid +
+        EMBED_SHAPE_WEIGHT * shape +
+        EMBED_WEIGHT * embed
+      : HIST_WEIGHT * upper + LOWER_WEIGHT * lower + GRID_WEIGHT * grid + SHAPE_WEIGHT * shape,
   };
 }
 
@@ -252,16 +315,38 @@ function bestAngleScore(signature, gallery) {
   return best;
 }
 
-const MATCH_THRESHOLD = 0.78; // below this, call it unknown rather than guess
-const SINGLE_PLAYER_THRESHOLD = 0.86; // when there is no rival to compare against, be stricter
+const MATCH_THRESHOLD = 0.77; // below this, call it unknown rather than guess
+const SINGLE_PLAYER_THRESHOLD = 0.82; // when there is no rival to compare against, still require a good match
 const MATCH_MARGIN = 0.09; // the winner must clear the runner-up by this much
 const MIN_UPPER_SCORE = 0.72;
 const MIN_LOWER_SCORE = 0.62;
 const MIN_GRID_SCORE = 0.64;
 const MIN_SHAPE_SCORE = 0.68;
+const NEGATIVE_REJECT_SCORE = 0.86;
+const NEGATIVE_PENALTY_START = 0.72;
+const NEGATIVE_PENALTY_WEIGHT = 0.65;
+
+function galleryForPlayer(map, player) {
+  if (!map) return null;
+  return map.get?.(player.id) ?? map.get?.(player.name?.toLowerCase?.()) ?? null;
+}
+
+function applyNegativePenalty(match, signature, negatives) {
+  if (!match || !negatives?.length) return match;
+  const negative = bestAngleScore(signature, negatives);
+  const negativeScore = negative?.score ?? 0;
+  const penalty = Math.max(0, negativeScore - NEGATIVE_PENALTY_START) * NEGATIVE_PENALTY_WEIGHT;
+  return {
+    ...match,
+    rawScore: match.score,
+    negative: negativeScore,
+    score: Math.max(0, match.score - penalty),
+  };
+}
 
 function rejectionReason(best, candidates, secondScore) {
   if (!best) return 'no-candidate';
+  if (best.negative >= NEGATIVE_REJECT_SCORE) return 'negative';
   const threshold = candidates <= 1 ? SINGLE_PLAYER_THRESHOLD : MATCH_THRESHOLD;
   if (best.score < threshold) return 'score';
   if (best.upper < MIN_UPPER_SCORE) return 'upper';
@@ -274,13 +359,13 @@ function rejectionReason(best, candidates, secondScore) {
 
 // players: [{ id, name, gallery: [{hist, grid}, ...] }, ...]
 // excludeId: the local player - never matched against their own gallery.
-export function matchGallery(signature, players, excludeId, { includeRejected = false } = {}) {
+export function matchGallery(signature, players, excludeId, { includeRejected = false, negatives = null } = {}) {
   let best = null;
   let secondScore = -Infinity;
   let candidates = 0;
   for (const player of players) {
     if (player.id === excludeId || !player.gallery?.length) continue;
-    const match = bestAngleScore(signature, player.gallery);
+    const match = applyNegativePenalty(bestAngleScore(signature, player.gallery), signature, galleryForPlayer(negatives, player));
     if (!match) continue;
     candidates++;
     if (!best || match.score > best.score) {
@@ -372,7 +457,7 @@ function identityConfidence(track, now) {
   if (!track.playerId) return -Infinity;
   const evidence = track.evidence?.get(track.playerId) ?? 0;
   const stalePenalty = Math.max(0, now - track.lastSeen) / 1000;
-  return track.score + evidence * 0.08 + Math.min(track.checks, 10) * 0.01 - track.misses * 0.08 - stalePenalty * 0.25;
+  return track.score + evidence * 0.08 + Math.min(track.checks, 10) * 0.01 - Math.min(track.misses, 4) * 0.04 - stalePenalty * 0.25;
 }
 
 function clearIdentity(track) {
@@ -383,6 +468,8 @@ function clearIdentity(track) {
   track.lower = 0;
   track.grid = 0;
   track.shape = 0;
+  track.embed = 0;
+  track.negative = 0;
   track.streak = 0;
   track.streakId = undefined;
 }
@@ -402,15 +489,16 @@ function resolveDuplicateIdentities(tracks, now) {
   }
 }
 
-const ASSOCIATION_MATCH = 0.32;
-const TRACK_TIMEOUT_MS = 1200;
-const RECHECK_MS = 400; // re-identify an established track about every 0.4s
-const SETTLE_CHECKS = 3; // identify fast on a brand new track: check every frame at first
-const INITIAL_STREAK = 3; // a new track must agree a few times before getting a name
+const ASSOCIATION_MATCH = 0.3;
+const TRACK_TIMEOUT_MS = 2500;
+const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
+const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
+const INITIAL_STREAK = 2; // a new track must agree a couple of times before getting a name
 const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
-const CLEAR_STREAK = 8; // repeated unknown checks clear a stale identity
+const HIGH_CONFIDENCE_INITIAL_LOCK = 0.84;
+const HIGH_CONFIDENCE_NEGATIVE_LIMIT = 0.78;
 const EVIDENCE_DECAY = 0.82;
-const EVIDENCE_ACCEPT = 2.4;
+const EVIDENCE_ACCEPT = 1.8;
 const EVIDENCE_MARGIN = 0.55;
 const EVIDENCE_MIN_SCORE = 0.7;
 const EVIDENCE_MIN_PART = 0.54;
@@ -459,6 +547,21 @@ function evidenceWinner(track) {
   return track.evidenceDetails.get(best.id) ?? null;
 }
 
+function assignIdentity(track, match) {
+  track.playerId = match?.id ?? null;
+  track.name = match?.name ?? null;
+  track.score = match?.score ?? 0;
+  track.upper = match?.upper ?? 0;
+  track.lower = match?.lower ?? 0;
+  track.grid = match?.grid ?? 0;
+  track.shape = match?.shape ?? 0;
+  track.embed = match?.embed ?? 0;
+  track.negative = match?.negative ?? 0;
+  track.misses = 0;
+  track.streak = 0;
+  track.streakId = undefined;
+}
+
 // Tracks people across frames (cheap IOU matching) and only re-runs identification per track
 // on a schedule, not on every box of every frame. This is what keeps per-frame cost low even
 // with several people on screen: identity rides along with the track between checks, and a
@@ -470,7 +573,7 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
-  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false } = {}) {
+  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null, negatives = null } = {}) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
     const pairs = [];
@@ -495,10 +598,8 @@ export class Tracker {
       if (track.seenThisFrame) continue;
       const age = now - track.lastSeen;
       if (age < TRACK_TIMEOUT_MS) {
-        track.box = predictedBox(track, now);
         track.vx = (track.vx ?? 0) * 0.82;
         track.vy = (track.vy ?? 0) * 0.82;
-        track.lastUpdated = now;
       }
     }
 
@@ -521,6 +622,8 @@ export class Tracker {
         lower: 0,
         grid: 0,
         shape: 0,
+        embed: 0,
+        negative: 0,
         debugMatch: null,
         evidence: new Map(),
         evidenceDetails: new Map(),
@@ -537,8 +640,8 @@ export class Tracker {
       if (!due) continue;
       track.lastCheck = now;
 
-      const signature = extractSignature(video, track.box);
-      const match = matchGallery(signature, players, selfId, { includeRejected: true });
+      const signature = extractSignature(video, track.box, embedder, now);
+      const match = matchGallery(signature, players, selfId, { includeRejected: true, negatives });
       decayEvidence(track);
       addEvidence(track, match);
       const evidenceMatch = evidenceWinner(track);
@@ -548,38 +651,30 @@ export class Tracker {
 
       if (!candidateId) {
         track.misses++;
-        if (track.misses >= CLEAR_STREAK) {
-          clearIdentity(track);
-        }
+        // Once a physical track has a trusted identity, keep it latched. Appearance checks
+        // can fail for normal gameplay reasons: motion blur, side views, lighting, occlusion,
+        // or only part of the player being visible. A known box should only lose/change its
+        // identity when the track disappears, a duplicate conflict is resolved, or another
+        // player wins the switch hysteresis below.
         track.streak = 0;
         track.streakId = undefined;
       } else if (candidateId === track.playerId) {
-        track.misses = 0;
-        track.streak = 0;
-        track.name = candidateMatch.name;
-        track.score = candidateMatch.score;
-        track.upper = candidateMatch.upper;
-        track.lower = candidateMatch.lower;
-        track.grid = candidateMatch.grid;
-        track.shape = candidateMatch.shape;
+        assignIdentity(track, candidateMatch);
       } else if (candidateId === track.streakId) {
         track.streak++;
         const needed = track.playerId ? SWITCH_STREAK : INITIAL_STREAK;
-        if (track.streak >= needed) {
-          track.playerId = candidateId;
-          track.name = candidateMatch?.name ?? null;
-          track.score = candidateMatch?.score ?? 0;
-          track.upper = candidateMatch?.upper ?? 0;
-          track.lower = candidateMatch?.lower ?? 0;
-          track.grid = candidateMatch?.grid ?? 0;
-          track.shape = candidateMatch?.shape ?? 0;
-          track.misses = 0;
-          track.streak = 0;
-          track.streakId = undefined;
-        }
+        if (track.streak >= needed) assignIdentity(track, candidateMatch);
       } else {
         track.streakId = candidateId;
         track.streak = 1;
+        if (
+          !track.playerId &&
+          candidateMatch?.accepted &&
+          candidateMatch.score >= HIGH_CONFIDENCE_INITIAL_LOCK &&
+          (candidateMatch.negative ?? 0) < HIGH_CONFIDENCE_NEGATIVE_LIMIT
+        ) {
+          assignIdentity(track, candidateMatch);
+        }
       }
     }
     resolveDuplicateIdentities(this.tracks, now);

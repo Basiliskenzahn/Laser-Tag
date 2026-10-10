@@ -1,15 +1,22 @@
 // Person detection with MediaPipe's object detector, running on the phone.
 
-import { FilesetResolver, ObjectDetector, PoseLandmarker } from '/vendor/tasks-vision/vision_bundle.mjs';
+import { FilesetResolver, ImageEmbedder, ObjectDetector, PoseLandmarker } from '/vendor/tasks-vision/vision_bundle.mjs';
 
 const OBJECT_MODEL_URL = '/models/efficientdet_lite0.tflite';
 const POSE_MODEL_URL = '/models/pose_landmarker_lite.task';
+const EMBEDDER_MODEL_URL = '/models/mobilenet_v3_small_embedder.tflite';
 const MIN_SCORE = 0.35;
-const POSE_MIN_LANDMARKS = 8;
+const POSE_MIN_LANDMARKS = 6;
 
-// The head hitbox is the top-centre part of a person's box.
-const HEAD_HEIGHT = 0.2;
-const HEAD_WIDTH = 0.5;
+// Gameplay hitboxes are intentionally tighter than detector boxes. Detector boxes need to
+// include pose variation and loose arms for tracking; shots should hit the head/torso, not
+// empty padding or outstretched arms.
+const HEAD_TOP = 0.02;
+const HEAD_HEIGHT = 0.18;
+const HEAD_WIDTH = 0.34;
+const BODY_TOP = 0.22;
+const BODY_HEIGHT = 0.72;
+const BODY_WIDTH = 0.56;
 
 export async function createDetector() {
   const fileset = await FilesetResolver.forVisionTasks('/vendor/tasks-vision/wasm');
@@ -17,16 +24,22 @@ export async function createDetector() {
     baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     scoreThreshold: MIN_SCORE,
-    maxResults: 3,
+    maxResults: 5,
     categoryAllowlist: ['person'],
   });
   const poseOptions = (delegate) => ({
     baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     numPoses: 1,
-    minPoseDetectionConfidence: 0.25,
-    minPosePresenceConfidence: 0.25,
-    minTrackingConfidence: 0.25,
+    minPoseDetectionConfidence: 0.18,
+    minPosePresenceConfidence: 0.18,
+    minTrackingConfidence: 0.18,
+  });
+  const embedderOptions = (delegate) => ({
+    baseOptions: { modelAssetPath: EMBEDDER_MODEL_URL, delegate },
+    runningMode: 'VIDEO',
+    l2Normalize: true,
+    quantize: false,
   });
 
   let detector;
@@ -48,7 +61,16 @@ export async function createDetector() {
     console.warn('Pose scan fallback unavailable', err);
   }
 
-  return { detector, poseDetector, delegate: `${objectDelegate}${poseDelegate}` };
+  let embedder = null;
+  let embedDelegate = '';
+  try {
+    embedder = await ImageEmbedder.createFromOptions(fileset, embedderOptions(objectDelegate));
+    embedDelegate = '+Embed';
+  } catch (err) {
+    console.warn('Image embedder unavailable', err);
+  }
+
+  return { detector, poseDetector, embedder, delegate: `${objectDelegate}${poseDelegate}${embedDelegate}` };
 }
 
 // Person boxes in video pixel coordinates.
@@ -78,7 +100,7 @@ function poseBoxes(poseDetector, source, timestamp) {
   const sh = sourceHeight(source);
   return (result.landmarks ?? [])
     .map((landmarks) => {
-      const visible = landmarks.filter((p) => (p.visibility ?? 1) >= 0.35 && p.x >= -0.15 && p.x <= 1.15 && p.y >= -0.15 && p.y <= 1.15);
+      const visible = landmarks.filter((p) => (p.visibility ?? 1) >= 0.2 && p.x >= -0.2 && p.x <= 1.2 && p.y >= -0.2 && p.y <= 1.2);
       if (visible.length < POSE_MIN_LANDMARKS) return null;
       let minX = Infinity;
       let minY = Infinity;
@@ -90,9 +112,10 @@ function poseBoxes(poseDetector, source, timestamp) {
         maxX = Math.max(maxX, point.x);
         maxY = Math.max(maxY, point.y);
       }
-      const padX = Math.max(0.05, (maxX - minX) * 0.2);
-      const padTop = Math.max(0.06, (maxY - minY) * 0.18);
-      const padBottom = Math.max(0.08, (maxY - minY) * 0.24);
+      const height = Math.max(0.01, maxY - minY);
+      const padX = Math.max(0.055, (maxX - minX) * 0.24, height * 0.08);
+      const padTop = Math.max(0.06, height * 0.14);
+      const padBottom = Math.max(0.1, height * 0.28);
       const x = Math.max(0, (minX - padX) * sw);
       const y = Math.max(0, (minY - padTop) * sh);
       const right = Math.min(sw, (maxX + padX) * sw);
@@ -112,19 +135,47 @@ function overlap(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
+function centerDistanceRatio(a, b) {
+  const ax = a.x + a.w / 2;
+  const ay = a.y + a.h / 2;
+  const bx = b.x + b.w / 2;
+  const by = b.y + b.h / 2;
+  const scale = Math.max(a.w, a.h, b.w, b.h, 1);
+  return Math.hypot(ax - bx, ay - by) / scale;
+}
+
 export function detectScanPeople(detector, poseDetector, source, timestamp) {
   const boxes = [...detectPeople(detector, source, timestamp), ...poseBoxes(poseDetector, source, timestamp)];
   boxes.sort((a, b) => b.score - a.score);
   const kept = [];
   for (const box of boxes) {
-    if (kept.every((other) => overlap(box, other) < 0.45)) kept.push(box);
+    if (kept.every((other) => overlap(box, other) < 0.75)) kept.push(box);
+  }
+  return kept;
+}
+
+export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
+  const objectBoxes = detectPeople(detector, source, timestamp);
+  const poseFallbacks = poseBoxes(poseDetector, source, timestamp).filter((poseBox) =>
+    objectBoxes.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
+  );
+  const boxes = [...objectBoxes, ...poseFallbacks];
+  boxes.sort((a, b) => b.score - a.score);
+  const kept = [];
+  for (const box of boxes) {
+    if (kept.every((other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55)) kept.push(box);
   }
   return kept;
 }
 
 export function headBox(box) {
   const w = box.w * HEAD_WIDTH;
-  return { x: box.x + (box.w - w) / 2, y: box.y, w, h: box.h * HEAD_HEIGHT };
+  return { x: box.x + (box.w - w) / 2, y: box.y + box.h * HEAD_TOP, w, h: box.h * HEAD_HEIGHT };
+}
+
+export function bodyBox(box) {
+  const w = box.w * BODY_WIDTH;
+  return { x: box.x + (box.w - w) / 2, y: box.y + box.h * BODY_TOP, w, h: box.h * BODY_HEIGHT };
 }
 
 export function contains(box, px, py) {
@@ -135,9 +186,8 @@ export function contains(box, px, py) {
 export function hitTest(boxes, px, py) {
   let zone = null;
   for (const box of boxes) {
-    if (!contains(box, px, py)) continue;
     if (contains(headBox(box), px, py)) return 'head';
-    zone = 'body';
+    if (contains(bodyBox(box), px, py)) zone = 'body';
   }
   return zone;
 }

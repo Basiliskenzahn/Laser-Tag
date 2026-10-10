@@ -47,7 +47,7 @@ function cleanName(name) {
   return String(name || '').trim().slice(0, 20) || 'Player';
 }
 
-// Appearance gallery from enrolment: at most a handful of angle samples, each a couple of
+// Appearance gallery from enrolment: a capped set of angle samples, each a couple of
 // short numeric vectors. Capped defensively since it comes straight from the client.
 function cleanVector(v, maxLen) {
   return Array.isArray(v) ? v.slice(0, maxLen).map(Number).filter(Number.isFinite) : [];
@@ -55,15 +55,17 @@ function cleanVector(v, maxLen) {
 
 function cleanGallery(gallery) {
   if (!Array.isArray(gallery)) return [];
-  return gallery.slice(0, 16).map((sample) => {
+  return gallery.slice(0, 24).map((sample) => {
     const clean = {
       hist: cleanVector(sample?.hist, 64),
       grid: cleanVector(sample?.grid, 256),
     };
     const lower = cleanVector(sample?.lower, 64);
     const shape = cleanVector(sample?.shape, 8);
+    const embed = cleanVector(sample?.embed, 512);
     if (lower.length) clean.lower = lower;
     if (shape.length) clean.shape = shape;
+    if (embed.length) clean.embed = embed;
     return clean;
   });
 }

@@ -1,4 +1,4 @@
-import { createDetector, detectPeople, detectScanPeople, headBox, contains } from './detector.js';
+import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
 import { openPolling, openWebSocket } from './transport.js';
 import * as sound from './sound.js';
@@ -7,15 +7,17 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
 const FIRE_COOLDOWN_MS = 350;
+const LIVE_TRACK_MS = 450;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 7;
-const SCAN_MIN_SAMPLES = 10;
-const SCAN_TARGET_SAMPLES = 16;
+const SCAN_CACHE_VERSION = 9;
+const SCAN_MIN_SAMPLES = 12;
+const SCAN_TARGET_SAMPLES = 24;
 const ROTATION_SCAN_COUNTDOWN_MS = 1800;
-const ROTATION_SCAN_DURATION_MS = 9000;
-const ROTATION_RECORD_FRAME_MS = 280;
-const ROTATION_FRAME_MAX_WIDTH = 960;
+const ROTATION_SCAN_DURATION_MS = 12_000;
+const ROTATION_RECORD_FRAME_MS = 180;
+const ROTATION_FRAME_MAX_WIDTH = 1024;
+const ROTATION_SAMPLE_AVERAGE_COUNT = 4;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -33,6 +35,7 @@ const state = {
   roster: [], // latest roster from the server (id, name, gallery)
   detector: null,
   poseDetector: null,
+  embedder: null,
   delegate: '',
   mode: 'scan', // 'scan' | 'game' - which screen the shared camera loop renders for
   boxes: [], // people in the latest camera frame, in video pixels
@@ -41,6 +44,7 @@ const state = {
   gallery: [], // signatures captured so far during enrolment
   scanThumbs: [], // data URLs matching gallery samples, used for the reusable debug cache
   savedScan: null,
+  negativeGallery: new Map(),
   autoScanning: false,
   postProcessingScan: false,
   scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
@@ -69,10 +73,12 @@ $('join-form').addEventListener('submit', async (event) => {
   $('join-btn').disabled = true;
   setJoinStatus('Starting camera and loading the detector…');
   try {
-    const [, { detector, poseDetector, delegate }] = await Promise.all([startCamera(), createDetector()]);
+    const [, { detector, poseDetector, embedder, delegate }] = await Promise.all([startCamera(), createDetector()]);
     state.detector = detector;
     state.poseDetector = poseDetector;
+    state.embedder = embedder;
     state.delegate = delegate;
+    state.negativeGallery = loadNegativeGallery();
   } catch (err) {
     console.error(err);
     setJoinStatus(startupErrorMessage(err));
@@ -85,6 +91,7 @@ $('join-form').addEventListener('submit', async (event) => {
   $('join-screen').hidden = true;
   $('scan-screen').hidden = false;
   $('debug').hidden = !DEBUG;
+  $('not-me-btn').hidden = !DEBUG;
   keepScreenOn();
   renderSavedScan();
   startScanStep();
@@ -164,10 +171,6 @@ function updateScanButtons() {
   $('scan-capture-btn').disabled = state.autoScanning || state.postProcessingScan || state.gallery.length >= SCAN_TARGET_SAMPLES;
 }
 
-function biggestBox(boxes) {
-  return boxes.reduce((best, b) => (!best || b.w * b.h > best.w * best.h ? b : best), null);
-}
-
 function cropThumbnail(box, source = video) {
   const c = document.createElement('canvas');
   c.width = 48;
@@ -220,6 +223,38 @@ function saveScanCache() {
     renderSavedScan();
   } catch {
     // The scan cache is only a debug convenience; the live scan still works.
+  }
+}
+
+function negativeCacheKey() {
+  return `negative:${state.room}`;
+}
+
+function loadNegativeGallery() {
+  const map = new Map();
+  try {
+    const cache = JSON.parse(localStorage.getItem(`laser-tag:${negativeCacheKey()}`));
+    if (cache?.room !== state.room || !cache.samples || typeof cache.samples !== 'object') return map;
+    for (const [name, samples] of Object.entries(cache.samples)) {
+      if (!Array.isArray(samples)) continue;
+      const clean = samples.filter(
+        (s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape),
+      );
+      if (clean.length) map.set(name, clean.slice(-12));
+    }
+  } catch {
+    // Negative samples are a local debug aid only.
+  }
+  return map;
+}
+
+function saveNegativeGallery() {
+  try {
+    const samples = {};
+    for (const [name, gallery] of state.negativeGallery) samples[name] = gallery.slice(-12);
+    localStorage.setItem(`laser-tag:${negativeCacheKey()}`, JSON.stringify({ version: 1, room: state.room, samples }));
+  } catch {
+    // Ignore storage failures; this only affects future debug sessions.
   }
 }
 
@@ -281,15 +316,22 @@ function recordScanCapture(captured) {
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
 
+function currentScanBoxes(timestamp = performance.now()) {
+  const boxes = detectScanPeople(state.detector, state.poseDetector, video, timestamp);
+  state.boxes = boxes;
+  return boxes;
+}
+
 async function captureScanSignature() {
   const samples = [];
   let thumbnailBox = null;
   let problem = 'no-person';
   for (let i = 0; i < SCAN_SAMPLE_COUNT; i++) {
     await nextFrame();
-    const box = biggestBox(state.boxes);
+    const now = performance.now();
+    const box = bestScanBox(currentScanBoxes(now), video);
     if (box && usableScanBox(video, box)) {
-      samples.push(extractSignature(video, box));
+      samples.push(extractSignature(video, box, state.embedder, now));
       thumbnailBox = box;
       problem = 'ok';
     } else {
@@ -329,6 +371,10 @@ function boxScanQuality(box, source = video) {
   return area * 2 + height + centered * 0.5;
 }
 
+function bestScanBox(boxes, source = video) {
+  return boxes.reduce((best, box) => (!best || boxScanQuality(box, source) > boxScanQuality(best, source) ? box : best), null);
+}
+
 function selectRotationSamples(candidates, targetCount) {
   if (candidates.length <= targetCount) return candidates;
   const first = candidates[0].time;
@@ -342,12 +388,22 @@ function selectRotationSamples(candidates, targetCount) {
   const selected = [];
   for (const bucket of buckets) {
     bucket.sort((a, b) => b.quality - a.quality);
-    if (bucket[0]) selected.push(bucket[0]);
+    if (!bucket[0]) continue;
+    const best = bucket[0];
+    const averaged = bucket.slice(0, ROTATION_SAMPLE_AVERAGE_COUNT);
+    selected.push({
+      ...best,
+      signature: averageSignatures(averaged.map((candidate) => candidate.signature)),
+      quality: averaged.reduce((sum, candidate) => sum + candidate.quality, 0) / averaged.length,
+      sourceCount: averaged.length,
+    });
   }
 
   if (selected.length < targetCount) {
-    const used = new Set(selected);
-    const extras = candidates.filter((candidate) => !used.has(candidate)).sort((a, b) => b.quality - a.quality);
+    const minGap = span / Math.max(1, targetCount * 1.4);
+    const extras = candidates
+      .filter((candidate) => selected.every((sample) => Math.abs(sample.time - candidate.time) >= minGap))
+      .sort((a, b) => b.quality - a.quality);
     selected.push(...extras.slice(0, targetCount - selected.length));
   }
 
@@ -411,11 +467,11 @@ async function processRotationVideo(frames) {
       await nextFrame();
       const frame = frames[i];
       const boxes = detectScanPeople(state.detector, state.poseDetector, frame.image, performance.now());
-      const box = biggestBox(boxes);
+      const box = bestScanBox(boxes, frame.image);
 
       if (box && usableScanBox(frame.image, box)) {
         candidates.push({
-          signature: extractSignature(frame.image, box),
+          signature: extractSignature(frame.image, box, state.embedder, performance.now()),
           box: { ...box },
           thumb: cropThumbnail(box, frame.image),
           quality: boxScanQuality(box, frame.image),
@@ -437,9 +493,9 @@ async function processRotationVideo(frames) {
   if (!state.autoScanning) return null;
   const samples = selectRotationSamples(candidates, SCAN_TARGET_SAMPLES);
   if (samples.length < SCAN_MIN_SAMPLES) {
-    return { problem: mostCommonProblem(problemCounts, lastProblem), samples };
+    return { problem: mostCommonProblem(problemCounts, lastProblem), samples, usableFrames: candidates.length, totalFrames: frames.length };
   }
-  return { samples };
+  return { samples, usableFrames: candidates.length, totalFrames: frames.length };
 }
 
 $('scan-capture-btn').addEventListener('click', async () => {
@@ -488,7 +544,7 @@ async function runAutoScan() {
       $('scan-thumbs').innerHTML = '';
       for (const thumb of state.scanThumbs) appendScanThumb(thumb);
       finalMessage =
-        `Only got ${result.samples.length}/${SCAN_MIN_SAMPLES} usable frames: ${scanProblemMessage(result.problem)}. Try again slower.`;
+        `Only got ${result.samples.length}/${SCAN_MIN_SAMPLES} usable angles from ${result.usableFrames}/${result.totalFrames} frames: ${scanProblemMessage(result.problem)}. Try again slower.`;
       return;
     }
 
@@ -497,6 +553,7 @@ async function runAutoScan() {
     $('scan-thumbs').innerHTML = '';
     for (const thumb of state.scanThumbs) appendScanThumb(thumb);
     saveScanCache();
+    finalMessage = `Saved ${result.samples.length} angles from ${result.usableFrames} usable rotation frames.`;
   } catch (err) {
     console.error(err);
     finalMessage = `Could not process the rotation video: ${err.message || err}`;
@@ -693,14 +750,19 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 
 // ---- Shooting ----
 
+function isLiveTrack(track, now = performance.now()) {
+  return now - track.lastSeen <= LIVE_TRACK_MS;
+}
+
 // Which (if any) tracked person is under the crosshair, and which zone of them.
 function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   let bodyTrack = null;
+  const now = performance.now();
   for (const t of state.tracks) {
+    if (!isLiveTrack(t, now)) continue;
     if (!includeSelf && t.playerId === state.myId) continue;
-    if (!contains(t.box, px, py)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
-    bodyTrack = t;
+    if (contains(bodyBox(t.box), px, py)) bodyTrack = t;
   }
   return bodyTrack ? { track: bodyTrack, zone: 'body' } : null;
 }
@@ -720,10 +782,46 @@ function fire() {
   }
 }
 
+function clearTrackIdentity(track) {
+  track.playerId = null;
+  track.name = null;
+  track.score = 0;
+  track.upper = 0;
+  track.lower = 0;
+  track.grid = 0;
+  track.shape = 0;
+  track.embed = 0;
+  track.negative = 0;
+  track.streak = 0;
+  track.streakId = undefined;
+  track.misses = 0;
+}
+
+function markTargetAsNotMe() {
+  const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2, { includeSelf: true });
+  const track = hit?.track;
+  if (!track?.playerId || !track.name) return;
+
+  const key = track.name.toLowerCase();
+  const signature = extractSignature(video, track.box, state.embedder, performance.now());
+  const gallery = state.negativeGallery.get(key) ?? [];
+  gallery.push(signature);
+  state.negativeGallery.set(key, gallery.slice(-12));
+  saveNegativeGallery();
+  clearTrackIdentity(track);
+
+  const button = $('not-me-btn');
+  button.textContent = 'Saved';
+  setTimeout(() => {
+    button.textContent = 'Not me';
+  }, 900);
+}
+
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fire();
 });
+$('not-me-btn').addEventListener('click', markTargetAsNotMe);
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && !$('game-screen').hidden) fire();
@@ -743,10 +841,14 @@ function loop() {
   if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const t0 = performance.now();
-    state.boxes = detectPeople(state.detector, video, t0);
-    if (state.mode === 'game') {
+    if (state.mode === 'scan') {
+      state.boxes = detectScanPeople(state.detector, state.poseDetector, video, t0);
+    } else {
+      state.boxes = detectTrackedPeople(state.detector, state.poseDetector, video, t0);
       state.tracks = state.tracker.update(state.boxes, video, state.roster, DEBUG ? null : state.myId, t0, {
         includeRejected: DEBUG,
+        embedder: state.embedder,
+        negatives: state.negativeGallery,
       });
     }
     inferenceMs = performance.now() - t0;
@@ -763,18 +865,19 @@ function loop() {
       frames = 0;
       fpsWindowStart = now;
     }
-    const identified = state.tracks.filter((t) => t.playerId);
-    const rejected = state.tracks.filter((t) => !t.playerId && t.debugMatch);
+    const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
+    const identified = visibleTracks.filter((t) => t.playerId);
+    const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
-      `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people` +
+      `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
       (state.mode === 'game'
         ? ` · ${identified.length} identified` +
           (identified.length
             ? `\n${identified
                 .map(
                   (t) =>
-                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)}`,
+                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)} n${t.negative?.toFixed(2)}`,
                 )
                 .join(' ')}`
             : '')
@@ -783,7 +886,7 @@ function loop() {
         ? `\nRejected ${rejected
             .map(
               (t) =>
-                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)}`,
+                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)} n${(t.debugMatch.negative ?? 0).toFixed(2)}`,
             )
             .join(' ')}`
         : '');
@@ -824,7 +927,7 @@ function draw() {
 
 // Scan screen: just highlight whoever would be captured if "Capture" were tapped now.
 function drawScan({ toScreen }) {
-  const target = biggestBox(state.boxes);
+  const target = bestScanBox(state.boxes, video);
   ctx.lineWidth = 3;
   for (const box of state.boxes) {
     ctx.strokeStyle = box === target ? '#39ff88' : 'rgba(255,255,255,0.4)';
@@ -840,7 +943,9 @@ function drawGame({ vw, vh, toScreen }) {
 
   ctx.lineWidth = 3;
   ctx.font = '600 13px system-ui, sans-serif';
+  const now = performance.now();
   for (const track of state.tracks) {
+    if (!isLiveTrack(track, now)) continue;
     const targeted = hit?.track === track;
     const known = track.playerId !== null;
     const debugMatch = DEBUG && !known ? track.debugMatch : null;
@@ -848,6 +953,9 @@ function drawGame({ vw, vh, toScreen }) {
     ctx.strokeStyle = color;
     ctx.setLineDash(known ? [] : debugMatch ? [8, 4] : [4, 4]);
     ctx.strokeRect(...toScreen(track.box));
+
+    ctx.setLineDash([]);
+    ctx.strokeRect(...toScreen(bodyBox(track.box)));
 
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(...toScreen(headBox(track.box)));
