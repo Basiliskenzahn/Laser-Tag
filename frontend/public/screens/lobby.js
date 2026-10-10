@@ -6,7 +6,7 @@
 // happened" exit used by the scan flow and by the end of a round - so it owns hiding the other
 // screens and clearing their countdowns.
 
-import { canvas, video, $ } from '../env.js';
+import { canvas, SCAN_EXPORT, video, $ } from '../env.js';
 import { stopCamera } from '../camera.js';
 import { clearActiveLobby, state } from '../state.js';
 import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '../roster.js';
@@ -14,7 +14,7 @@ import { send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
 import { setJoinStatus } from './join.js';
 import { hideResults } from './results.js';
-import { beginPlayerScan, hideScanCountdown } from './scan.js';
+import { beginPlayerScan, exportPlayerScan, hideScanCountdown } from './scan.js';
 
 const GAME_LAUNCH_COUNTDOWN_MS = 3_000; // mirrors server/game.js's COUNTDOWN_MS
 
@@ -49,12 +49,24 @@ export function renderLobby() {
 
     row.append(details);
     if (!ownerId) {
+      const actions = document.createElement('div');
+      actions.className = 'lobby-player-actions';
+      if (scanned && SCAN_EXPORT) {
+        const exportBtn = document.createElement('button');
+        exportBtn.type = 'button';
+        exportBtn.textContent = 'Export';
+        exportBtn.addEventListener('click', () => {
+          if (exportPlayerScan(rosterPlayer)) $('lobby-status').textContent = `Exported ${player.name}'s scan.`;
+        });
+        actions.append(exportBtn);
+      }
       const scanBtn = document.createElement('button');
       scanBtn.type = 'button';
       scanBtn.textContent = scanned ? 'Rescan' : 'Scan';
       scanBtn.disabled = state.game?.status === 'countdown' || state.game?.status === 'playing';
       scanBtn.addEventListener('click', () => beginPlayerScan(rosterPlayer));
-      row.append(scanBtn);
+      actions.append(scanBtn);
+      row.append(actions);
     }
     list.append(row);
   }

@@ -89,14 +89,14 @@ function scanPersonName() {
   return state.scanTargetName || state.name;
 }
 
-function scanCacheKey() {
-  return `scan:${state.room}:${scanPersonName().toLowerCase()}`;
+function scanCacheKey(name = scanPersonName()) {
+  return `scan:${state.room}:${name.toLowerCase()}`;
 }
 
-function validScanCache(cache) {
+function validScanCache(cache, name = scanPersonName()) {
   return (
     cache?.version === SCAN_CACHE_VERSION &&
-    cache.name === scanPersonName() &&
+    cache.name === name &&
     cache.room === state.room &&
     Array.isArray(cache.gallery) &&
     cache.gallery.length >= SCAN_MIN_SAMPLES &&
@@ -108,14 +108,18 @@ function validScanCache(cache) {
   );
 }
 
-export function loadScanCache() {
+export function loadScanCache(name = scanPersonName()) {
   try {
-    const cache = JSON.parse(localStorage.getItem(`laser-tag:${scanCacheKey()}`));
-    return validScanCache(cache) ? cache : null;
+    const cache = JSON.parse(localStorage.getItem(`laser-tag:${scanCacheKey(name)}`));
+    return validScanCache(cache, name) ? cache : null;
   } catch {
     return null;
   }
 }
+
+// How many recorded frames the last finished scan had, and how many passed the quality gates.
+// Not needed to play - it only rides along in the cache so an exported scan can show it.
+let lastScanFrames = null;
 
 function saveScanCache() {
   if (state.gallery.length < SCAN_MIN_SAMPLES) return;
@@ -125,6 +129,7 @@ function saveScanCache() {
       name: scanPersonName(),
       room: state.room,
       savedAt: Date.now(),
+      frames: lastScanFrames,
       gallery: state.gallery,
       thumbs: state.scanThumbs,
     };
@@ -584,6 +589,7 @@ async function runAutoScan() {
   state.autoScanning = true;
   state.gallery = [];
   state.scanThumbs = [];
+  lastScanFrames = null;
   $('scan-thumbs').innerHTML = '';
 
   try {
@@ -613,6 +619,7 @@ async function runAutoScan() {
       return;
     }
 
+    lastScanFrames = { usable: result.usableFrames, total: result.totalFrames };
     saveScanCache();
     finalMessage = `Saved scan for ${scanPersonName()} with ${result.samples.length} angles.`;
     state.autoScanning = false;
@@ -670,6 +677,41 @@ function saveCurrentScan(message = `Saved scan for ${scanPersonName()}.`) {
   send({ type: 'scan', targetId: state.scanTargetId, gallery });
   saveScanCache();
   showLobby(message);
+}
+
+// Downloads a player's scan as JSON. The gallery comes from the roster, because that is what the
+// server shares and every phone matches against; thumbnails, frame counts and the scan time only
+// exist in the local cache of the phone that did the scan, so they are added when this phone has
+// a cache for the same scan and left out otherwise.
+export function exportPlayerScan(player) {
+  const gallery = player?.gallery ?? [];
+  if (!gallery.length) return false;
+  const cache = loadScanCache(player.name || 'Player');
+  const sameScan = cache && JSON.stringify(cache.gallery[0]?.hist) === JSON.stringify(gallery[0]?.hist);
+  const data = {
+    format: 'laser-tag-scan',
+    version: SCAN_CACHE_VERSION,
+    exportedAt: new Date().toISOString(),
+    room: state.game?.code ?? state.room,
+    player: { id: player.id, name: player.name },
+    scannedAt: sameScan ? new Date(cache.savedAt).toISOString() : null,
+    frames: sameScan ? (cache.frames ?? null) : null,
+    sampleCount: gallery.length,
+    gallery,
+    thumbs: sameScan ? cache.thumbs : [],
+  };
+  const safeName = (player.name || 'player').replace(/[^\w-]+/g, '_');
+  const stamp = data.exportedAt.slice(0, 19).replace(/[:T]/g, '-');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `scan-${data.room}-${safeName}-${stamp}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Some mobile browsers start the download asynchronously, so the URL has to outlive the click.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
 }
 
 function cosine(a, b) {

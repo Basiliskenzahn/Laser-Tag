@@ -188,6 +188,11 @@ input {
   color: var(--target);
 }
 
+.lobby-player-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .lobby-player button {
   min-width: 86px;
   padding: 10px 12px;
