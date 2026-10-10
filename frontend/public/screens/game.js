@@ -192,6 +192,19 @@ export function updateCountdown() {
   }
 }
 
+// ---- Leaving ----
+
+// Mid-round, leaving is a forfeit: the server counts it as a knockout.
+export function openLeaveDialog() {
+  $('leave-dialog').showModal();
+}
+
+// Also called whenever the game screen goes away: an open modal left inside a hidden screen would
+// still make the rest of the page inert.
+export function closeLeaveDialog() {
+  if ($('leave-dialog').open) $('leave-dialog').close();
+}
+
 export function popup(text, headshot) {
   const el = document.createElement('div');
   el.className = `popup${headshot ? ' headshot' : ''}`;

@@ -12,6 +12,14 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="icon-leave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+        <path d="M10 8l-4 4 4 4" />
+        <path d="M6 12h10" />
+      </symbol>
+    </svg>
+
     <!-- One camera stream, shared by the scan screen and the game screen so it's only requested once. -->
     <video id="video" playsinline muted autoplay hidden></video>
     <canvas id="overlay" hidden></canvas>
@@ -78,6 +86,22 @@
 
       <button id="fire-btn" aria-label="Fire">FIRE</button>
       <pre id="debug" hidden></pre>
+
+      <button id="leave-game-btn" type="button">
+        <svg aria-hidden="true"><use href="#icon-leave" /></svg>
+        <span>Leave</span>
+      </button>
+
+      <dialog id="leave-dialog" aria-labelledby="leave-title">
+        <div class="dialog-body">
+          <div class="dialog-icon"><svg aria-hidden="true"><use href="#icon-leave" /></svg></div>
+          <h2 id="leave-title">Leave game?</h2>
+          <div class="dialog-actions">
+            <button id="leave-cancel-btn" type="button" autofocus>Stay</button>
+            <button id="leave-confirm-btn" type="button">Leave</button>
+          </div>
+        </div>
+      </dialog>
     </main>
   </body>
 </html>

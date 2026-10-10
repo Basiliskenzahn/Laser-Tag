@@ -11,7 +11,7 @@ import { stopCamera } from '../camera.js';
 import { clearActiveLobby, state } from '../state.js';
 import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '../roster.js';
 import { send, showConnectionProblem } from '../net.js';
-import { clearGameCountdown, enterGame, updateCountdown } from './game.js';
+import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
 import { setJoinStatus } from './join.js';
 import { beginPlayerScan, hideScanCountdown } from './scan.js';
 
@@ -69,6 +69,7 @@ export function showLobby(message = '') {
   $('scan-screen').hidden = true;
   hideScanCountdown();
   clearGameCountdown();
+  closeLeaveDialog();
   $('game-screen').hidden = true;
   $('lobby-screen').hidden = false;
   video.hidden = true;
@@ -88,6 +89,7 @@ export function leaveLobby() {
   clearActiveLobby();
   hideScanCountdown();
   clearGameCountdown();
+  closeLeaveDialog();
   state.launchingFromLobby = false;
   stopCamera();
   state.mode = 'join';

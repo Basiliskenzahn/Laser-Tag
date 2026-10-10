@@ -14,7 +14,7 @@ import * as sound from './sound.js';
 import { enterLobbyFromForm, initJoinForm, resumeActiveLobby, setJoinStatus } from './screens/join.js';
 import { launchGame, leaveLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
-import { fire } from './screens/game.js';
+import { closeLeaveDialog, fire, openLeaveDialog } from './screens/game.js';
 
 // ---- Join screen ----
 
@@ -60,7 +60,15 @@ $('fire-btn').addEventListener('pointerdown', (event) => {
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
 document.addEventListener('keydown', (event) => {
-  if (event.code === 'Space' && !$('game-screen').hidden) fire();
+  if (event.code === 'Space' && !$('game-screen').hidden && !$('leave-dialog').open) fire();
+});
+
+// Leaving asks first. Esc, "Stay" and a tap outside the box all cancel.
+$('leave-game-btn').addEventListener('click', openLeaveDialog);
+$('leave-cancel-btn').addEventListener('click', closeLeaveDialog);
+$('leave-confirm-btn').addEventListener('click', leaveLobby);
+$('leave-dialog').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeLeaveDialog(); // the backdrop, not the box
 });
 
 resumeActiveLobby();
