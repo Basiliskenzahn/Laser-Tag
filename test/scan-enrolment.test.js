@@ -153,6 +153,28 @@ test('your own cache survives a rename, because the name was never the identity'
   assert.deepEqual(scan.loadScanCache()?.gallery, gallery);
 });
 
+test('saving a scan clears out the old name-keyed caches', async () => {
+  // A gallery is ~190 KB and nothing ever removed one, so they piled up per room *and* per name
+  // until setItem threw QuotaExceededError - which saveScanCache swallows, leaving a phone that
+  // silently stops remembering its scan. The version-12 entries are also the ones that may hold a
+  // different player entirely, so clearing them is not only housekeeping.
+  const { sent } = arrangeScan();
+  dom.store.set('laser-tag:scan:demo:sam', JSON.stringify({ version: 12, name: 'Sam', gallery: [] }));
+  dom.store.set('laser-tag:scan:demo:alex', JSON.stringify({ version: 12, name: 'alex', gallery: [] }));
+  dom.store.set('laser-tag:scan:self:other-room', JSON.stringify({ version: 13, room: 'other-room', gallery: [] }));
+  dom.store.set('laser-tag:name', 'Sam');
+
+  await runScan(selfPlayer);
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the scan has to have succeeded for this to mean anything');
+
+  assert.deepEqual(
+    [...dom.store.keys()].filter((key) => key.startsWith('laser-tag:scan:')).sort(),
+    ['laser-tag:scan:self:demo'],
+    'only this room\'s own entry survives a save',
+  );
+  assert.equal(dom.store.get('laser-tag:name'), 'Sam', 'and nothing outside the scan keys is touched');
+});
+
 test('a cache from another room is not used in this one', async () => {
   const { sent } = arrangeScan({ room: 'demo' });
   await runScan(selfPlayer);
