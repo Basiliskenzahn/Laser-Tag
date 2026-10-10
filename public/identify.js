@@ -1,6 +1,38 @@
 // Telling players apart, not just finding "a person".
 //
 // Plain person detection (detector.js) finds boxes; this module decides *who* is in each box.
+//
+// Four signals can answer that, and they are deliberately a fallback chain rather than a
+// committee: the best signal the phone can actually run wins outright, and the weaker ones stay
+// so that an older device, or a model that failed to load, still gets a game that mostly works.
+// Strongest first:
+//
+//   1. Person re-identification (reid.js). OSNet, trained specifically to tell people apart
+//      across cameras, angles and lighting. When both the live signature and a gallery sample
+//      carry a `reid` vector, its cosine similarity *is* the score and the colour parts below
+//      are ignored - blending them in measured worse than re-identification alone, so they are
+//      computed only for debugging (see similarityParts). It also gates identification: while
+//      re-identification is loaded but has no embedding for a track yet, that track stays
+//      unnamed instead of falling back to colours, because colour-only matching is exactly what
+//      used to label bystanders as players (see Tracker.update).
+//   2. A generic MobileNet image embedding (`personEmbedding`/`embedRegion`, inline below; the
+//      model comes from detector.js). It was not trained to tell people apart, but it beats raw
+//      colour, so when it is present and re-identification is not it is *blended* with the
+//      colour parts rather than replacing them (the EMBED_* weights).
+//   3. The hand-built colour signature (inline below): upper- and lower-body colour histograms,
+//      a coarse colour/shape grid, and box proportions. Canvas pixels only, no model, so it is
+//      always available. Used on its own when neither model loaded (the HIST/LOWER/GRID/SHAPE
+//      weights), and it is the weakest of the three by a wide margin.
+//   4. Phone motion (motion/sensor.js + motion/matching.js). Orthogonal to appearance: it
+//      correlates a tracked box's movement on screen with each player's own accelerometer. It
+//      deliberately does *not* feed the score here. It is a confirm/veto layer on top, applied
+//      by app.js (fuseMotion) to the identity a track already carries, so it can back up a weak
+//      appearance match or veto a bystander who happens to dress like a player.
+//
+// So: signals 1-3 produce one per-sample score in matchGallery, 1 overriding 2 overriding 3; the
+// Tracker then wants several agreeing samples over time, with hysteresis, before it puts a name
+// on a track; and signal 4 is consulted per track by app.js after all of that.
+//
 // Several body-appearance features are extracted per sample:
 //
 //   hist  - colour/brightness histogram of the upper body. Clothing colour barely changes
@@ -16,7 +48,18 @@
 //
 //   embed - an optional learned image embedding. It is compacted before storage so larger
 //           multi-angle scans still fit comfortably in the join message and local cache.
+//   reid  - the re-identification embedding, computed in reid.js and attached by the caller
+//           (Tracker.update during a game, app.js during enrolment), not extracted here.
 
+// ---- Tuning constants ----
+//
+// Everything tunable lives here rather than next to its use, because these numbers interact:
+// the accept thresholds are only meaningful against the weights that feed them, and the tracker
+// then layers streaks and evidence on top of both. Changing one in isolation is how this gets
+// worse. Values are unchanged from when they were tuned; the grouping is just so it is possible
+// to see what a given number is fighting with.
+
+// -- signature layout: how many bins/dimensions each feature spends --
 const HUE_BINS = 12;
 const SAT_BINS = 4;
 const LUMA_BINS = 8;
@@ -26,13 +69,86 @@ const GRID_H = 8;
 const GRID_FEATURES = 4;
 const EMBED_DIMS = 256;
 const EMBED_PRECISION = 10_000;
+
+// -- box quality gates: when a detector box is worth extracting a signature from at all --
+// Enrolment ("scan") is a cooperative, posed shot, so it can afford slightly looser limits than
+// live matching, which has to cope with whatever the game gives it.
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
 const MIN_MATCH_HEIGHT_RATIO = 0.18;
 const MIN_BOX_WIDTH_RATIO = 0.035;
+const MIN_SCAN_BOX_WIDTH_RATIO = 0.025;
 const MIN_ASPECT = 0.58;
 const MAX_ASPECT = 6.5;
 const MIN_SCAN_ASPECT = 0.65;
 const MAX_SCAN_ASPECT = 7.0;
+const BOX_EDGE_PAD_RATIO = 0.01; // how close to the frame edge counts as touching it
+const CLIPPED_OK_HEIGHT_RATIO = 0.55; // a box touching the edge is still usable once it's this tall
+const CLIPPED_OK_SCAN_HEIGHT_RATIO = 0.42;
+
+// -- colour/grid similarity weights: the score when neither model is available (signal 3) --
+const HIST_WEIGHT = 0.42;
+const LOWER_WEIGHT = 0.24;
+const GRID_WEIGHT = 0.24;
+const SHAPE_WEIGHT = 0.1;
+
+// -- colour/grid + MobileNet weights: the blend used when an embedding is present (signal 2) --
+const EMBED_HIST_WEIGHT = 0.3;
+const EMBED_LOWER_WEIGHT = 0.18;
+const EMBED_GRID_WEIGHT = 0.16;
+const EMBED_SHAPE_WEIGHT = 0.06;
+const EMBED_WEIGHT = 0.3;
+
+// -- multi-angle gallery agreement: how much nearby enrolled angles get to back up the best one --
+const GALLERY_TOP_MATCH_COUNT = 3;
+const GALLERY_AGREEMENT_WINDOW = 0.1;
+const GALLERY_AGREEMENT_WEIGHT = 0.25;
+const GALLERY_SUPPORT_BONUS = 0.012;
+
+// -- colour-signature accept thresholds: a win has to be good *and* unambiguous *and* all-round --
+const MATCH_THRESHOLD = 0.54; // below this, call it unknown rather than guess
+const MATCH_MARGIN = 0.06; // the winner must clear the runner-up by this much
+const MIN_UPPER_SCORE = 0.5;
+const MIN_LOWER_SCORE = 0.38;
+const MIN_GRID_SCORE = 0.4;
+const MIN_SHAPE_SCORE = 0.36;
+
+// -- re-identification thresholds (cosine similarity of OSNet embeddings) --
+// Chosen on Market-1501 in simulated games of 2-4 players, in the game's closed-set mode, per
+// single check:
+//   threshold 0.70 / 0.72 / 0.74 / 0.76 -> players recognised 87% / 83% / 77% / 71%,
+//   bystanders accepted 10.8% / 7.6% / 4.9% / 3.1%, wrong player 0.3-0.5%.
+// The tracker also needs agreeing checks before it names a track, so per person it's lower.
+// The margin halves wrong-player assignments.
+const REID_MATCH_THRESHOLD = 0.72;
+const REID_MATCH_MARGIN = 0.03;
+const REID_EVIDENCE_MIN_SCORE = 0.62; // below this a check contributes no evidence at all
+const REID_SOFT_LABEL_SCORE = 0.66; // good enough to be a candidate, not to be accepted outright
+const REID_INITIAL_LOCK = 0.8; // name a brand new track on one check this strong
+
+// -- tracker association and lifecycle: matching boxes to tracks frame to frame --
+const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
+const TRACK_TIMEOUT_MS = 900;
+const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
+const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
+const BOX_SMOOTHING = 0.68; // how far a track's box moves towards the new detection each frame
+const COAST_VELOCITY_DECAY = 0.82; // velocity damping while a track is briefly unseen
+
+// -- identity hysteresis: how reluctant a track is to take or change a name --
+const INITIAL_STREAK = 2; // a new track must agree a couple of times before getting a name
+const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
+const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66; // colour-only equivalent of REID_INITIAL_LOCK
+
+// -- evidence accumulation: a leaky bucket per candidate id, so one good frame isn't decisive --
+const EVIDENCE_DECAY = 0.82; // per check, so old evidence fades within a second or so
+const EVIDENCE_ACCEPT = 0.58; // bucket level at which the leader can name the track
+const EVIDENCE_MARGIN = 0.12; // ...and by how much it must lead the runner-up
+const EVIDENCE_MIN_SCORE = 0.42; // colour-path floor for a check to count as evidence
+const EVIDENCE_MIN_PART = 0.24; // ...and the floor for each individual colour part
+const EVIDENCE_WEIGHT_ACCEPTED = 1.25; // an accepted check is worth more than a near miss
+const EVIDENCE_WEIGHT_SOFT = 0.45; // a near miss still counts, scaled by how near it was
+const SOFT_LABEL_SCORE = 0.48; // colour-path equivalent of REID_SOFT_LABEL_SCORE
+
+// ---- Signature extraction ----
 
 let sampleCanvas = null;
 function sourceWidth(source) {
@@ -67,18 +183,20 @@ function boxMetrics(source, box) {
   const aspect = box.h / Math.max(1, box.w);
   const heightRatio = box.h / vh;
   const widthRatio = box.w / vw;
-  const edgePad = Math.min(vw, vh) * 0.01;
+  const edgePad = Math.min(vw, vh) * BOX_EDGE_PAD_RATIO;
   const clipped =
     box.x <= edgePad || box.y <= edgePad || box.x + box.w >= vw - edgePad || box.y + box.h >= vh - edgePad;
   return { aspect, heightRatio, widthRatio, clipped };
 }
 
+// 'ok', or why this box is not worth a signature. The reason is shown to the player during
+// enrolment ("step a little closer"), so the order of these checks is the order of advice.
 function boxQuality(source, box, minHeightRatio, { scan = false } = {}) {
   const m = boxMetrics(source, box);
-  const minWidthRatio = scan ? 0.025 : MIN_BOX_WIDTH_RATIO;
+  const minWidthRatio = scan ? MIN_SCAN_BOX_WIDTH_RATIO : MIN_BOX_WIDTH_RATIO;
   const minAspect = scan ? MIN_SCAN_ASPECT : MIN_ASPECT;
   const maxAspect = scan ? MAX_SCAN_ASPECT : MAX_ASPECT;
-  const clippedHeight = scan ? 0.42 : 0.55;
+  const clippedHeight = scan ? CLIPPED_OK_SCAN_HEIGHT_RATIO : CLIPPED_OK_HEIGHT_RATIO;
   if (m.heightRatio < minHeightRatio || m.widthRatio < minWidthRatio) return 'too-far';
   if (m.aspect < minAspect || m.aspect > maxAspect) return 'partial-body';
   if (m.clipped && m.heightRatio < clippedHeight) return 'edge-clipped';
@@ -195,6 +313,9 @@ function embedRegion(source, box) {
   return right - left > 0.02 && bottom - top > 0.02 ? { left, top, right, bottom } : null;
 }
 
+// Signal 2: the generic MobileNet embedding (detector.js builds the embedder). Synchronous and
+// cheap enough to run inline, unlike reid.js. Returns [] when there is no embedder, no usable
+// region, or inference failed, which is what makes it an optional blend rather than a dependency.
 let embedTimestamp = 0;
 function personEmbedding(source, box, embedder, timestamp) {
   if (!embedder) return [];
@@ -215,6 +336,7 @@ function personEmbedding(source, box, embedder, timestamp) {
 }
 
 // { hist, lower, grid, embed } for one video frame + box. Used both at enrolment and live.
+// `reid` is not set here: it is asynchronous, so the caller attaches it (see Tracker.update).
 export function extractSignature(source, box, embedder = null, timestamp = performance.now()) {
   return {
     hist: appearanceHistogram(source, subBox(box, 0.16, 0.2, 0.68, 0.42)),
@@ -236,6 +358,7 @@ function averageVectors(vectors) {
   return normalize(avg.map((v) => v / vectors.length));
 }
 
+// One gallery entry out of several samples of the same person at (roughly) the same angle.
 export function averageSignatures(signatures) {
   return {
     hist: averageVectors(signatures.map((s) => s.hist)),
@@ -247,6 +370,8 @@ export function averageSignatures(signatures) {
     usable: signatures.some((s) => s.usable !== false),
   };
 }
+
+// ---- Gallery matching ----
 
 function cosine(a, b) {
   let dot = 0;
@@ -270,20 +395,8 @@ function shapeSimilarity(a, b) {
   return Math.max(0, 1 - Math.abs(Math.log(aspectA / aspectB)) / Math.log(2.2));
 }
 
-const HIST_WEIGHT = 0.42;
-const LOWER_WEIGHT = 0.24;
-const GRID_WEIGHT = 0.24;
-const SHAPE_WEIGHT = 0.1;
-const EMBED_HIST_WEIGHT = 0.3;
-const EMBED_LOWER_WEIGHT = 0.18;
-const EMBED_GRID_WEIGHT = 0.16;
-const EMBED_SHAPE_WEIGHT = 0.06;
-const EMBED_WEIGHT = 0.3;
-const GALLERY_TOP_MATCH_COUNT = 3;
-const GALLERY_AGREEMENT_WINDOW = 0.1;
-const GALLERY_AGREEMENT_WEIGHT = 0.25;
-const GALLERY_SUPPORT_BONUS = 0.012;
-
+// One live signature against one enrolled sample. This is where the fallback chain described at
+// the top of the file actually happens: see `score`.
 function similarityParts(a, b) {
   const upper = cosine(a.hist, b.hist);
   const lower = cosine(a.lower, b.lower);
@@ -363,25 +476,9 @@ function bestAngleScore(signature, gallery) {
   };
 }
 
-const MATCH_THRESHOLD = 0.54; // below this, call it unknown rather than guess
-const MATCH_MARGIN = 0.06; // the winner must clear the runner-up by this much
-const MIN_UPPER_SCORE = 0.5;
-const MIN_LOWER_SCORE = 0.38;
-const MIN_GRID_SCORE = 0.4;
-const MIN_SHAPE_SCORE = 0.36;
-
-// Thresholds for re-identification scores (cosine similarity of OSNet embeddings). Chosen on
-// Market-1501 in simulated games of 2-4 players, in the game's closed-set mode, per single check:
-//   threshold 0.70 / 0.72 / 0.74 / 0.76 -> players recognised 87% / 83% / 77% / 71%,
-//   bystanders accepted 10.8% / 7.6% / 4.9% / 3.1%, wrong player 0.3-0.5%.
-// The tracker also needs agreeing checks before it names a track, so per person it's lower.
-// The margin halves wrong-player assignments.
-const REID_MATCH_THRESHOLD = 0.72;
-const REID_MATCH_MARGIN = 0.03;
-const REID_EVIDENCE_MIN_SCORE = 0.62;
-const REID_SOFT_LABEL_SCORE = 0.66;
-const REID_INITIAL_LOCK = 0.8;
-
+// null when the best candidate is good enough, otherwise which gate it failed. Note that the
+// re-identification path checks score and margin only: the colour part minimums below exist to
+// prop up a weak signal, and applying them to a stronger one just rejects correct matches.
 function rejectionReason(best, candidates, secondScore) {
   if (!best) return 'no-candidate';
   if (best.hasReid) {
@@ -428,6 +525,8 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
   if (!reason) return { ...best, accepted: true, candidates };
   return includeRejected && best ? { ...best, accepted: false, reason, candidates, rankings } : null;
 }
+
+// ---- Per-frame tracking ----
 
 function iou(a, b) {
   const x1 = Math.max(a.x, b.x);
@@ -480,6 +579,9 @@ function predictedBox(track, now) {
   };
 }
 
+// How much this box looks like the next observation of this track: mostly overlap, then how far
+// the centre moved, then a little for keeping the same size. The early return rejects pairs that
+// neither overlap nor sit close enough to be the same person, however similar their size.
 function associationScore(track, box, now) {
   const predicted = predictedBox(track, now);
   const overlap = iou(predicted, box);
@@ -491,7 +593,7 @@ function associationScore(track, box, now) {
 function updateTrackBox(track, box, now) {
   const previous = center(track.box);
   const dt = Math.max(0.016, (now - (track.lastUpdated || track.lastSeen || now)) / 1000);
-  const smoothed = blendBox(track.box, box, 0.68);
+  const smoothed = blendBox(track.box, box, BOX_SMOOTHING);
   const next = center(smoothed);
   track.vx = (next.x - previous.x) / dt;
   track.vy = (next.y - previous.y) / dt;
@@ -503,6 +605,9 @@ function updateTrackBox(track, box, now) {
   track.checks++;
 }
 
+// How much to trust this track's name, used only to break ties between two tracks claiming the
+// same player: the score it was named on, plus supporting evidence and a long history, minus
+// failed checks and staleness.
 function identityConfidence(track, now) {
   if (!track.playerId) return -Infinity;
   const evidence = track.evidence?.get(track.playerId) ?? 0;
@@ -519,6 +624,8 @@ function clearIdentity(track) {
   track.grid = 0;
   track.shape = 0;
   track.embed = 0;
+  track.reid = 0;
+  track.hasReid = false;
   track.rankings = [];
   track.streak = 0;
   track.streakId = undefined;
@@ -528,6 +635,8 @@ function clearIdentity(track) {
   track.selfRejected = false;
 }
 
+// One player can only be in one place: if two tracks ended up with the same name, the better
+// supported one keeps it and the other goes back to being an unidentified person.
 function resolveDuplicateIdentities(tracks, now) {
   const byPlayer = new Map();
   for (const track of tracks) {
@@ -548,6 +657,11 @@ function resolveDuplicateIdentities(tracks, now) {
   }
 }
 
+// With several people on screen at once, deciding each track on its own throws away the
+// strongest hint available: the same player cannot be two of them. This assigns players to
+// tracks greedily over all (track, candidate) pairs instead, nudged by stickiness to the current
+// name, accumulated evidence, how clearly that candidate beat its rivals, and how many enrolled
+// angles agreed. Tracks left without a player become unidentified people.
 function resolveClosedSetIdentities(tracks, now, selfId) {
   const visible = tracks.filter((track) => track.lastSeen === now && !track.selfRejected && track.rankings?.length);
   if (visible.length < 2) return;
@@ -579,20 +693,6 @@ function resolveClosedSetIdentities(tracks, now, selfId) {
   }
 }
 
-const ASSOCIATION_MATCH = 0.3;
-const TRACK_TIMEOUT_MS = 900;
-const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
-const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
-const INITIAL_STREAK = 2; // a new track must agree a couple of times before getting a name
-const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
-const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66;
-const EVIDENCE_DECAY = 0.82;
-const EVIDENCE_ACCEPT = 0.58;
-const EVIDENCE_MARGIN = 0.12;
-const EVIDENCE_MIN_SCORE = 0.42;
-const EVIDENCE_MIN_PART = 0.24;
-const SOFT_LABEL_SCORE = 0.48;
-
 function decayEvidence(track) {
   for (const [id, value] of track.evidence) {
     const decayed = value * EVIDENCE_DECAY;
@@ -601,11 +701,13 @@ function decayEvidence(track) {
   }
 }
 
+// What one check is worth as evidence: nothing at all below the floors, more when it was
+// accepted outright, and otherwise scaled by how far above the floor it got.
 function evidenceWeight(match) {
   if (!match) return 0;
   if (match.hasReid) {
     if (match.score < REID_EVIDENCE_MIN_SCORE) return 0;
-    return match.accepted ? 1.25 : 0.45 + Math.max(0, match.score - REID_EVIDENCE_MIN_SCORE);
+    return match.accepted ? EVIDENCE_WEIGHT_ACCEPTED : EVIDENCE_WEIGHT_SOFT + Math.max(0, match.score - REID_EVIDENCE_MIN_SCORE);
   }
   if (
     match.score < EVIDENCE_MIN_SCORE ||
@@ -616,9 +718,11 @@ function evidenceWeight(match) {
   ) {
     return 0;
   }
-  return match.accepted ? 1.25 : 0.45 + Math.max(0, match.score - EVIDENCE_MIN_SCORE);
+  return match.accepted ? EVIDENCE_WEIGHT_ACCEPTED : EVIDENCE_WEIGHT_SOFT + Math.max(0, match.score - EVIDENCE_MIN_SCORE);
 }
 
+// A rejected match that is still worth proposing to the streak logic. A 'margin' rejection is
+// never soft-labelled: two players scoring the same is a tie, and guessing is worse than waiting.
 function softLabelMatch(match) {
   if (!match || match.accepted || match.reason === 'margin') return null;
   if (match.hasReid) return match.score >= REID_SOFT_LABEL_SCORE ? { ...match, soft: true } : null;
@@ -706,6 +810,8 @@ export class Tracker {
   ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
+    // Associate boxes to tracks: score every plausible pair, then take them best-first, so one
+    // box cannot be claimed by two tracks and vice versa.
     const pairs = [];
     for (const track of this.tracks) {
       for (let i = 0; i < boxes.length; i++) {
@@ -724,12 +830,14 @@ export class Tracker {
       matchedBoxes.add(pair.boxIndex);
     }
 
+    // Tracks the detector missed this frame coast on their last velocity for a moment: a person
+    // the detector drops for two frames should not become a new, unidentified person.
     for (const track of this.tracks) {
       if (track.seenThisFrame) continue;
       const age = now - track.lastSeen;
       if (age < TRACK_TIMEOUT_MS) {
-        track.vx = (track.vx ?? 0) * 0.82;
-        track.vy = (track.vy ?? 0) * 0.82;
+        track.vx = (track.vx ?? 0) * COAST_VELOCITY_DECAY;
+        track.vy = (track.vy ?? 0) * COAST_VELOCITY_DECAY;
         track.missedFrames = (track.missedFrames ?? 0) + 1;
       }
     }
@@ -754,6 +862,8 @@ export class Tracker {
         grid: 0,
         shape: 0,
         embed: 0,
+        reid: 0,
+        hasReid: false,
         rankings: [],
         debugMatch: null,
         evidence: new Map(),
@@ -790,6 +900,8 @@ export class Tracker {
       const match = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
       track.rankings = match?.rankings ?? (match ? [match] : []);
       if (match?.reason === 'self' && match.id === selfId) {
+        // The camera is looking at its own owner (a mirror, or a mis-scan). Drop the identity and
+        // the evidence for it, but keep the rankings so the debug overlay can show what happened.
         const rankings = track.rankings;
         clearIdentity(track);
         track.evidence.clear();

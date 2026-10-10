@@ -7,6 +7,9 @@
 // enrolled players with 20 bystanders each, it recognised 77% of players at a 5% bystander
 // acceptance rate, against 34% for the colour + MobileNet signature.
 //
+// Because of that, it overrides the other appearance signals outright rather than being blended
+// with them: identify.js has the full priority order of the four identification signals.
+//
 // Inference runs in ONNX Runtime Web (WebAssembly) and is asynchronous, so embeddings are
 // requested and picked up later rather than computed inline:
 //   const reid = await createReid();
