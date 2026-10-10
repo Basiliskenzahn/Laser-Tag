@@ -5,6 +5,34 @@ services:
       dockerfile: backend/Dockerfile
     expose:
       - '4000' # internal only - reached through the frontend's nginx reverse proxy
+    # Nothing but a CI deploy ever starts this stack, and CI only runs on a push to dev. So
+    # without a restart policy a host reboot, a daemon restart or an OOM kill left the game
+    # down until a human noticed and redeployed.
+    restart: unless-stopped
+    # Readiness, not liveness: `depends_on` below waits on this, and the point is to keep
+    # nginx from accepting traffic while aiohttp is not yet listening. GET / is the health
+    # route (backend/app.py); nginx proxies only /api/ and /events/, so it stays unreachable
+    # from outside, which is why it can be a bare 200 with no auth.
+    #
+    # `python -c` rather than curl because python:3.12-slim has no curl and no wget, and
+    # installing one would add an apt layer to carry a probe the interpreter can already do.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              with urllib.request.urlopen('http://127.0.0.1:4000/', timeout=3) as r:
+                  sys.exit(0 if r.status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      # aiohttp binds in well under a second; this only has to cover a cold image start.
+      start_period: 10s
 
   frontend:
     build:
@@ -16,18 +44,50 @@ services:
     volumes:
       # Keep the self-signed cert across restarts so phones don't have to re-accept it.
       - certs:/certs
+    restart: unless-stopped
+    # Two things nothing used to notice. First, the certificate: an expired one still starts
+    # nginx and still gets served on 443, and phone browsers refuse that outright, so the
+    # expiry is checked here as well as at startup - this is what catches a container that
+    # has been up long enough to outlive its own cert without ever re-running the entrypoint.
+    # Second, liveness: that nginx is actually answering on 80, which is the port the event's
+    # reverse proxy sits in front of.
+    #
+    # `openssl` is guaranteed present because frontend/Dockerfile apk-adds it, and `wget` is
+    # a busybox applet in the alpine base. `openssl s_client` would have been the way to
+    # exercise 443 too, but it cannot verify a self-signed chain, so its exit code says
+    # nothing useful here.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - openssl x509 -checkend 86400 -noout -in /certs/cert.pem && wget -q -O /dev/null http://127.0.0.1/
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     depends_on:
-      - backend
+      backend:
+        # The short list form waits only for the container to be created and started, which
+        # in practice means "the python process has been exec'd". Every deploy therefore had
+        # a window where nginx was up and backend:4000 refused the connection, so /api/ and
+        # /events/ both answered 502 - a phone mid-game lost its poll loop and its SSE stream
+        # at the same moment. service_healthy waits for the probe above instead.
+        condition: service_healthy
 
   tests:
-    image: node:20-bookworm-slim
+    image: node:22-bookworm-slim
     profiles:
       - test
     working_dir: /app
     volumes:
       - .:/app
+      # Deliberately an empty volume rather than the host's node_modules: the suite resolves
+      # no bare specifiers, and masking the directory is what keeps that true.
       - test-node-modules:/app/node_modules
-    command: sh -c "npm ci && npm test"
+    # No `npm ci`. It downloaded ~180 MB of MediaPipe and ONNX Runtime that no test imports -
+    # those two packages exist only to be copied into the frontend image by its deps stage -
+    # and because `npm ci` deletes node_modules first, the volume above cached nothing
+    # anyway. Dropping it also takes the network off the path to running the tests.
+    command: npm test
 
   backend-tests:
     image: python:3.12-slim
