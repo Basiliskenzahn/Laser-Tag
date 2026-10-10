@@ -250,7 +250,7 @@ Timestamps are `Date.now()` so they line up across phones. 12 seconds of history
 
 The 6-second window and the 0.75 threshold come from simulation (random walk/stand patterns with detector jitter): the real player matched every time and a bystander in about 1% of cases, while 4-second windows let 10–20% of bystanders match by coincidence. About 60% of bystanders land in `inconsistent`, and no players did.
 
-`motion/matching.js` is deliberately free of browser APIs, so all of this is unit-tested in Node (`test/motion.test.js`).
+`motion/matching.js` is deliberately free of browser APIs, so all of this is unit-tested in Node (`test/motion.test.js`) - and for the same reason a recorded real session can be replayed straight through it offline, which is what `?motion=on&record` and `tools/motion-replay.js` are for. The thresholds above were tuned against simulated motion only; see [Recording and replaying a motion session](../motion-capture.md).
 
 ### Fusing it with the classifier (`fuseMotion`)
 

@@ -15,6 +15,10 @@ const motionMode = params.get('motion');
 export const MOTION_ENABLED = motionMode === 'on' || motionMode === 'strict';
 export const REQUIRE_MOTION = motionMode === 'strict';
 export const MOTION_OFF = !MOTION_ENABLED;
+// ?motion=on&record additionally records everything the motion matcher consumed, for later
+// replay through tools/motion-replay.js. Only meaningful with motion on, and the recorder module
+// is imported lazily so a normal game never loads it (see motion/capture.js).
+export const MOTION_RECORD = MOTION_ENABLED && params.has('record');
 
 export const video = $('video');
 export const canvas = $('overlay');

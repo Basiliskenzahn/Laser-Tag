@@ -114,6 +114,22 @@ Separately: motion-confirmed identities skip `isStableTarget()`'s lock-time/scor
 entirely (only `LIVE_TRACK_MS` liveness applies), while classifier-only identities still need it -
 an asymmetry that may or may not be intentional.
 
+**Still open, but no longer unmeasurable.** There is now a capture-and-replay harness for exactly
+this question: `?motion=on&record` records everything the matcher consumed during a real round
+(`frontend/public/motion/capture.js`), including the operator's answer to which tracked person was
+actually which player, and `tools/motion-replay.js` replays that file through the real
+`motionCheck`/`fuseMotion` and scores the verdicts against that ground truth - deterministically,
+so a session can be re-scored after any threshold change. See
+[Recording and replaying a motion session](motion-capture.md).
+
+What that does **not** do is close this item. No real session has been recorded yet; the only
+recording in the repository (`test/fixtures/motion-session-synthetic.json`) is synthetic and
+labelled as such, and replaying a simulation says nothing new about real accelerometers. The
+harness makes the measurement possible and cheap to repeat - someone still has to take three
+phones into a room and do it, including the specific conditions listed above (a phone in a pocket,
+a backgrounded tab, clock drift on a real network). Delete this entry when that has happened and
+the numbers are in.
+
 What *was* done about this: isolated all motion-integration glue into
 `frontend/public/motion-identity.js` behind one function, `resolveIdentity()`, and made motion an
 opt-in (`?motion=on` or `?motion=strict`). Without that flag, the client skips sensor permission,
@@ -174,6 +190,12 @@ code calls them today - listed so they don't surprise someone who changes a call
   track. Display-only (the gameplay-relevant reader also checks `playerId`, which is cleared) but
   fixed for consistency.
 - A duplicated, redundant score check in `detectTrackedPeople`'s pose-fallback filter.
+- `clean_motion_samples()` capped a relayed `motion` message with `samples[:MAX_MOTION_SAMPLES]`,
+  keeping the **oldest** 32 samples and discarding newer ones. Normal flushes carry ~5 samples so
+  the cap never bit, but a phone that was backgrounded, throttled or briefly disconnected flushes
+  its whole backlog at once - and since `motion/matching.js` only correlates the last 6 seconds,
+  the samples that survived were exactly the useless ones. Now `samples[-MAX_MOTION_SAMPLES:]`,
+  with the direction pinned down in `backend/test_sanitize.py`.
 - `server/` archived to `deprecated/server/`, `public/` merged into `frontend/public/` (so the
   frontend's app code lives alongside its Dockerfile, mirroring `backend/`'s shape), and the dead
   frontend code listed above moved to `deprecated/public-dead-code.js`. `package.json`'s `start`/

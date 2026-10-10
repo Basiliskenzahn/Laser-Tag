@@ -34,6 +34,7 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 
 - [Testing](development/testing.md)
 - [Debug mode](development/debug-mode.md)
+- [Recording and replaying a motion session](motion-capture.md): capture a real game's motion inputs with `?motion=on&record` and re-run the matcher on them offline
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
 - [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting

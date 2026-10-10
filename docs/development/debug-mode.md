@@ -59,6 +59,15 @@ Independent of `?debug`, and combinable with it. Motion tracking is disabled by 
 
 Be aware that it makes a single-laptop debug session nearly unplayable: the "clone" on camera is you, and there's only one phone in the room, so nothing can confirm it.
 
+## Related flag: `&record`
+
+Added to either motion flag (`?motion=on&record`), this records everything the motion matcher
+consumed during the round and shows a panel for labelling which tracked person is actually which
+player, so the session can be replayed into the matcher offline with `tools/motion-replay.js`.
+Combines with `?debug`, and the `Motion` line above is a good way to sanity-check that the
+correlations being recorded look plausible while you record them. See
+[Recording and replaying a motion session](../motion-capture.md).
+
 ## Testing two players on one machine
 
 Open two browser windows with different names and the same room code (with or without `?debug`). Each is its own player. Both see the same webcam, so for anything beyond a smoke test, a phone as the second player works better.

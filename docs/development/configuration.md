@@ -21,6 +21,7 @@ Read once at startup in `frontend/public/env.js`:
 | `?motion=on` | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
 | `?motion=off` or no motion parameter | Sets `MOTION_OFF`: skips motion permission, sample sharing and motion fusion, so targeting uses appearance identity + `isStableTarget()` only. This is the default. |
+| `&record` (with one of the `?motion=` flags above) | Sets `MOTION_RECORD`: records every input the motion matcher consumed, plus an on-screen panel for labelling which tracked person is actually which player, and exports the lot as JSON for `tools/motion-replay.js`. Ignored without motion enabled, and the recorder module isn't even fetched otherwise. See [Recording and replaying a motion session](../motion-capture.md). |
 
 ## Game rules
 

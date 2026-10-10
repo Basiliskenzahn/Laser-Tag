@@ -100,12 +100,38 @@ Covers: interpolation and gap handling; the real player matching their own phone
 
 The thresholds in `motion/matching.js` were chosen against this simulation, so changing them will usually show up here first.
 
+### `test/motion-replay.test.js`: the capture-and-replay harness
+
+Where `motion.test.js` tests the matcher's maths, this one tests the equipment for measuring a
+**real** session: `tools/motion-replay.js` replaying `test/fixtures/motion-session-synthetic.json`.
+Covers: the fixture being labelled synthetic and carrying its ground truth; the fixture generator
+being deterministic and the committed file not being stale; the replay reproducing every verdict
+the recording says the live matcher reached; two replays of one recording agreeing; the report's
+scoring against operator-supplied ground truth (own phone confirmed, false positives, bystanders);
+every fusion branch the fixture provokes, including motion correcting a mis-identified person;
+threshold overrides reaching `motionCheck` and changing the answer; and the state reconstruction
+only using what existed at the instant being replayed.
+
+The load-bearing assertion is the third one. A recording stores the live verdict at each check
+instant, and the replay has to reproduce all of them from the raw inputs alone - so if someone
+changes how `motion-identity.js` buffers boxes, remote samples or ego flags without updating
+`tools/motion-replay.js` to match, this is where it fails. See
+[Recording and replaying a motion session](../motion-capture.md).
+
+### `backend/test_sanitize.py`: the untrusted-JSON boundary
+
+Four unit tests for `clean_motion_samples()`, covering what the protocol tests cannot see: that the
+`MAX_MOTION_SAMPLES` cap keeps the **newest** samples rather than the oldest (a phone flushing a
+backlog would otherwise relay only its stale head, and the matcher only looks at the last 6
+seconds), that short flushes pass through in order, that junk inside the newest-N window is dropped
+without widening the cap, and that a non-list is ignored.
+
 ## What isn't covered
 
-- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.
+- **`backend/sanitize.py`'s gallery rules.** `clean_motion_samples()` now has its own unit tests (`test_sanitize.py`, above), but gallery sanitising is still only covered via whatever `GALLERY` fixtures the other tests happen to send.
 - **Detection, signatures and scanning.** These need a real browser, camera and models. Test them by hand with `?debug`.
 - **The re-identification model itself.** `reid.js` needs ONNX Runtime Web, a canvas and the model file, so nothing exercises the loading, pre-processing or the request/collect queue. Only the matching rules built on its output are tested.
-- **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers come from simulation, not from real phones.
+- **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers still come from simulation, not from real phones - there is now equipment for recording a real session and replaying it into the matcher ([Recording and replaying a motion session](../motion-capture.md)), but until someone records one, the only recording in the repository is synthetic.
 - **CI.** The deploy workflow doesn't run either test suite. Run them before merging - see [Streamlining](../streamlining.md).
 
 ## Writing tests
