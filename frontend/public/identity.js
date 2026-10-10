@@ -7,7 +7,7 @@
 // motion identification, or swapping it for a different confirming signal, is a change to the
 // last line of this file and nothing else.
 //
-// A provider answers five things:
+// A provider answers six things:
 //
 //   start()                   ask for whatever permission it needs; must be called from a user
 //                             gesture, because that is the only place iOS shows the prompt
@@ -20,6 +20,11 @@
 //   onServerMessage(msg)      take identification signals off the wire (net.js hands over every
 //                             message no screen claims)
 //   debugLine(now, liveTracks)  one line for the debug overlay; '' for nothing to say
+//   stop()                    release anything start() acquired - sensors, timers, per-room
+//                             state. Called from net.js's leaveRoom(), so a player who leaves
+//                             does not keep a devicemotion listener and a 500 ms interval alive
+//                             for the life of the page. A no-op on the appearance provider, but
+//                             part of the seam so neither side has to be special-cased.
 //
 // motion/matching.js documents what a confirming signal is allowed to do to a shot, and
 // identify.js has the priority order of the appearance signals behind `track.playerId`.
