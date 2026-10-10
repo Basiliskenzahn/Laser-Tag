@@ -45,7 +45,6 @@ function candidate(i, { quality = 1 + ((i * 7) % 11) / 10 } = {}) {
     image: `frame-${i}`,
     frameIndex: i,
     quality,
-    time: i * 190,
     stats: { brightness: 0.5, contrast: 0.2, sharpness: 0.02 },
   };
 }
@@ -190,7 +189,7 @@ test('a sample is the average of its own sources and nothing else', async () => 
   }));
   const sample = averagedRotationSample(seed, [seed, ...others], { viewAverageSimilarity: 0.74, averageCount: 4 });
 
-  assert.equal(sample.sourceCount, 3);
+  assert.equal(sample.sources.length, 3, 'the group is the seed plus both others');
   assert.ok(Math.abs(sample.quality - (5 + 1 + 2) / 3) < 1e-12, 'quality is the group mean');
   // Identical signatures, so their normalised average is each of them.
   const expected = signatureSimilarity(sample.signature, seed.signature);

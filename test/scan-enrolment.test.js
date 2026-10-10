@@ -267,6 +267,12 @@ test('a frame with no red in it is not mistaken for a lost one', async () => {
   // looks like; a discarded backing store is alpha 0. Anything that reads a colour channel
   // instead would call this cyan body - red 0 in every pixel, and a perfectly good scan - a frame
   // the browser had taken away, and fail the scan on a phone that is working fine.
+  //
+  // What this has to assert changed with the guard. While a lost frame *threw*, a red-reading
+  // probe failed the scan outright and "a gallery was sent" caught it. Now that a lost frame is
+  // merely skipped, a red-reading probe would enrol the full colour gallery with every `reid`
+  // quietly missing - which the old assertions would have called a pass. So the thing to pin is
+  // the re-identification vectors: every frame here is live, so every sample must carry one.
   const reid = { embed: async () => [1, 0, 0, 0, 0, 0, 0, 0] };
   const { sent } = arrangeScan({ reid, paint: { channelScale: [0, 1, 1] } });
   await runScan(selfPlayer);
@@ -277,6 +283,12 @@ test('a frame with no red in it is not mistaken for a lost one', async () => {
     `a red-free scan must still enrol; lobby said "${dom.element('lobby-status').textContent}"`,
   );
   assert.ok(scanMessage.gallery.length >= 12);
+  const withoutReid = scanMessage.gallery.filter((sample) => !sample.reid?.length).length;
+  assert.equal(
+    withoutReid,
+    0,
+    `${withoutReid}/${scanMessage.gallery.length} samples lost their reid vector, so a live frame was judged gone`,
+  );
 });
 
 test('only the frames behind the chosen samples are still alive during the embedding pass', async () => {
@@ -502,4 +514,39 @@ test('cancelling mid-scan sends nothing, caches nothing and says so', async () =
   assert.equal(dom.element('lobby-status').textContent, 'Scan cancelled.');
   assert.equal(state.autoScanning, false);
   assert.equal(state.recordingScan, false);
+});
+
+// ---- Does the upload call compose with send()? ----
+//
+// `send()` resolves true once the server has the message and false if it could not be delivered;
+// it retries a transient failure itself and never rejects (transport.js). `saveCurrentScan` was
+// written against an older `send()` that returned nothing, so it wrapped the result in
+// Promise.resolve() and attached a rejection handler - both dead against the real contract, and
+// both invisible here because the harness' stub used to resolve to an array length.
+//
+// These two tests are the contract, from the only side the player sees: the lobby line.
+
+test('a delivered scan is never reported as a failure', async () => {
+  const { sent } = arrangeScan({ delivered: true });
+  await runScan(selfPlayer);
+
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the gallery has to have been sent for this to mean anything');
+  assert.match(
+    dom.element('lobby-status').textContent,
+    /^Saved scan for Sam with \d+ angles\.$/,
+    'a scan the server acknowledged must keep the line that says so',
+  );
+});
+
+test('a scan the connection could not deliver corrects the line that claimed it', async () => {
+  // "Saved scan for <name>" used to be said whether or not the gallery ever left the phone: a
+  // twelve-second rotation the player was told had worked and that no other phone ever saw.
+  // Rescanning really is the only recovery - a reconnect adopts this phone's existing seat and the
+  // server ignores the gallery on that path (backend/transport.py's _join), so nothing re-sends it.
+  const { sent } = arrangeScan({ delivered: false });
+  await runScan(selfPlayer);
+
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the gallery was still handed to the connection');
+  assert.match(dom.element('lobby-status').textContent, /scan could not be sent/i);
+  assert.match(dom.element('lobby-status').textContent, /rescan/i);
 });
