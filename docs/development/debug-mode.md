@@ -34,7 +34,7 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | 2 | Video resolution; people in the last detection; tracks seen recently / all tracks; tracks identified as another player |
 | 3 | Each identified track: name, overall score, the marker `reid` if the [re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs) decided the match, then **u**pper-body, **l**ower-body, **g**rid, **s**hape and **e**mbedding similarity |
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
-| `motion` | This phone's sensor (`on`, `no data` or `off`), `strict` if `?motion=strict` is set, and which players' phones are sending motion samples |
+| `motion` | `off` by default; with `?motion=on` or `?motion=strict`, this phone's sensor (`on`, `no data` or `off`), `strict` if set, and which players' phones are sending motion samples |
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
@@ -53,9 +53,9 @@ Use this to tune identification:
 - A track whose appearance identity was [vetoed by motion](../client/identification.md#fusing-it-with-the-classifier-fusemotion) is labelled *"not Alice (motion)"* instead of plain *"Person"*.
 - The console logs every SSE `health`/`death` event and every shot the server rejected (e.g. `Cooldown`, `Round not running`).
 
-## A related flag: `?motion=strict`
+## Related flags: `?motion=on` and `?motion=strict`
 
-Independent of `?debug`, and combinable with it. It drops the classifier-only fallback, so a shot counts only when the target's own phone motion confirms who they are. Useful for seeing how often motion actually confirms an identity in a real space — in strict mode, every green name on screen has been confirmed by two independent signals. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
+Independent of `?debug`, and combinable with it. Motion tracking is disabled by default. `?motion=on` enables the motion signal; `?motion=strict` also drops the classifier-only fallback, so a shot counts only when the target's own phone motion confirms who they are. Useful for seeing how often motion actually confirms an identity in a real space: in strict mode, every green name on screen has been confirmed by two independent signals. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
 
 Be aware that it makes a single-laptop debug session nearly unplayable: the "clone" on camera is you, and there's only one phone in the room, so nothing can confirm it.
 

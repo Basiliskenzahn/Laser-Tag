@@ -18,8 +18,9 @@ Read once at startup in `frontend/public/env.js`:
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
-| `?motion=strict` | Sets `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
-| `?motion=off` | Sets `MOTION_OFF`: skips motion fusion entirely for this phone's own targeting and restores the pre-motion-matching behaviour (appearance identity + `isStableTarget()` only - no veto, no retargeting). Useful for isolating whether motion fusion is the cause of a targeting problem; motion samples are still shared with other phones either way. |
+| `?motion=on` | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
+| `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
+| `?motion=off` or no motion parameter | Sets `MOTION_OFF`: skips motion permission, sample sharing and motion fusion, so targeting uses appearance identity + `isStableTarget()` only. This is the default. |
 
 ## Game rules
 
@@ -251,9 +252,9 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE`/`TARGET_MIN_REID_SCORE`, `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or play with `?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE`/`TARGET_MIN_REID_SCORE`, `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
-- **Motion never confirms anyone:** check the overlay's `motion` line. `off` means permission wasn't granted (iOS only asks inside a tap), `no data` means no `devicemotion` events are arriving, and `from nobody` means no other phone is sending samples.
-- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** play with `?motion=off`, which bypasses `fuseMotion()` entirely and restores the pre-motion-matching targeting gate (appearance identity + `isStableTarget()` only, no motion veto/correction). Comparing behaviour with and without it is the fastest way to tell whether motion fusion or something else is at fault.
+- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict`. In debug mode, `motion off` means tracking is disabled, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
+- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which bypasses `fuseMotion()` entirely and restores the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

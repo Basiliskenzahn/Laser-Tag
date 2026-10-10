@@ -101,5 +101,5 @@ Everyone starts with **100 HP**. At 0 HP you're down for the rest of the round. 
 - **Scan where you'll play.** Lighting changes how people look on camera.
 - **Keep your whole body visible** to opponents. The phone needs a decent view of a person to recognise them.
 - **Give it a moment.** A newly visible player needs a moment of steady recognition — around a third of a second, longer if they've only just come into frame — before they become targetable.
-- **Keep moving.** Movement is a second, independent clue: when you walk or dodge, your phone's own motion tells the other phones that the person they see is you. Standing perfectly still doesn't break anything, it just leaves recognition to appearance alone.
+- **Keep moving if motion is enabled.** With `?motion=on` or `?motion=strict`, movement is a second, independent clue: when you walk or dodge, your phone's own motion tells the other phones that the person they see is you. Standing perfectly still doesn't break anything, it just leaves recognition to appearance alone.
 - **Keep the screen on.** The game asks the phone to stay awake, but switching apps can pause the camera.

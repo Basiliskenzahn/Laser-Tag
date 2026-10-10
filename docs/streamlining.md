@@ -101,31 +101,28 @@ a product-quality tradeoff, not a mechanical fix.
 ### Motion fusion can veto or silently retarget a correct identification
 
 Added by the motion-matching feature, separate from (and more behaviourally risky than) anything
-pre-existing. `targetUnderCrosshair()` routes every shot's target through `fuseMotion()`
+pre-existing. When motion is enabled, `targetUnderCrosshair()` routes every shot's target through `fuseMotion()`
 (`motion-identity.js` → `motion/matching.js`). When a player's phone-motion correlation comes back
 "inconsistent," `fuseMotion` either discards a correct, confident classifier identification
 entirely (the shot silently doesn't register) or retargets to a *different* candidate based on
 motion correlation alone. Both verdicts come from correlating accelerometer streams across two
 phones over a network, and the feature's test suite (`test/motion.test.js`) only covers simulated
 motion - not real-world noise like inter-phone clock drift beyond the ±400 ms search window, a
-phone in a pocket instead of held, or a backgrounded tab throttling `devicemotion` events. None of
-that is reachable from this phone's own sensor permission either: other players' shared samples
-still get correlated against what your camera sees, so denying local motion access doesn't opt you
-out.
+phone in a pocket instead of held, or a backgrounded tab throttling `devicemotion` events.
 
 Separately: motion-confirmed identities skip `isStableTarget()`'s lock-time/score-floor gate
 entirely (only `LIVE_TRACK_MS` liveness applies), while classifier-only identities still need it -
 an asymmetry that may or may not be intentional.
 
-What *was* done about this (this pass): isolated all motion-integration glue into
-`frontend/public/motion-identity.js` behind one function, `resolveIdentity()`, and added a real opt-out,
-`?motion=off`, which bypasses `fuseMotion` entirely and restores the exact pre-motion-matching
-targeting gate - see [Configuration → Tuning tips](development/configuration.md#tuning-tips). That
-makes it possible to A/B test whether motion fusion is actually the source of a given reported bug,
-which wasn't possible before. The fusion logic/thresholds themselves were not touched - that's a
-tuning decision, not a structural one.
+What *was* done about this: isolated all motion-integration glue into
+`frontend/public/motion-identity.js` behind one function, `resolveIdentity()`, and made motion an
+opt-in (`?motion=on` or `?motion=strict`). Without that flag, the client skips sensor permission,
+sample sharing, remote motion history and `fuseMotion`, restoring the exact pre-motion-matching
+targeting gate - see [Configuration → Tuning tips](development/configuration.md#tuning-tips). The
+fusion logic/thresholds themselves were not touched - that's a tuning decision, not a structural
+one.
 
-One cosmetic side effect of adding the bypass: under `?motion=off`, the overlay now labels a track
+One cosmetic side effect of the bypass: with motion off, the overlay now labels a track
 only once its identity is stable (lock-time passed), where before the motion commit landed, a
 track was labelled as soon as the classifier named it even though only the *shot* required
 stability. If the old, looser labelling is wanted back, that's a one-line change in

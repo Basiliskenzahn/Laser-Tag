@@ -35,7 +35,7 @@ brew install cloudflared            # once
 cloudflared tunnel --url http://localhost:8080
 ```
 
-**Testing on a laptop:** `http://localhost:8080` works with the webcam (browsers allow camera access on localhost). Press space to fire. Add `?debug` to the URL to show detector FPS, inference time and how many tracked people are currently identified. See [Debug mode](docs/development/debug-mode.md) and [Configuration](docs/development/configuration.md) for every other `?` flag, including `?motion=off`/`?motion=strict`.
+**Testing on a laptop:** `http://localhost:8080` works with the webcam (browsers allow camera access on localhost). Press space to fire. Add `?debug` to the URL to show detector FPS, inference time and how many tracked people are currently identified. See [Debug mode](docs/development/debug-mode.md) and [Configuration](docs/development/configuration.md) for every other `?` flag, including `?motion=on`/`?motion=strict`.
 
 Run tests in Docker:
 

@@ -31,7 +31,7 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
-  startMotion(); // inside the tap: iOS only asks for motion access from a user gesture
+  startMotion(); // no-op unless ?motion=on or ?motion=strict is set
   enterLobbyFromForm();
 });
 
@@ -55,7 +55,7 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
-  startMotion(); // in case access wasn't granted at join (e.g. an automatic rejoin)
+  startMotion(); // in case motion is enabled but wasn't granted at join
   fire();
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));

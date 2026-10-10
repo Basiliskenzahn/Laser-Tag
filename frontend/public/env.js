@@ -9,12 +9,12 @@
 export const $ = (id) => document.getElementById(id);
 export const params = new URLSearchParams(location.search);
 export const DEBUG = params.has('debug');
-// ?motion=strict: a shot only counts when the target's phone motion confirms who it is.
-export const REQUIRE_MOTION = params.get('motion') === 'strict';
-// ?motion=off: ignore phone motion completely and aim on appearance alone, exactly as the game
-// did before motion matching was added. An escape hatch for testing whether motion fusion is
-// what is making shots unreliable - see resolveIdentity() in motion-identity.js.
-export const MOTION_OFF = params.get('motion') === 'off';
+const motionMode = params.get('motion');
+// Motion tracking is opt-in. ?motion=on enables phone-motion identity fusion, and
+// ?motion=strict makes a shot count only when motion confirms the target.
+export const MOTION_ENABLED = motionMode === 'on' || motionMode === 'strict';
+export const REQUIRE_MOTION = motionMode === 'strict';
+export const MOTION_OFF = !MOTION_ENABLED;
 
 export const video = $('video');
 export const canvas = $('overlay');

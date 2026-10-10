@@ -19,7 +19,7 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
 
-On top of whichever of those produced an answer, **motion is an independent layer**: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
+If enabled with `?motion=on` or `?motion=strict`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
 
 Both models are optional. `createReid()` failures are caught in `app.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking.
 
@@ -201,6 +201,8 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 
 ## Motion confirmation (`motion/`)
 
+Motion tracking is disabled by default. The code below is used only when the page is opened with `?motion=on` or `?motion=strict`.
+
 Appearance alone can't tell apart two people in similar clothes, and it can put a player's name on a bystander who happens to look like them. Motion matching adds a signal that has nothing to do with appearance: **every phone knows how much it is being moved, and the camera can see how much each person on screen is moving.** They should rise and fall together for the right pairing, and be unrelated for a wrong one.
 
 ```mermaid
@@ -228,9 +230,9 @@ flowchart LR
 
 Timestamps are `Date.now()` so they line up across phones. 12 seconds of history is kept.
 
-`MotionSensor.requestPermission()` must run inside a user gesture on iOS; the client calls it from the join-form submit handler and again on the first FIRE press, in case the player arrived by automatic rejoin. If permission is refused, nothing breaks — motion checks simply all return `unknown` and appearance decides on its own.
+`MotionSensor.requestPermission()` must run inside a user gesture on iOS; when motion is enabled, the client calls it from the join-form submit handler and again on the first FIRE press, in case the player arrived by automatic rejoin. If permission is refused, nothing breaks: motion checks simply all return `unknown` and appearance decides on its own.
 
-`takeOutgoing()` returns the bins recorded since the last call; `app.js` flushes them to the server every 500 ms as `{type: 'motion', s: [[t, v], ...]}`, and the server relays each phone's samples to everyone else in the room.
+`takeOutgoing()` returns the bins recorded since the last call; when enabled, `motion-identity.js` flushes them to the server every 500 ms as `{type: 'motion', s: [[t, v], ...]}`, and the server relays each phone's samples to everyone else in the room.
 
 ### The person on screen
 
@@ -267,11 +269,11 @@ The 6-second window and the 0.75 threshold come from simulation (random walk/sta
 
 "Confident on its own" is `isStableTarget()` in `motion-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
 
-With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Conversely, **`?motion=off`** skips `fuseMotion()` entirely for this phone's own targeting, falling back unconditionally to the pre-motion gate (`isStableTarget()` alone) - the way to check whether motion fusion itself is responsible for a targeting problem.
+With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Without `?motion=on` or `?motion=strict`, motion is off and `resolveIdentity()` skips `fuseMotion()` entirely, falling back unconditionally to the appearance gate (`isStableTarget()` alone).
 
 ### How the client drives it
 
-`app.js` keeps `state.remoteMotion` (player id → activity series) and `state.trackMotion` (a `WeakMap` from track to box observations), both trimmed to 12 seconds. `identity(track)` re-runs the checks for a track at most every 300 ms and caches the result on the track, so the fused identity is cheap to ask for from both the draw loop and the hit test. Drawing shows a confirmed identity as *"Name (moves)"*, and in debug mode a vetoed one as *"not Name (motion)"*.
+When motion is enabled, `motion-identity.js` keeps `state.remoteMotion` (player id → activity series) and `state.trackMotion` (a `WeakMap` from track to box observations), both trimmed to 12 seconds. `resolveIdentity(track)` re-runs the checks for a track at most every 300 ms and caches the result on the track, so the fused identity is cheap to ask for from both the draw loop and the hit test. Drawing shows a confirmed identity as *"Name (moves)"*, and in debug mode a vetoed one as *"not Name (motion)"*.
 
 ## Swapping in a better model
 

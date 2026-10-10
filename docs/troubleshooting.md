@@ -59,10 +59,10 @@ Rescan the affected players in the playing area. To see *why* a match was reject
 Check that phone with `?debug`. A missing `+ReID` on the first overlay line means the re-identification model failed to load — usually ONNX Runtime Web (`/vendor/ort/`) or `/models/osnet_x0_25_msmt17.onnx` not being served. The browser console has the warning. Behind a custom web server, check those paths exist and that `.wasm` is served as `application/wasm`.
 
 **A player's name flickers onto a bystander, or onto the wrong player.**
-Movement is used as a cross-check: a name only gets the *"(moves)"* suffix when that player's own phone reports motion matching the person on screen. If a wrong name keeps appearing, check that everyone granted motion access (iPhones ask once, in the tap that enters the lobby), and that the mistaken player isn't standing perfectly still — a stationary phone gives nothing to compare. `?motion=strict` makes confirmation mandatory, at the cost of not being able to shoot motionless players.
+By default, targeting uses appearance only. Rescan the affected players in the playing area and check debug mode for the rejection reason. If you deliberately enable motion with `?motion=on`, a name gets the *"(moves)"* suffix when that player's own phone reports motion matching the person on screen; `?motion=strict` makes that confirmation mandatory, at the cost of not being able to shoot motionless players.
 
 **The crosshair is on a named player but shots don't count.**
-A player becomes targetable after they've been recognised steadily for about 0.35 seconds with good confidence, or as soon as their phone's motion confirms them. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit, and neither can a name that motion has vetoed (which draws as "Person").
+A player becomes targetable after they've been recognised steadily for about 0.35 seconds with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit. If you enabled motion with `?motion=on` or `?motion=strict`, a name can also be blocked when motion vetoes it.
 
 **It's slow or laggy.**
 Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 120–180 ms, so some delay between movement and the outline is normal.
