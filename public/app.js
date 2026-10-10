@@ -1,4 +1,4 @@
-import { createDetector, detectPeople, headBox, contains } from './detector.js';
+import { createDetector, detectPeople, detectScanPeople, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
 import { openPolling, openWebSocket } from './transport.js';
 import * as sound from './sound.js';
@@ -9,13 +9,13 @@ const DEBUG = params.has('debug');
 const FIRE_COOLDOWN_MS = 350;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 6;
-const SCAN_MIN_SAMPLES = 8;
-const SCAN_TARGET_SAMPLES = 12;
+const SCAN_CACHE_VERSION = 7;
+const SCAN_MIN_SAMPLES = 10;
+const SCAN_TARGET_SAMPLES = 16;
 const ROTATION_SCAN_COUNTDOWN_MS = 1800;
 const ROTATION_SCAN_DURATION_MS = 9000;
-const ROTATION_RECORD_FRAME_MS = 320;
-const ROTATION_FRAME_MAX_WIDTH = 640;
+const ROTATION_RECORD_FRAME_MS = 280;
+const ROTATION_FRAME_MAX_WIDTH = 960;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -32,6 +32,7 @@ const state = {
   game: null, // latest state snapshot from the server (hp, status, ...)
   roster: [], // latest roster from the server (id, name, gallery)
   detector: null,
+  poseDetector: null,
   delegate: '',
   mode: 'scan', // 'scan' | 'game' - which screen the shared camera loop renders for
   boxes: [], // people in the latest camera frame, in video pixels
@@ -68,8 +69,9 @@ $('join-form').addEventListener('submit', async (event) => {
   $('join-btn').disabled = true;
   setJoinStatus('Starting camera and loading the detector…');
   try {
-    const [, { detector, delegate }] = await Promise.all([startCamera(), createDetector()]);
+    const [, { detector, poseDetector, delegate }] = await Promise.all([startCamera(), createDetector()]);
     state.detector = detector;
+    state.poseDetector = poseDetector;
     state.delegate = delegate;
   } catch (err) {
     console.error(err);
@@ -408,7 +410,7 @@ async function processRotationVideo(frames) {
     for (let i = 0; state.autoScanning && i < frames.length; i++) {
       await nextFrame();
       const frame = frames[i];
-      const boxes = detectPeople(state.detector, frame.image, performance.now());
+      const boxes = detectScanPeople(state.detector, state.poseDetector, frame.image, performance.now());
       const box = biggestBox(boxes);
 
       if (box && usableScanBox(frame.image, box)) {
@@ -738,7 +740,7 @@ let inferenceMs = 0;
 function loop() {
   requestAnimationFrame(loop);
 
-    if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+  if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     const t0 = performance.now();
     state.boxes = detectPeople(state.detector, video, t0);

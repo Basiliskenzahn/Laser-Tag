@@ -55,7 +55,7 @@ function cleanVector(v, maxLen) {
 
 function cleanGallery(gallery) {
   if (!Array.isArray(gallery)) return [];
-  return gallery.slice(0, 12).map((sample) => {
+  return gallery.slice(0, 16).map((sample) => {
     const clean = {
       hist: cleanVector(sample?.hist, 64),
       grid: cleanVector(sample?.grid, 256),

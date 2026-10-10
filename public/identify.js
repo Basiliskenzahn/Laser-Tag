@@ -26,11 +26,13 @@ const SAT_DETAIL_BINS = 8;
 const GRID_W = 6;
 const GRID_H = 8;
 const GRID_FEATURES = 4;
-const MIN_SCAN_HEIGHT_RATIO = 0.24;
+const MIN_SCAN_HEIGHT_RATIO = 0.18;
 const MIN_MATCH_HEIGHT_RATIO = 0.18;
 const MIN_BOX_WIDTH_RATIO = 0.035;
 const MIN_ASPECT = 0.9;
 const MAX_ASPECT = 5.4;
+const MIN_SCAN_ASPECT = 0.65;
+const MAX_SCAN_ASPECT = 7.0;
 
 let sampleCanvas = null;
 function sourceWidth(source) {
@@ -71,24 +73,28 @@ function boxMetrics(source, box) {
   return { aspect, heightRatio, widthRatio, clipped };
 }
 
-function boxQuality(source, box, minHeightRatio) {
+function boxQuality(source, box, minHeightRatio, { scan = false } = {}) {
   const m = boxMetrics(source, box);
-  if (m.heightRatio < minHeightRatio || m.widthRatio < MIN_BOX_WIDTH_RATIO) return 'too-far';
-  if (m.aspect < MIN_ASPECT || m.aspect > MAX_ASPECT) return 'partial-body';
-  if (m.clipped && m.heightRatio < 0.55) return 'edge-clipped';
+  const minWidthRatio = scan ? 0.025 : MIN_BOX_WIDTH_RATIO;
+  const minAspect = scan ? MIN_SCAN_ASPECT : MIN_ASPECT;
+  const maxAspect = scan ? MAX_SCAN_ASPECT : MAX_ASPECT;
+  const clippedHeight = scan ? 0.42 : 0.55;
+  if (m.heightRatio < minHeightRatio || m.widthRatio < minWidthRatio) return 'too-far';
+  if (m.aspect < minAspect || m.aspect > maxAspect) return 'partial-body';
+  if (m.clipped && m.heightRatio < clippedHeight) return 'edge-clipped';
   return 'ok';
 }
 
-function usableBox(source, box, minHeightRatio) {
-  return boxQuality(source, box, minHeightRatio) === 'ok';
+function usableBox(source, box, minHeightRatio, options) {
+  return boxQuality(source, box, minHeightRatio, options) === 'ok';
 }
 
 export function usableScanBox(source, box) {
-  return usableBox(source, box, MIN_SCAN_HEIGHT_RATIO);
+  return usableBox(source, box, MIN_SCAN_HEIGHT_RATIO, { scan: true });
 }
 
 export function scanBoxProblem(source, box) {
-  return box ? boxQuality(source, box, MIN_SCAN_HEIGHT_RATIO) : 'no-person';
+  return box ? boxQuality(source, box, MIN_SCAN_HEIGHT_RATIO, { scan: true }) : 'no-person';
 }
 
 function usableMatchBox(source, box) {
@@ -299,7 +305,104 @@ function iou(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
-const IOU_MATCH = 0.3;
+function center(box) {
+  return { x: box.x + box.w / 2, y: box.y + box.h / 2 };
+}
+
+function centerScore(a, b) {
+  const ac = center(a);
+  const bc = center(b);
+  const distance = Math.hypot(ac.x - bc.x, ac.y - bc.y);
+  const scale = Math.max(a.w, a.h, b.w, b.h, 1);
+  return Math.max(0, 1 - distance / (scale * 1.35));
+}
+
+function sizeScore(a, b) {
+  const aw = Math.max(1, a.w);
+  const ah = Math.max(1, a.h);
+  const bw = Math.max(1, b.w);
+  const bh = Math.max(1, b.h);
+  const width = Math.min(aw, bw) / Math.max(aw, bw);
+  const height = Math.min(ah, bh) / Math.max(ah, bh);
+  return (width + height) / 2;
+}
+
+function blendBox(a, b, alpha) {
+  return {
+    x: a.x * (1 - alpha) + b.x * alpha,
+    y: a.y * (1 - alpha) + b.y * alpha,
+    w: a.w * (1 - alpha) + b.w * alpha,
+    h: a.h * (1 - alpha) + b.h * alpha,
+    score: b.score,
+  };
+}
+
+function predictedBox(track, now) {
+  const dt = Math.min(0.5, Math.max(0, (now - (track.lastUpdated || track.lastSeen || now)) / 1000));
+  return {
+    ...track.box,
+    x: track.box.x + (track.vx ?? 0) * dt,
+    y: track.box.y + (track.vy ?? 0) * dt,
+  };
+}
+
+function associationScore(track, box, now) {
+  const predicted = predictedBox(track, now);
+  const overlap = iou(predicted, box);
+  const distance = centerScore(predicted, box);
+  if (overlap < 0.08 && distance < 0.35) return 0;
+  return overlap * 0.5 + distance * 0.35 + sizeScore(predicted, box) * 0.15;
+}
+
+function updateTrackBox(track, box, now) {
+  const previous = center(track.box);
+  const dt = Math.max(0.016, (now - (track.lastUpdated || track.lastSeen || now)) / 1000);
+  const smoothed = blendBox(track.box, box, 0.68);
+  const next = center(smoothed);
+  track.vx = (next.x - previous.x) / dt;
+  track.vy = (next.y - previous.y) / dt;
+  track.box = smoothed;
+  track.lastSeen = now;
+  track.lastUpdated = now;
+  track.seenThisFrame = true;
+  track.checks++;
+}
+
+function identityConfidence(track, now) {
+  if (!track.playerId) return -Infinity;
+  const evidence = track.evidence?.get(track.playerId) ?? 0;
+  const stalePenalty = Math.max(0, now - track.lastSeen) / 1000;
+  return track.score + evidence * 0.08 + Math.min(track.checks, 10) * 0.01 - track.misses * 0.08 - stalePenalty * 0.25;
+}
+
+function clearIdentity(track) {
+  track.playerId = null;
+  track.name = null;
+  track.score = 0;
+  track.upper = 0;
+  track.lower = 0;
+  track.grid = 0;
+  track.shape = 0;
+  track.streak = 0;
+  track.streakId = undefined;
+}
+
+function resolveDuplicateIdentities(tracks, now) {
+  const byPlayer = new Map();
+  for (const track of tracks) {
+    if (!track.playerId) continue;
+    const list = byPlayer.get(track.playerId) ?? [];
+    list.push(track);
+    byPlayer.set(track.playerId, list);
+  }
+  for (const duplicates of byPlayer.values()) {
+    if (duplicates.length < 2) continue;
+    duplicates.sort((a, b) => identityConfidence(b, now) - identityConfidence(a, now));
+    for (const duplicate of duplicates.slice(1)) clearIdentity(duplicate);
+  }
+}
+
+const ASSOCIATION_MATCH = 0.32;
 const TRACK_TIMEOUT_MS = 1200;
 const RECHECK_MS = 400; // re-identify an established track about every 0.4s
 const SETTLE_CHECKS = 3; // identify fast on a brand new track: check every frame at first
@@ -368,29 +471,47 @@ export class Tracker {
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
   update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false } = {}) {
-    const unmatched = new Set(boxes.map((_, i) => i));
+    for (const track of this.tracks) track.seenThisFrame = false;
+
+    const pairs = [];
     for (const track of this.tracks) {
-      let bestI = -1;
-      let bestIou = IOU_MATCH;
-      for (const i of unmatched) {
-        const score = iou(track.box, boxes[i]);
-        if (score > bestIou) {
-          bestIou = score;
-          bestI = i;
-        }
-      }
-      if (bestI >= 0) {
-        track.box = boxes[bestI];
-        track.lastSeen = now;
-        track.checks++;
-        unmatched.delete(bestI);
+      for (let i = 0; i < boxes.length; i++) {
+        const score = associationScore(track, boxes[i], now);
+        if (score >= ASSOCIATION_MATCH) pairs.push({ track, boxIndex: i, score });
       }
     }
-    for (const i of unmatched) {
+
+    pairs.sort((a, b) => b.score - a.score);
+    const matchedTracks = new Set();
+    const matchedBoxes = new Set();
+    for (const pair of pairs) {
+      if (matchedTracks.has(pair.track) || matchedBoxes.has(pair.boxIndex)) continue;
+      updateTrackBox(pair.track, boxes[pair.boxIndex], now);
+      matchedTracks.add(pair.track);
+      matchedBoxes.add(pair.boxIndex);
+    }
+
+    for (const track of this.tracks) {
+      if (track.seenThisFrame) continue;
+      const age = now - track.lastSeen;
+      if (age < TRACK_TIMEOUT_MS) {
+        track.box = predictedBox(track, now);
+        track.vx = (track.vx ?? 0) * 0.82;
+        track.vy = (track.vy ?? 0) * 0.82;
+        track.lastUpdated = now;
+      }
+    }
+
+    for (let i = 0; i < boxes.length; i++) {
+      if (matchedBoxes.has(i)) continue;
       this.tracks.push({
         id: this.nextId++,
         box: boxes[i],
         lastSeen: now,
+        lastUpdated: now,
+        seenThisFrame: true,
+        vx: 0,
+        vy: 0,
         checks: 1,
         lastCheck: 0,
         playerId: null,
@@ -428,13 +549,7 @@ export class Tracker {
       if (!candidateId) {
         track.misses++;
         if (track.misses >= CLEAR_STREAK) {
-          track.playerId = null;
-          track.name = null;
-          track.score = 0;
-          track.upper = 0;
-          track.lower = 0;
-          track.grid = 0;
-          track.shape = 0;
+          clearIdentity(track);
         }
         track.streak = 0;
         track.streakId = undefined;
@@ -467,6 +582,7 @@ export class Tracker {
         track.streak = 1;
       }
     }
+    resolveDuplicateIdentities(this.tracks, now);
     return this.tracks;
   }
 }
