@@ -4,6 +4,8 @@ Port 8080 (HTTP) will be exposed through the reverse proxy and is after deployme
 
 # Laser Tag
 
+> Full documentation lives in [`docs/`](docs/README.md).
+
 Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at your opponent, hit **FIRE**, and the phone works out whether the crosshair was on them.
 
 Built during a 42-hour hackathon.
