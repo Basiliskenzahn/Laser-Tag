@@ -19,10 +19,11 @@
 // Selection scores candidates on colour alone, so deferring re-identification does not change
 // which samples are chosen or what ends up in them - see attachRotationSampleReid.
 
-import { canvas, ctx, video, $ } from '../env.js';
+import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { detectPeople, detectScanPeople } from '../detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, usableScanBox } from '../identify.js';
-import { keepScreenOn } from '../camera.js';
+import { keepScreenOn, pendingScanModels, whenScanModelsReady } from '../camera.js';
+import { attachSampleReid, reidSourceFrames } from '../scan-reid.js';
 import { send } from '../net.js';
 import { localSelfId } from '../roster.js';
 import { state } from '../state.js';
@@ -60,6 +61,45 @@ const SCAN_DETECT_MAX_WIDTH = 512;
 const ROTATION_PROCESS_BATCH = 3;
 
 const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible and face the camera. When recording starts, slowly turn in one full circle.';
+
+// ---- What a scan actually costs (?debug) ----
+//
+// Inference counts per model and wall-clock per phase, for the debug overlay. Scanning is the
+// heaviest path in the app and the one the player waits on with nothing to look at, so "how many
+// inferences and where did the seconds go" is worth being able to read off the screen rather than
+// re-deriving from the constants - which is how the countdown and recording phases came to be
+// described as costing nothing while the preview detection ran through both of them.
+const scanCost = {
+  frames: 0,
+  usableFrames: 0,
+  objectInferences: 0,
+  poseInferences: 0,
+  embedInferences: 0,
+  reidInferences: 0,
+  thumbnails: 0,
+  recordMs: 0,
+  processMs: 0,
+  selectMs: 0,
+  thumbMs: 0,
+  reidMs: 0,
+};
+
+function resetScanCost() {
+  for (const key of Object.keys(scanCost)) scanCost[key] = 0;
+}
+
+// One line for the debug overlay; empty until a scan has run on this page.
+export function scanCostLine() {
+  if (!scanCost.frames) return '';
+  const ms = (value) => (value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.round(value)}ms`);
+  return (
+    `Scan ${scanCost.usableFrames}/${scanCost.frames} usable · ` +
+    `obj ${scanCost.objectInferences} pose ${scanCost.poseInferences} embed ${scanCost.embedInferences} ` +
+    `reid ${scanCost.reidInferences} jpeg ${scanCost.thumbnails}\n` +
+    `  rec ${ms(scanCost.recordMs)} · proc ${ms(scanCost.processMs)} · sel ${ms(scanCost.selectMs)} · ` +
+    `thumb ${ms(scanCost.thumbMs)} · reid ${ms(scanCost.reidMs)}`
+  );
+}
 
 function startScanStep() {
   const count = state.gallery.length;
@@ -420,13 +460,23 @@ async function recordRotationVideo() {
   const startedAt = performance.now();
   const endsAt = startedAt + ROTATION_SCAN_DURATION_MS;
 
-  while (state.autoScanning && performance.now() < endsAt) {
-    await nextFrame();
-    const now = performance.now();
-    const remaining = Math.max(0, Math.ceil((endsAt - now) / 1000));
-    frames.push(captureRecordedFrame(now - startedAt));
-    $('scan-instruction').textContent = `Recording rotation... ${remaining}s left, ${frames.length} frames`;
-    await wait(ROTATION_RECORD_FRAME_MS);
+  // Suppresses the scan screen's preview detection for the duration (see the loop in game.js):
+  // the player has been told to turn away from the phone, so the green box has nobody to inform,
+  // and the main thread is wanted for the frame copies. The last countdown boxes go with it,
+  // or drawScan would spend twelve seconds outlining where the player used to be standing.
+  state.recordingScan = true;
+  state.boxes = [];
+  try {
+    while (state.autoScanning && performance.now() < endsAt) {
+      await nextFrame();
+      const now = performance.now();
+      const remaining = Math.max(0, Math.ceil((endsAt - now) / 1000));
+      frames.push(captureRecordedFrame(now - startedAt));
+      $('scan-instruction').textContent = `Recording rotation... ${remaining}s left, ${frames.length} frames`;
+      await wait(ROTATION_RECORD_FRAME_MS);
+    }
+  } finally {
+    state.recordingScan = false;
   }
 
   return state.autoScanning ? frames : null;
@@ -463,11 +513,13 @@ function detectRotationFrameBoxes(image) {
   const timestamp = rotationDetectTimestamp();
   const { source, scaleX, scaleY } = scanDetectionSource(image);
   const boxes = detectPeople(state.detector, source, timestamp);
-  return scaleScanBoxes(
-    boxes.length ? boxes : detectScanPeople(state.detector, state.poseDetector, source, timestamp + 1),
-    scaleX,
-    scaleY,
-  );
+  scanCost.objectInferences++;
+  if (boxes.length) return scaleScanBoxes(boxes, scaleX, scaleY);
+  // The rescue: a second object-detector pass plus the pose landmarker, only for a frame the
+  // object detector found nobody in.
+  scanCost.objectInferences++;
+  if (state.poseDetector) scanCost.poseInferences++;
+  return scaleScanBoxes(detectScanPeople(state.detector, state.poseDetector, source, timestamp + 1), scaleX, scaleY);
 }
 
 // The models run in VIDEO mode and reject a timestamp that does not advance, and the rescue pass
@@ -480,55 +532,21 @@ function rotationDetectTimestamp() {
   return rotationDetectAt;
 }
 
-// The same arithmetic averageSignatures uses for every other vector field (averageVectors in
-// identify.js): the mean, L2-normalised. A single vector is passed through untouched, because
-// reid.js already returns a normalised one.
-function averageReidVectors(vectors) {
-  if (vectors.length === 1) return vectors[0];
-  const len = Math.max(0, ...vectors.map((v) => v?.length ?? 0));
-  if (!len) return [];
-  const avg = new Array(len).fill(0);
-  for (const vector of vectors) {
-    for (let i = 0; i < len; i++) avg[i] += Number.isFinite(vector?.[i]) ? vector[i] : 0;
-  }
-  let sumSq = 0;
-  for (let i = 0; i < len; i++) {
-    avg[i] /= vectors.length;
-    sumSq += avg[i] * avg[i];
-  }
-  const norm = Math.sqrt(sumSq) || 1;
-  return avg.map((v) => v / norm);
-}
-
 // Re-identification embeddings for the samples that were actually chosen - the expensive half of
-// enrolment, deferred until the cheap half has decided what it needs.
-//
-// Selection scores candidates with signatureSimilarity, which averages `hist`, `lower` and `grid`
-// and never looks at `reid`, so every usable frame that selection then discards used to pay for
-// the single most expensive inference in the app for nothing. A sample averaged from several
-// frames (averagedRotationSample) still gets the average of all its frames' embeddings, so the
-// gallery is unchanged; the frames those samples were built from are reachable here because
-// recordRotationVideo keeps the recorded canvases alive for the whole scan.
+// enrolment, deferred until the cheap half has decided what it needs. scan-reid.js owns both the
+// deferral and the batching, and explains why each is shaped the way it is; this is only the
+// wiring to `state`, the progress line and the cancel flag.
 async function attachRotationSampleReid(samples) {
   if (!state.reid) return true;
-  const embeddings = new Map(); // frame index -> vector, so a frame two samples share embeds once
-  for (let i = 0; i < samples.length; i++) {
-    const sample = samples[i];
-    const vectors = [];
-    for (const source of sample.sources ?? [sample]) {
-      if (!state.autoScanning) return false;
-      if (!embeddings.has(source.frameIndex)) {
-        await nextFrame();
-        embeddings.set(source.frameIndex, await state.reid.embed(source.image, source.box));
-      }
-      const vector = embeddings.get(source.frameIndex);
-      if (vector?.length) vectors.push(vector);
-    }
-    if (vectors.length) sample.signature.reid = averageReidVectors(vectors);
-    $('scan-instruction').textContent =
-      `Recognising chosen angles... ${i + 1}/${samples.length}, ${embeddings.size} frames embedded`;
-  }
-  return state.autoScanning;
+  scanCost.reidInferences = reidSourceFrames(samples).size;
+  return attachSampleReid(samples, {
+    embed: (image, box) => state.reid.embed(image, box),
+    yieldTo: nextFrame,
+    cancelled: () => !state.autoScanning,
+    onProgress: (done, total) => {
+      $('scan-instruction').textContent = `Recognising chosen angles... ${done}/${total} frames embedded`;
+    },
+  });
 }
 
 async function processRotationVideo(frames) {
@@ -536,6 +554,8 @@ async function processRotationVideo(frames) {
   const problemCounts = new Map();
   let lastProblem = 'no-person';
   state.postProcessingScan = true;
+  scanCost.frames = frames.length;
+  const processStartedAt = performance.now();
 
   try {
     for (let i = 0; state.autoScanning && i < frames.length; i++) {
@@ -547,6 +567,7 @@ async function processRotationVideo(frames) {
       const box = candidate.box;
 
       if (box && candidate.problem === 'ok' && usableScanBox(frame.image, box)) {
+        if (state.embedder) scanCost.embedInferences++;
         candidates.push({
           signature: extractSignature(frame.image, box, state.embedder, performance.now()),
           box: { ...box },
@@ -566,15 +587,27 @@ async function processRotationVideo(frames) {
     }
 
     if (!state.autoScanning) return null;
+    scanCost.usableFrames = candidates.length;
+    scanCost.processMs = performance.now() - processStartedAt;
+
+    const selectStartedAt = performance.now();
     const samples = selectRotationSamples(candidates, SCAN_TARGET_SAMPLES);
+    scanCost.selectMs = performance.now() - selectStartedAt;
+
     // Thumbnails are only ever shown for samples that survived selection, so they are cropped
     // here too - including on the too-few-angles path, where the strip is the feedback.
+    const thumbStartedAt = performance.now();
     for (const sample of samples) sample.thumb = cropThumbnail(sample.box, sample.image);
+    scanCost.thumbnails = samples.length;
+    scanCost.thumbMs = performance.now() - thumbStartedAt;
     if (samples.length < SCAN_MIN_SAMPLES) {
       // A scan this short is never sent or cached, so it is not worth any re-identification work.
       return { problem: mostCommonProblem(problemCounts, lastProblem), samples, usableFrames: candidates.length, totalFrames: frames.length };
     }
-    if (!(await attachRotationSampleReid(samples))) return null;
+    const reidStartedAt = performance.now();
+    const attached = await attachRotationSampleReid(samples);
+    scanCost.reidMs = performance.now() - reidStartedAt;
+    if (!attached) return null;
     return { samples, usableFrames: candidates.length, totalFrames: frames.length };
   } finally {
     state.postProcessingScan = false;
@@ -588,8 +621,24 @@ async function runAutoScan() {
   state.gallery = [];
   state.scanThumbs = [];
   $('scan-thumbs').innerHTML = '';
+  resetScanCost();
 
   try {
+    // The optional models keep loading behind the lobby rather than blocking it (startup.js), so
+    // this is the one place that has to care whether they arrived. Enrolling without the embedder
+    // or the recogniser does not fail - it quietly produces a *weaker* gallery, and that gallery
+    // is then cached under SCAN_CACHE_VERSION and matched against by every phone for the rest of
+    // the round, so the damage outlives the scan. Waiting here costs at most the tail of a
+    // download the player has already been reading the lobby through, and it happens before the
+    // countdown, so it never interrupts a rotation that has started.
+    const pending = pendingScanModels();
+    if (pending.length) {
+      $('scan-instruction').textContent = `Finishing ${pending.join(' and ')} load...`;
+      await whenScanModelsReady();
+      if (!state.autoScanning || state.mode !== 'scan') return;
+      startScanStep();
+    }
+
     const readyAt = performance.now() + ROTATION_SCAN_COUNTDOWN_MS;
     while (state.autoScanning && performance.now() < readyAt) {
       const seconds = Math.ceil((readyAt - performance.now()) / 1000);
@@ -599,7 +648,9 @@ async function runAutoScan() {
     if (!state.autoScanning) return;
     hideScanCountdown();
 
+    const recordStartedAt = performance.now();
     const frames = await recordRotationVideo();
+    scanCost.recordMs = performance.now() - recordStartedAt;
     if (!state.autoScanning || !frames) return;
 
     $('scan-instruction').textContent = `Recorded ${frames.length} frames. Processing usable angles...`;
@@ -625,7 +676,9 @@ async function runAutoScan() {
     finalMessage = `Could not process the rotation video: ${err.message || err}`;
   } finally {
     state.autoScanning = false;
+    state.recordingScan = false;
     hideScanCountdown();
+    if (DEBUG && scanCost.frames) console.debug(scanCostLine());
     if (state.mode === 'scan') {
       startScanStep();
       if (finalMessage) showLobby(finalMessage);
@@ -662,6 +715,7 @@ export function beginPlayerScan(player) {
 // result, so a cancel can never leave a half-built gallery behind.
 export function cancelScan() {
   state.autoScanning = false;
+  state.recordingScan = false;
   state.postProcessingScan = false;
   showLobby('Scan cancelled.');
 }

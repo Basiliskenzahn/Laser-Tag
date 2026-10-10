@@ -15,7 +15,9 @@ All models run in the browser through [MediaPipe Tasks Vision](https://ai.google
 
 The MediaPipe JavaScript bundle and WebAssembly files aren't committed. They're served from `node_modules/@mediapipe/tasks-vision/` at the URL path `/vendor/tasks-vision/` by nginx. ONNX Runtime Web (pinned alongside it in `package.json`) is served the same way, from `node_modules/onnxruntime-web/dist/` at `/vendor/ort/`.
 
-Only the first three run through MediaPipe and are created by `createDetector()`. OSNet is a separate runtime with a separate loader; this page covers the MediaPipe side, and the re-identification model is documented with [identification](identification.md#the-re-identification-embedding-reidjs).
+Only the first three run through MediaPipe, created by `createObjectDetector()`, `createPoseDetector()` and `createEmbedder()` in `detector.js`. OSNet is a separate runtime with a separate loader; this page covers the MediaPipe side, and the re-identification model is documented with [identification](identification.md#the-re-identification-embedding-reidjs).
+
+Note the **Required** column: only the object detector is. Of the 18 MB on this page, 10.9 MB is optional, and [startup](app-flow.md#join-join-screen) is built around that — the lobby opens on the object detector alone and the rest arrive behind it.
 
 ### Which model runs when
 
@@ -23,26 +25,31 @@ The two paths that run models — scanning and gameplay — differ in **which** 
 
 | Model | Scan path (`screens/scan.js`) | Gameplay path (`screens/game.js`, `identify.js`) |
 | --- | --- | --- |
-| **EfficientDet-Lite0** (object detector) | Every recorded frame during processing, on a copy at most **512 px** wide. ~60 inferences per scan. | Every detection pass, on a copy at most **512 px** wide (`GAME_DETECT_MAX_WIDTH`). Every **120 ms** while a visible person is unidentified, **180 ms** once everyone is identified, plus on any shot needing a fresh detection. |
-| **Pose Landmarker Lite** | **Rescue only.** Runs on a recorded frame solely when the object detector found nobody in it, so ~0 inferences on a well-framed scan. | Every **520 ms** at most, and only once the room has at least two scanned players (`rosterCandidateCount() >= 2`), plus on a shot that forces it. Same 512 px copy. |
+| **EfficientDet-Lite0** (object detector) | Two separate jobs. **Preview:** the green box on the idle scan screen, at most every **150 ms** (`SCAN_PREVIEW_DETECT_INTERVAL_MS`), on a 512 px copy, and not at all during the recording — ~20 inferences, all during the countdown. **Processing:** every recorded frame, on a copy at most **512 px** wide. ~60 inferences per scan. | Every detection pass, on a copy at most **512 px** wide (`GAME_DETECT_MAX_WIDTH`). Every **120 ms** while a visible person is unidentified, **180 ms** once everyone is identified, plus on any shot needing a fresh detection. |
+| **Pose Landmarker Lite** | **Rescue only.** Runs on a recorded frame solely when the object detector found nobody in it, so ~0 inferences on a well-framed scan. Never in the preview. | Every **520 ms** at most, and only once the room has at least two scanned players (`rosterCandidateCount() >= 2`), plus on a shot that forces it. Same 512 px copy. |
 | **MobileNetV3 Small** (embedder) | Every *usable* frame during processing, reading the **full-resolution** (up to 1024 px) frame. Up to ~60 inferences per scan. | Inside `extractSignature()` on each due identity check, reading the **full-resolution** video. Per track: every detection for its first 6 checks (`SETTLE_CHECKS`), then every **250 ms** (`RECHECK_MS`). |
-| **OSNet x0.25** (re-identification) | Once per frame backing a chosen gallery sample, **after** selection, reading the full-resolution frame. ~30 inferences per scan, **awaited** serially. | Fire-and-forget: each due identity check calls `reid.request(track, …)` and uses whatever `reid.latest(track)` already has (max age 800 ms). One inference at a time; a repeat request for a pending track is dropped. |
+| **OSNet x0.25** (re-identification) | Once per frame backing a chosen gallery sample, **after** selection, reading the full-resolution frame. ~30 inferences per scan, dispatched **four at a time** into reid.js's worker ([`scan-reid.js`](scanning.md#5-deferred-work-and-what-it-saves)). | Fire-and-forget: each due identity check calls `reid.request(track, …)` and uses whatever `reid.latest(track)` already has (max age 800 ms). One inference at a time; a repeat request for a pending track is dropped. |
 
 Two differences are worth spelling out, because they are the ones people get wrong:
 
 - **Detection is downscaled on both paths; description is not.** Both paths detect on a 512-wide copy and then read pixels for signatures from the full-resolution source. The models resize their input internally anyway, so the downscale saves the per-inference upload, not network work; the signature genuinely wants the better pixels.
 - **Scanning awaits OSNet; gameplay never does.** Enrolment has no frame deadline and every gallery sample needs an embedding, so it blocks. The game cannot block, so it uses the previous result and skips the check entirely when there isn't a recent one. See [Identification → Waiting for a re-identification embedding](identification.md#3-waiting-for-a-re-identification-embedding).
 
-Nothing runs on every animation frame on either path. The only inference outside those two paths is `camera.js`'s one-off [warm-up](app-flow.md): each of the four models is run exactly once, on a blank or 512-wide throwaway frame, while the player is still on the join or lobby screen, so the round does not pay for the first-inference shader compile.
+Nothing runs on every animation frame on either path. That is recent: the scan screen's preview detection used to, and through `detectScanPeople` on the **full-resolution** video, which meant roughly 180 object and 180 pose inferences at ~0.92 Mpx across a scan's countdown and recording — more than the entire processing pass that follows, for a highlight box. It is now the throttled object-only pass in the table above.
+
+The only inference outside those two paths is `camera.js`'s one-off [warm-up](app-flow.md#join-join-screen): each of the four models is run exactly once, on a blank or 512-wide throwaway frame, as soon as it loads, so the round does not pay for the first-inference shader compile.
 
 ### Loading
 
-`createDetector()`:
+`detector.js` exposes one factory per model rather than one function that loads all three, because the three are not equally urgent and [`startup.js`](app-flow.md#join-join-screen) needs to say so:
 
-1. Loads the WebAssembly fileset.
-2. Creates the object detector with the **GPU** delegate, falling back to **CPU** if that fails.
-3. Tries to create the pose landmarker and the embedder on the same delegate. If either fails, it logs a warning and carries on without it.
-4. Returns `{detector, poseDetector, embedder, delegate}`. `delegate` is a label such as `GPU+Pose+Embed` that the debug overlay shows. `camera.js` appends `+ReID` to it when the re-identification model also loaded, so the overlay's first line says exactly which signals are live.
+1. `createVisionFileset()` loads the WebAssembly fileset, shared by all three.
+2. `createObjectDetector(fileset)` creates the object detector with the **GPU** delegate, falling back to **CPU** if that fails, and returns `{detector, delegate}`.
+3. `createPoseDetector(fileset, delegate)` and `createEmbedder(fileset, delegate)` take that same delegate, so the three can never end up split across GPU and CPU. Each returns `null` rather than throwing if this phone could not manage it, logging a warning.
+
+That delegate hand-off is the one real ordering constraint in startup: whether MediaPipe can use the GPU at all is only discovered by trying, and the try that counts is the object detector's, because that is the model the game runs every frame. `startup.js` starts pose and the embedder from a single continuation on that answer, so the two overlap with each other but neither begins before it.
+
+`camera.js` assembles the debug overlay's delegate label — `GPU`, plus `+Pose`, `+Embed` and `+ReID` for each optional model that actually loaded — and rebuilds it each time one lands, since they no longer arrive together.
 
 Object detector settings: video mode, score threshold 0.35, up to 8 results, `person` category only.
 Pose settings: video mode, up to 8 poses, detection/presence/tracking confidence 0.18.

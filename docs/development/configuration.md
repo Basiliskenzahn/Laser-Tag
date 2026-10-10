@@ -78,7 +78,7 @@ Wider boxes are more forgiving but count more near-misses as hits.
 | `TRACKED_POSE_MIN_SCORE` | 0.55 | Minimum pose box score to split or add boxes in the game |
 | `OBJECT_MODEL_URL`, `POSE_MODEL_URL`, `EMBEDDER_MODEL_URL` | `/models/…` | Which model files to load |
 
-Model options that aren't separate constants but are worth knowing about, inside `createDetector()`: the object detector takes `maxResults: 8` and the `person` category only; the pose landmarker takes `numPoses: 8` and detection/presence/tracking confidence `0.18`; the embedder is created with `l2Normalize: true, quantize: false`.
+Model options that aren't separate constants but are worth knowing about, in `detector.js`'s per-model factories: the object detector takes `maxResults: 8` and the `person` category only; the pose landmarker takes `numPoses: 8` and detection/presence/tracking confidence `0.18`; the embedder is created with `l2Normalize: true, quantize: false`. All three share `WASM_PATH` (`/vendor/tasks-vision/wasm`).
 
 `frontend/public/screens/game.js`:
 
@@ -89,6 +89,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 | `GAME_TRACK_DETECT_INTERVAL_MS` | 180 | Detection interval once everyone visible is identified |
 | `GAME_POSE_DETECT_INTERVAL_MS` | 520 | Minimum interval for the slower pose model |
 | `SHOT_REFRESH_MAX_AGE_MS` | 90 | A shot triggers a fresh detection if the last one is older than this |
+| `SCAN_PREVIEW_DETECT_INTERVAL_MS` | 150 | Minimum interval for the scan screen's green highlight box — object detector only, on the `GAME_DETECT_MAX_WIDTH` copy, and skipped entirely while the rotation is recording. Purely cosmetic: nothing but `drawScan` reads it, so it cannot affect a gallery. Lower is a smoother-looking box and a hotter phone. |
 
 `frontend/public/camera.js` — the first-inference warm-up (see [App flow → Join](../client/app-flow.md#join-join-screen)):
 
@@ -137,6 +138,18 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
 | `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
 | `SCAN_CACHE_VERSION` | 12 | Bump when the signature format changes (11 = samples carry a re-identification embedding; 12 = `shape` is stored raw rather than L2-normalised) |
+
+`frontend/public/scan-reid.js` — the deferred OSNet pass:
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `REID_DISPATCH_BATCH` | 4 | Embeddings dispatched before yielding to the renderer. Each `embed()` snapshots its crop synchronously on the main thread and then runs the network in `reid.js`'s worker, so this is how long an uninterrupted run of snapshots may be. 1 is the old serial behaviour and leaves the worker idle between frames; much higher blocks the progress counter and the ✕ for a visible moment. |
+
+`frontend/public/camera.js` — what enrolment waits for:
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `SCAN_MODEL_WAIT_MS` | 20 000 | How long a scan waits for the embedder and the recogniser before going ahead without them. Only a hung download can reach it — a model that *failed* resolves to `null` immediately. Lower risks enrolling a weaker gallery on a slow connection; higher risks a scan screen the player can only leave with the ✕. See [Scanning → Waiting for the models](../client/scanning.md#0-waiting-for-the-models-if-it-comes-to-that). |
 
 `SCAN_SAMPLE_COUNT` (6) and `SCAN_SAMPLE_INTERVAL_MS` (70) belong to an older capture path (`captureScanSignature`) that the current rotation scan doesn't use.
 

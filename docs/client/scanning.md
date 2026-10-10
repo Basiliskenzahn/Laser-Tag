@@ -14,7 +14,8 @@ Any phone can scan any player: each lobby row has a **Scan** button, and the gal
 
 ```mermaid
 flowchart TD
-  A[Tap Scan] --> B[3 s countdown<br/>player faces camera]
+  A[Tap Scan] --> A2[Wait for the embedder and<br/>the recogniser, if still loading]
+  A2 --> B[3 s countdown<br/>player faces camera<br/>object-only preview, 150 ms]
   B --> C[Record 12 s<br/>~60 frames, max 1024 px wide<br/>no analysis at all]
   C --> D[Per frame: object detector<br/>on a 512-wide copy]
   D --> E[Quality gates:<br/>framing, confidence, light,<br/>contrast, sharpness]
@@ -30,25 +31,36 @@ flowchart TD
   M --> N[Cache locally, send scan<br/>to server, back to lobby]
 ```
 
-The three phases and roughly what each costs:
+The phases and roughly what each costs:
 
 | Phase | Duration | Work |
 | --- | --- | --- |
-| Countdown | 3 s (`ROTATION_SCAN_COUNTDOWN_MS`) | None. A digit counting down and a prompt. |
+| Model wait | Usually none | Only if the embedder or the recogniser is still loading; see below. |
+| Countdown | 3 s (`ROTATION_SCAN_COUNTDOWN_MS`) | The preview detection: the object detector alone, on a 512-wide copy, at most every 150 ms. ~20 inferences. |
 | Recording | 12 s (`ROTATION_SCAN_DURATION_MS`) | One `drawImage` per frame. No inference, so it stays smooth on slow phones. |
-| Processing | As long as it takes | All of the inference: see [the cost table](#what-processing-costs). |
+| Processing | As long as it takes | All the rest of the inference: see [the cost table](#what-processing-costs). |
 
 Processing is not time-boxed — it runs until every recorded frame has been examined, which is why the progress counter matters.
+
+### 0. Waiting for the models, if it comes to that
+
+The embedder and the [recogniser](identification.md#the-re-identification-embedding-reidjs) are optional, so the lobby does not wait for them — it opens on the camera and the object detector alone ([App flow → What Continue actually waits for](app-flow.md#what-continue-actually-waits-for)). Enrolment is the one screen that does have to care, because a scan without them does not *fail*: it quietly enrols weaker signatures, and that gallery is then cached under `SCAN_CACHE_VERSION` and matched against by every phone for the rest of the round. A faster scan that enrols a worse gallery is a bad trade, and the damage persists.
+
+So `runAutoScan()` waits for whatever is still outstanding before the countdown — never during the recording, so a rotation already under way is never interrupted — showing *"Finishing the embedder and the recogniser load..."*. In practice this is instant: reaching the scan screen takes a deliberate tap, which these downloads usually outlast. A 20 s cap (`SCAN_MODEL_WAIT_MS` in `camera.js`) means a download that stalled with no error degrades the scan rather than leaving the player stuck with nothing but the ✕.
 
 ### 1. Countdown
 
 `runAutoScan()` clears any previous gallery and counts down from 3, re-rendering every 120 ms, so the player can get into position. The screen shows a large digit plus *"&lt;name&gt;: stand fully visible and face the camera. Start turning slowly when recording begins."*
 
+The render loop draws a green box round whoever the scan would use, which is the confirmation that the player is in fact fully visible. That preview is the object detector alone, on the same 512-wide copy gameplay detects on, at most every 150 ms (`SCAN_PREVIEW_DETECT_INTERVAL_MS` in `screens/game.js`) — it is a highlight, not a measurement, and nothing but `drawScan` ever reads it.
+
 ### 2. Recording
 
 `recordRotationVideo()` loops until 12 seconds have elapsed. Each iteration yields to the renderer, copies the current video frame onto a fresh in-memory canvas scaled to at most 1024 px wide (`ROTATION_FRAME_MAX_WIDTH`), then waits `ROTATION_RECORD_FRAME_MS` (180 ms). With the renderer yield on top of that wait, the real period is nearer 195 ms, so a full recording is **about 60 frames**, not the 66 the constants alone suggest.
 
-Nothing is analysed during recording. The point is that the player gets a steady 12 seconds to turn, with no inference competing for the main thread and no dropped frames midway through the rotation.
+Nothing is analysed during recording. The point is that the player gets a steady 12 seconds to turn, with no inference competing for the main thread and no dropped frames midway through the rotation. `recordRotationVideo()` sets `state.recordingScan` for the duration, which is what suppresses the preview detection above: the player has been told to turn in a circle, so the box is behind them and nobody is looking at the screen.
+
+> This paragraph described the intent long before the code matched it. The preview detection used to run `detectScanPeople` — object detector **plus** pose landmarker — on the **full-resolution** video on every single video frame, through both the countdown and the recording: roughly 180 object and 180 pose inferences at ~0.92 Mpx, more than the whole processing pass below, none of it reaching the gallery. It also competed with the frame capture for the main thread and left the phone thermally throttled by the time processing started. The cost table below never counted any of it.
 
 All ~60 canvases are held in memory for the whole scan — a few megabytes of backing store each at phone camera resolutions, so a couple of hundred MB in total. They have to be: selection happens after the loop, and the chosen samples are then re-read from their original frames for their thumbnail and their embedding.
 
@@ -104,7 +116,9 @@ Note the asymmetry: with ≤24 clean candidates every sample is a single frame, 
 Two things are computed only for the samples that survived selection, because only those are ever used:
 
 - **Thumbnails.** A 48×64 JPEG, cropped from the seed's frame. They are only ever shown in the thumbnail strip, which only shows chosen samples. Cropped for every sample, including on the failure path, because the strip is the feedback there.
-- **The re-identification embedding.** `attachRotationSampleReid()` runs OSNet on each frame that backs a chosen sample and writes the average into `signature.reid`. A sample averaged from 4 frames gets the average of those 4 frames' embeddings, exactly as before; a single-frame sample gets that frame's embedding. A frame shared between two samples is embedded once and reused. Skipped entirely when the scan is already too short to be usable, and when `state.reid` is null because the model failed to load.
+- **The re-identification embedding.** `attachSampleReid()` in [`scan-reid.js`](../../frontend/public/scan-reid.js) runs OSNet on each frame that backs a chosen sample and writes the average into `signature.reid`. A sample averaged from 4 frames gets the average of those 4 frames' embeddings, exactly as before; a single-frame sample gets that frame's embedding. A frame shared between two samples is embedded once and reused. Skipped entirely when the scan is already too short to be usable, and when `state.reid` is null because the model failed to load.
+
+  The embeddings are **dispatched four at a time** (`REID_DISPATCH_BATCH`) with a renderer yield between batches, rather than one at a time with a yield in front of each. `reid.js` runs OSNet in a Web Worker (`ort.env.wasm.proxy`) and queues one inference at a time internally, so the only main-thread cost of an `embed()` call is the crop it snapshots synchronously before handing over — which meant the old shape left the worker idle for most of a renderer frame per embedding, about half a second of nothing across a 30-frame scan. Batching keeps the worker fed; the batch size is only about how long an uninterrupted run of snapshots may be. What lands in the gallery is identical, and `test/scan-reid.test.js` embeds a fixed fixture through both this and a serial reference and compares the vectors, because that is the regression that would matter.
 
 This ordering is what makes the embedding affordable. OSNet is the single most expensive inference in the app, and selection cannot see its output, so embedding every usable frame meant paying for it on every frame that selection then threw away. The gallery is unchanged — the same frames are embedded and averaged the same way — but far fewer frames are embedded.
 
@@ -112,7 +126,7 @@ This ordering is what makes the embedding affordable. OSNet is the single most e
 
 Measured by driving the real `processRotationVideo()` over 60 synthetic recorded frames, all of them usable, selecting 24 samples backed by 30 distinct frames:
 
-| Per scan | Before | After |
+| Per scan | Before `scan-optimisation` | After `scan-optimisation` |
 | --- | --- | --- |
 | Object detector inferences | 60, on a 720×1280 (~0.92 Mpx) frame | 60, on a 512×910 (~0.47 Mpx) copy |
 | Pose landmarker inferences | 60, same full-size frame | **0** — only frames the object detector found nobody in |
@@ -123,7 +137,29 @@ Measured by driving the real `processRotationVideo()` over 60 synthetic recorded
 | Pixels read back via `getImageData` | ~2.11 M | ~1.13 M |
 | Renderer yields | 60 | 50 (20 in the loop, 30 in the embedding pass) |
 
-Total model inferences: **240 → 150**, and the two classes that shrank are the two most expensive per call. (The `getImageData` range before the change is because `detectScanPeople` returned an object box *and* a pose box, so the quality gates sometimes read stats for two boxes per frame instead of one.)
+Total model inferences in the processing pass: **240 → 150**, and the two classes that shrank are the two most expensive per call. (The `getImageData` range before the change is because `detectScanPeople` returned an object box *and* a pose box, so the quality gates sometimes read stats for two boxes per frame instead of one.)
+
+#### What the rest of the scan costs
+
+That table only ever covered `processRotationVideo()`. Counting the whole scan screen, which is what the player actually waits through:
+
+| Per scan | Before `startup-latency` | After |
+| --- | --- | --- |
+| Preview object detector inferences | ~180, on the **full-resolution** video | ~20, on a 512-wide copy, countdown only |
+| Preview pose landmarker inferences | ~180, same full-resolution video | **0** |
+| Processing-pass inferences | 150 | 150 (unchanged) |
+| **Model inferences per scan, total** | **~510** | **~170** |
+| Renderer frames in which OSNet is idle waiting to be given work | ~30 | ~8 |
+
+The preview counts are a rate estimate, not a measurement: the old code ran once per *new video frame*, so the real number depends on the camera's frame rate and on how long each full-resolution object+pose pair took on that particular phone — the two fight each other, which is why it is a range in the field. On a 30 fps camera where the pair costs ~80 ms the loop self-limits to about 12 pairs a second, hence ~180 across 15 seconds. The direction is not in doubt even if the exact figure is.
+
+With `?debug`, `scanCostLine()` puts the **actual** counts and per-phase timings on the overlay after every scan, so this can be read off a real phone rather than estimated: see [Debug mode](../development/debug-mode.md#startup-and-scan-costs).
+
+#### What was considered and rejected
+
+**Moving the MobileNet embedding after selection**, the way OSNet's was. Selection genuinely cannot see `signature.embed` — `signatureSimilarity()` averages `hist`, `lower` and `grid` only — so this is sound in principle, and it is the obvious next move. It does not pay here. MobileNet runs on every *usable* frame, ~55 of 60; the frames backing the chosen samples are ~30 of those; so the saving is ~55 → ~30 embeddings. But there is no way to ask `identify.js` for *only* the embedding of a frame — `personEmbedding()` is private, and `extractSignature()` computes the colour features and the embedding together or neither (`appearance: false` skips both). So the deferred pass would have to call `extractSignature()` again for each of ~30 frames, recomputing colour features that were already computed and thrown away, including three `getImageData` read-backs each. Trading ~25 MobileNet inferences for ~30 redundant colour-feature extractions is not obviously a win and may be a loss. Doing it properly needs a narrower seam in `identify.js`.
+
+**Enabling OSNet's threads.** `reid.js` asks for `min(4, hardwareConcurrency)` WASM threads but only when `crossOriginIsolated`, and nothing serves the COOP/COEP headers that requires, so it always runs single-threaded. The inferences themselves dominate the embedding pass, so this is likely the largest remaining win in the scan — and it is a header change, not a code change. Noted in [streamlining](../streamlining.md).
 
 How the OSNet figure holds up, since it is the headline: the count after the change is the size of the union of the backing sets of the 24 chosen samples. That is bounded above by `24 × 4 = 96` and by the number of clean candidates, so with ~60 frames the bound alone guarantees nothing — it had to be measured. Running the real `selectRotationSamples()` over synthetic rotations (colourful, neutral and high-contrast outfits, 24–66 usable frames) the union **saturates at 27–30 frames** once there are more than ~40 candidates, because the 24 seeds' neighbour groups overlap heavily. It is also guaranteed never to be *worse*: every backing frame is a candidate, and each is embedded at most once.
 
@@ -161,7 +197,7 @@ The **✕** button cancels at any point — countdown, recording, per-frame proc
 
 Every loop in the scan path checks that flag on each iteration and returns `null` rather than a partial result, and `runAutoScan()` only touches `state.gallery` once it holds a non-null result. So a cancel can never leave a half-built gallery behind: nothing is sent, nothing is cached, and the player keeps whichever gallery they already had. The `finally` blocks notice `state.mode` is no longer `'scan'` and leave the lobby's message alone.
 
-One in-flight OSNet inference may still finish after a cancel — it is awaited, not abortable — but its result is discarded.
+Up to `REID_DISPATCH_BATCH` (4) in-flight OSNet inferences may still finish after a cancel — they are awaited, not abortable — but their results are discarded and no further batch is dispatched. The lobby appears immediately regardless: `cancelScan()` changes the screen synchronously, and the draining happens behind it.
 
 ## Local cache
 

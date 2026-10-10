@@ -7,14 +7,15 @@
 // forced first if the last one is too old to trust, and the server is the judge of the damage.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
-import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
+import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
 import { identity } from '../identity.js';
 import { getReidThreshold } from '../identify.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
+import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
 import * as sound from '../sound.js';
-import { drawScan } from './scan.js';
+import { drawScan, scanCostLine } from './scan.js';
 
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
@@ -26,6 +27,20 @@ const DETECT_MAX_BUSY_SHARE = 0.7;
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
 const SHOT_REFRESH_MAX_AGE_MS = 90;
 const GAME_DETECT_MAX_WIDTH = 512;
+// The scan screen's preview detection - the green box round whoever a scan would use. It used to
+// run on every new video frame, through detectScanPeople (object detector *plus* pose landmarker)
+// and on the full-resolution video, which made the idle scan screen by far the most expensive
+// thing in the app: about 180 object and 180 pose inferences at ~0.92 Mpx during a 3 s countdown
+// and a 12 s recording, none of which goes anywhere near the gallery. The gallery is built later,
+// from the recorded canvases, by processRotationVideo.
+//
+// So the preview is now what it always should have been: the cheap object-only pass, on the same
+// 512-wide copy gameplay detects on, a few times a second. It is a highlight, not a measurement.
+// And it is skipped outright while the recording is running, because there the player has been
+// told to turn in a circle - the box is behind them, nobody is looking at the screen, and the
+// frame capture wants the main thread. Anything that reads `state.boxes` on this screen only
+// draws with it (drawScan), so none of this can reach an enrolled signature.
+const SCAN_PREVIEW_DETECT_INTERVAL_MS = 150;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
@@ -67,6 +82,20 @@ function scaleBoxes(boxes, scaleX, scaleY) {
     w: box.w * scaleX,
     h: box.h * scaleY,
   }));
+}
+
+// See SCAN_PREVIEW_DETECT_INTERVAL_MS. `recordingScan` is the recording window specifically, not
+// the whole scan: the countdown still wants the box, because that is when the player is being
+// asked to stand fully visible and the box is the confirmation that they are.
+function refreshScanPreview() {
+  if (state.recordingScan) return;
+  const now = performance.now();
+  if (now - state.lastScanPreviewAt < SCAN_PREVIEW_DETECT_INTERVAL_MS) return;
+  state.lastScanPreviewAt = now;
+  const { source, scaleX, scaleY } = gameplayInferenceSource();
+  state.boxes = scaleBoxes(detectTrackedPeopleFast(state.detector, source, now), scaleX, scaleY);
+  inferenceMs = performance.now() - now;
+  frames++;
 }
 
 function gameDetectInterval(now) {
@@ -289,10 +318,7 @@ export function loop() {
   if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
     if (state.mode === 'scan') {
-      const t0 = performance.now();
-      state.boxes = detectScanPeople(state.detector, state.poseDetector, video, t0);
-      inferenceMs = performance.now() - t0;
-      frames++;
+      refreshScanPreview();
     } else if (state.mode === 'game') {
       const now = performance.now();
       if (now - state.lastGameDetectAt >= gameDetectInterval(now)) {
@@ -351,7 +377,11 @@ export function loop() {
                 `${rankName(t.debugMatch)}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)}`,
             )
             .join(' ')}`
-        : '');
+        : '') +
+      // Startup and scan costs: both are one-off, so they are appended rather than recomputed,
+      // and both are empty until the thing they measure has happened.
+      (startupTimingLine() ? `\n${startupTimingLine()}` : '') +
+      (scanCostLine() ? `\n${scanCostLine()}` : '');
   }
 }
 

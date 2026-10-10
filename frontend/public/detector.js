@@ -41,63 +41,79 @@ const BODY_TOP = 0.22;
 const BODY_HEIGHT = 0.72;
 const BODY_WIDTH = 0.56;
 
-// Loads the three models this phone can get. Only the object detector is required: the pose
-// landmarker and the image embedder are both best-effort, and the caller gets null for whichever
-// one this device could not manage (identify.js blends in the embedder only when it exists, and
-// the detect* functions below tolerate a null poseDetector). `delegate` is for the debug overlay.
-export async function createDetector() {
-  const fileset = await FilesetResolver.forVisionTasks('/vendor/tasks-vision/wasm');
-  const objectOptions = (delegate) => ({
+// ---- Loading the models ----
+//
+// Three models, 17.1 MB of them, and only one is required. The pose landmarker and the image
+// embedder are both best-effort: the caller gets null for whichever one this device could not
+// manage (identify.js blends in the embedder only when it exists, and the detect* functions below
+// tolerate a null poseDetector), so nothing the player can see has to wait for them.
+//
+// They are exposed one model per function rather than as a single createDetector() because the
+// three are not equally urgent and startup.js needs to say so. The object detector (7.25 MB) is
+// the one the lobby cannot open without; the pose landmarker (5.78 MB) and the embedder (4.12 MB)
+// are only needed by the time somebody taps Scan, which is a deliberate tap away. Loading all
+// three before showing the lobby is what made entering a room feel broken.
+//
+// The one real ordering constraint is the delegate. Whether MediaPipe can use the GPU at all is
+// only discovered by trying, and the try that matters is the object detector's, because that is
+// the model the game runs every frame. Pose and the embedder are then created with whatever it
+// settled on, so the three never end up split across GPU and CPU - see startup.js, which is where
+// that sequencing lives.
+
+const WASM_PATH = '/vendor/tasks-vision/wasm';
+
+export function createVisionFileset() {
+  return FilesetResolver.forVisionTasks(WASM_PATH);
+}
+
+// Required. Returns the delegate it managed, which the other two are then created with; `delegate`
+// is also what the debug overlay's first line shows.
+export async function createObjectDetector(fileset) {
+  const options = (delegate) => ({
     baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     scoreThreshold: MIN_SCORE,
     maxResults: 8,
     categoryAllowlist: ['person'],
   });
-  const poseOptions = (delegate) => ({
-    baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
-    runningMode: 'VIDEO',
-    numPoses: 8,
-    minPoseDetectionConfidence: 0.18,
-    minPosePresenceConfidence: 0.18,
-    minTrackingConfidence: 0.18,
-  });
-  const embedderOptions = (delegate) => ({
-    baseOptions: { modelAssetPath: EMBEDDER_MODEL_URL, delegate },
-    runningMode: 'VIDEO',
-    l2Normalize: true,
-    quantize: false,
-  });
-
-  let detector;
-  let objectDelegate = 'GPU';
   try {
-    detector = await ObjectDetector.createFromOptions(fileset, objectOptions('GPU'));
+    return { detector: await ObjectDetector.createFromOptions(fileset, options('GPU')), delegate: 'GPU' };
   } catch (err) {
     console.warn('GPU delegate unavailable, falling back to CPU', err);
-    detector = await ObjectDetector.createFromOptions(fileset, objectOptions('CPU'));
-    objectDelegate = 'CPU';
+    return { detector: await ObjectDetector.createFromOptions(fileset, options('CPU')), delegate: 'CPU' };
   }
+}
 
-  let poseDetector = null;
-  let poseDelegate = '';
+// Best-effort; null means this phone goes without it.
+export async function createPoseDetector(fileset, delegate) {
   try {
-    poseDetector = await PoseLandmarker.createFromOptions(fileset, poseOptions(objectDelegate));
-    poseDelegate = '+Pose';
+    return await PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
+      runningMode: 'VIDEO',
+      numPoses: 8,
+      minPoseDetectionConfidence: 0.18,
+      minPosePresenceConfidence: 0.18,
+      minTrackingConfidence: 0.18,
+    });
   } catch (err) {
     console.warn('Pose scan fallback unavailable', err);
+    return null;
   }
+}
 
-  let embedder = null;
-  let embedDelegate = '';
+// Best-effort; null means identify.js leaves `embed` out of the blend.
+export async function createEmbedder(fileset, delegate) {
   try {
-    embedder = await ImageEmbedder.createFromOptions(fileset, embedderOptions(objectDelegate));
-    embedDelegate = '+Embed';
+    return await ImageEmbedder.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: EMBEDDER_MODEL_URL, delegate },
+      runningMode: 'VIDEO',
+      l2Normalize: true,
+      quantize: false,
+    });
   } catch (err) {
     console.warn('Image embedder unavailable', err);
+    return null;
   }
-
-  return { detector, poseDetector, embedder, delegate: `${objectDelegate}${poseDelegate}${embedDelegate}` };
 }
 
 // Person boxes in video pixel coordinates.
