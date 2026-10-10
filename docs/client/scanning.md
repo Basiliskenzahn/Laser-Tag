@@ -2,7 +2,7 @@
 
 Before a round, every player is scanned so the other phones can recognise them. A scan produces a **gallery**: 12 to 24 appearance [signatures](identification.md#signatures), each from a different viewing angle, each carrying the colour features and — when the model loaded — a [re-identification embedding](identification.md#the-re-identification-embedding-reidjs). The gallery is uploaded to the server and shared with every phone in the room.
 
-The code lives in `frontend/public/screens/scan.js`. Signature extraction itself is in [`identify.js`](identification.md).
+The code lives in `frontend/public/screens/scan.js`, with three pieces of it in their own modules because they have no camera in them and can therefore be tested directly: [`scan-select.js`](../../frontend/public/scan-select.js) (which frames become the gallery), [`scan-cache.js`](../../frontend/public/scan-cache.js) (what is remembered between loads, and what counts as trustworthy) and [`scan-reid.js`](../../frontend/public/scan-reid.js) (the deferred OSNet pass). Signature extraction itself is in [`identify.js`](identification.md).
 
 ## Who scans whom
 
@@ -132,6 +132,8 @@ Candidate **quality** — used throughout selection — rewards boxes that are l
 
      **The seed is always in its own average.** It used to be ranked alongside the others on `similarity + quality × 0.05` and then cut by the same `slice`, so four better-scoring candidates could push a seed out of its own group — while the sample still spread `...seed` over itself and kept the seed's frame and box, which is the frame the re-identification pass then embeds. A sample whose own seed frame is not in its signature is not what anything downstream assumes.
 5. **Order by view** (`orderRotationSamplesByView`): start with the best-quality sample and repeatedly append the most similar remaining one, which roughly reconstructs the order the player turned in.
+
+   Worth knowing that this step now has no consumer. Its reason for existing was a readable thumbnail strip, and [the strip is gone](#thumbnails-removed-not-hidden); matching reads every sample regardless of order, and the server stores the array as it arrives. It is kept because it is 24 samples' worth of arithmetic and it makes a gallery dump legible to a person, but it is cosmetic, and anything that depends on gallery order is depending on nothing.
 
 Note the asymmetry: with ≤24 clean candidates every sample is a single frame, and with >24 every sample is an average of up to 4. Both are valid galleries.
 
@@ -331,7 +333,7 @@ Two things these tests deliberately do **not** prove, because nothing can reach 
 
 ### Mutation-check anything added here
 
-Every test in this area was written by breaking the behaviour it claims to guard, watching it fail, and restoring. That is not ceremony: on the pass that produced these files, **ten of twenty-one** mutations ran green first time, and each one was either a test asserting less than it looked like it did or a piece of code that turned out to be redundant. Two examples worth remembering:
+Every test in this area was written by breaking the behaviour it claims to guard, watching it fail, and restoring. That is not ceremony: on the pass that produced these files, **13 of 45** mutations ran green first time. Seven were tests asserting less than they looked like they did; five were code that turned out to be redundant; one was a badly built mutation that never reintroduced the bug it named. Two of the test holes worth remembering:
 
 - A memory ceiling expressed as *a fraction of the recording* passed with every candidate's crop still alive, because the crops are small enough that keeping all of them still came in under the fraction. Expressed against the number of frames the embedding pass actually reads, it fails.
 - `frameLost` reading a colour channel instead of alpha passed everything, because a discarded canvas is zero in every channel. Only a *live* frame with no red in it separates the two.
