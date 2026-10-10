@@ -1,6 +1,5 @@
 // Combined dev server: serves the phone client AND runs the realtime game, for `npm start`.
-// (The Docker setup instead splits these into two containers - see server/ws-server.js and
-// frontend/ - but this single-process version is simpler for local development.)
+// The Docker setup instead splits the static frontend from the Python backend.
 //
 // It listens twice:
 //   HTTP  (PORT, default 3000):        localhost on a laptop, or behind an HTTPS tunnel
@@ -14,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import selfsigned from 'selfsigned';
-import { attachGameServer, handleHttp } from './realtime.js';
+import { handleHttp } from './realtime.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.PORT) || 3000;
@@ -95,12 +94,10 @@ function lanAddresses() {
     .map((a) => a.address);
 }
 
-// /api/* is the game's HTTP polling fallback; everything else is a static file.
+// /api/* and /events/* are the local game backend; everything else is a static file.
 const handleRequest = (req, res) => handleHttp(req, res) || serveStatic(req, res);
 const httpServer = http.createServer(handleRequest);
 const httpsServer = https.createServer(await loadCertificate(), handleRequest);
-
-for (const server of [httpServer, httpsServer]) attachGameServer(server);
 
 httpServer.listen(PORT, () => {
   httpsServer.listen(HTTPS_PORT, () => {

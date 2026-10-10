@@ -1,6 +1,6 @@
 import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
-import { openPolling, openWebSocket } from './transport.js';
+import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 
 const $ = (id) => document.getElementById(id);
@@ -29,7 +29,6 @@ const state = {
   name: '',
   room: '',
   conn: null, // connection to the game server (transport.js)
-  usePolling: false, // set once WebSocket has failed to connect on this network
   myId: null,
   game: null, // latest state snapshot from the server (hp, status, ...)
   roster: [], // latest roster from the server (id, name, gallery)
@@ -47,6 +46,7 @@ const state = {
   autoScanning: false,
   postProcessingScan: false,
   scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
+  events: null,
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
   countdownEndsAt: null,
@@ -252,6 +252,13 @@ function appendScanThumb(src) {
   $('scan-thumbs').append(thumb);
 }
 
+function setScanGallery(gallery, thumbs) {
+  state.gallery = gallery;
+  state.scanThumbs = thumbs;
+  $('scan-thumbs').innerHTML = '';
+  for (const thumb of thumbs) appendScanThumb(thumb);
+}
+
 function renderSavedScan() {
   const readyToUse = Boolean(state.savedScan) && state.gallery.length === 0;
   $('saved-scan').hidden = !state.savedScan;
@@ -261,10 +268,7 @@ function renderSavedScan() {
 
 function useSavedScan() {
   if (!state.savedScan) return;
-  state.gallery = state.savedScan.gallery;
-  state.scanThumbs = state.savedScan.thumbs ?? [];
-  $('scan-thumbs').innerHTML = '';
-  for (const thumb of state.scanThumbs) appendScanThumb(thumb);
+  setScanGallery(state.savedScan.gallery, state.savedScan.thumbs ?? []);
   startScanStep();
 }
 
@@ -503,20 +507,16 @@ async function runAutoScan() {
     const result = await processRotationVideo(frames);
     if (!state.autoScanning || !result) return;
 
+    const signatures = result.samples.map((sample) => sample.signature);
+    const thumbs = result.samples.map((sample) => sample.thumb);
+    setScanGallery(signatures, thumbs);
+
     if (result.samples.length < SCAN_MIN_SAMPLES) {
-      state.gallery = result.samples.map((sample) => sample.signature);
-      state.scanThumbs = result.samples.map((sample) => sample.thumb);
-      $('scan-thumbs').innerHTML = '';
-      for (const thumb of state.scanThumbs) appendScanThumb(thumb);
       finalMessage =
         `Only got ${result.samples.length}/${SCAN_MIN_SAMPLES} usable angles from ${result.usableFrames}/${result.totalFrames} frames: ${scanProblemMessage(result.problem)}. Try again slower.`;
       return;
     }
 
-    state.gallery = result.samples.map((sample) => sample.signature);
-    state.scanThumbs = result.samples.map((sample) => sample.thumb);
-    $('scan-thumbs').innerHTML = '';
-    for (const thumb of state.scanThumbs) appendScanThumb(thumb);
     saveScanCache();
     finalMessage = `Saved ${result.samples.length} angles from ${result.usableFrames} usable rotation frames.`;
   } catch (err) {
@@ -544,6 +544,7 @@ $('scan-join-btn').addEventListener('click', () => {
   state.mode = 'game';
   state.scanDone = true;
   sendJoin(); // if the connection isn't open yet, onOpen sends it
+  openGameEvents();
   renderHud();
 });
 
@@ -551,11 +552,11 @@ $('scan-join-btn').addEventListener('click', () => {
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 
-// Tries WebSocket first. If it never opens, this network blocks it (some proxies reject the
-// upgrade outright), so retry straight away with HTTP polling and stick with that.
+// Game control/state messages use HTTP polling. Health/death notifications use SSE once the
+// player enters the game screen.
 function connect() {
   let opened = false;
-  const conn = (state.usePolling ? openPolling : openWebSocket)({
+  const conn = openPolling({
     onOpen() {
       opened = true;
       state.failedConnects = 0;
@@ -566,11 +567,6 @@ function connect() {
     onClose() {
       if (state.conn !== conn) return;
       state.game = null;
-      if (!opened && !state.usePolling) {
-        state.usePolling = true;
-        connect();
-        return;
-      }
       if (!opened) state.failedConnects++;
       showConnectionProblem(state.failedConnects >= 2 ? UNREACHABLE_MESSAGE : 'Connection lost. Reconnecting…');
       setTimeout(connect, 1500);
@@ -604,6 +600,31 @@ function showConnectionProblem(text) {
 
 function send(msg) {
   state.conn?.send(msg);
+}
+
+function openGameEvents() {
+  state.events?.close();
+  const room = encodeURIComponent(state.room);
+  const events = new EventSource(`/events/${room}`);
+  events.onmessage = handleGameEvent;
+  events.addEventListener('health', (event) => handleGameEvent(event));
+  events.addEventListener('death', (event) => handleGameEvent(event));
+  events.onerror = () => {
+    // EventSource reconnects automatically; no UI noise needed during play.
+  };
+  state.events = events;
+}
+
+function handleGameEvent(event) {
+  let msg;
+  try {
+    msg = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (DEBUG && (msg.type === 'health' || msg.type === 'death')) {
+    console.debug('game event', msg);
+  }
 }
 
 function handleMessage(msg) {
@@ -754,7 +775,20 @@ function fire() {
   // because the video is scaled with object-fit: cover around its centre.
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
   if (hit?.track.playerId && state.game?.status === 'playing') {
-    send({ type: 'shoot', targetId: hit.track.playerId, zone: hit.zone });
+    postHit(hit.track.playerId, hit.zone);
+  }
+}
+
+async function postHit(targetId, zone) {
+  try {
+    const res = await fetch('/api/hit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room: state.room, shooterId: state.myId, targetId, zone }),
+    });
+    if (!res.ok && DEBUG) console.warn('hit endpoint rejected shot', await res.text());
+  } catch (err) {
+    if (DEBUG) console.warn('hit endpoint failed', err);
   }
 }
 

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Stage 2: nginx serves the static client and reverse-proxies /ws to the backend container.
+# Stage 2: nginx serves the static client and reverse-proxies /api/* and /events/* to the backend.
 FROM nginx:1.27-alpine
 RUN apk add --no-cache openssl
 

@@ -14,7 +14,7 @@ Built during a 42-hour hackathon.
 - **Hitboxes come from image recognition.** Each phone runs a person detector ([MediaPipe](https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector) EfficientDet-Lite0) on every camera frame, in the browser. Each person it finds gets a body hitbox, plus a head hitbox in the top-centre of the body box.
 - **Players are identified, not just detected.** Before the match, everyone is scanned from a few angles; during the match each tracked body is matched against those scans to figure out *who* it is. See [Player identification](#player-identification) below.
 - **Shooting.** When you fire, the phone checks whether the crosshair is on an identified player. A body hit does 20 damage and a headshot does 50, starting from 100 HP.
-- **Game server.** A small Node.js server keeps every phone in a room in sync over WebSockets. It handles the room, countdown, health, knockouts (last one standing wins) and starting the next round.
+- **Game server.** The realtime backend keeps every phone in a room in sync over HTTP polling and SSE. It handles the room, countdown, health, knockouts (last one standing wins) and starting the next round.
 
 The game supports up to 8 players per room (`MAX_PLAYERS` in `server/game.js`).
 
@@ -46,7 +46,7 @@ The server prints two kinds of address:
 
 **Playing on phones (same Wi-Fi):** open the `https://` address on every phone. They'll warn that the certificate isn't trusted, because the server makes its own. Continue anyway: on iPhone, tap *Show Details → visit this website*; on Android, tap *Advanced → Proceed*. Enter a name and the same room code, then allow camera access.
 
-**Connection fallback:** phones talk to the server over a WebSocket when they can. Some networks block that: the hackathon's SSO gateway answers every WebSocket upgrade with 502, and iPhone Safari refuses WebSockets to a self-signed address even after you accept the warning. When the WebSocket can't connect, the app switches to HTTP long polling (`/api/connect`, `/api/send`, `/api/poll` in `server/realtime.js`), which gets through both.
+**Connection transport:** phones use HTTP long polling for room control/state (`/api/connect`, `/api/send`, `/api/poll`), POST hits to `/api/hit`, and listen for health/death events over SSE (`/events/<room>`). There is no WSS connection path.
 
 **If the Wi-Fi blocks phones from reaching each other:** run an HTTPS tunnel and open its URL on every phone instead:
 
@@ -63,14 +63,14 @@ With just one laptop/webcam you can still exercise the identification pipeline: 
 
 Docker splits the app into two containers instead of one process:
 
-- **`backend`** - just the realtime game server (`server/ws-server.js`), plain HTTP/WS, reachable only from inside the Docker network.
-- **`frontend`** - nginx serving the static client and reverse-proxying `/ws` to `backend`. It also terminates TLS (self-signed, generated on first start), so phones only ever talk to this one HTTPS origin - `app.js`'s same-origin WebSocket URL needs no change, and there's no mixed-content/second-certificate problem for phones to click through.
+- **`backend`** - the Python realtime game backend, plain HTTP, reachable only from inside the Docker network.
+- **`frontend`** - nginx serving the static client and reverse-proxying `/api/` and `/events/` to `backend`. It also terminates TLS (self-signed, generated on first start), so phones only ever talk to this one HTTPS origin.
 
 ```bash
 docker compose up --build
 ```
 
-This publishes `http://localhost:8080` and `https://localhost:3443` (both served by the `frontend` container; nginx forwards `/ws` and `/api/` to the backend). A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
+This publishes `http://localhost:8080` and `https://localhost:3443` (both served by the `frontend` container; nginx forwards `/api/` and `/events/` to the backend). A named volume keeps the self-signed cert across restarts so phones don't have to re-accept it every time.
 
 For phones on the LAN, use the **host machine's** own LAN IP on port 3443 (e.g. `https://192.168.x.x:3443`) - look it up yourself (`ip addr` / `ipconfig`); nothing in the containers' logs gives you the host's address.
 
@@ -89,8 +89,7 @@ docker run --rm -p 3000:80 -p 3443:443 --network laser-tag laser-tag-frontend
 ```
 server/
   index.js        Combined dev server (static files + game) for `npm start` - not used by Docker
-  ws-server.js     Backend container's entrypoint: just the realtime game server
-  realtime.js      WebSocket protocol + room/player bookkeeping, shared by both of the above
+  realtime.js      HTTP polling/SSE protocol + room/player bookkeeping for local dev
   game.js          Room logic (players, HP, countdown, knockouts); no networking
   game.test.js     Unit tests: npm test
 public/
@@ -100,9 +99,11 @@ public/
   identify.js     Appearance signatures, gallery matching and the per-track identification state machine
   sound.js        Synthesised sound effects (Web Audio)
   models/         EfficientDet-Lite0 model, committed so the game works offline
-backend/Dockerfile    Backend container: node server/ws-server.js
+backend/
+  app.py            Python backend: polling, hit POST endpoint and SSE game events
+  Dockerfile        Backend container: python -m backend.app
 frontend/
-  Dockerfile        Frontend container: nginx serving public/ + reverse-proxying /ws to backend
+  Dockerfile        Frontend container: nginx serving public/ + reverse-proxying /api/ and /events/
   nginx.conf        The static + reverse-proxy + TLS config above
   entrypoint.sh     Generates the self-signed cert on first start, then execs nginx
 docker-compose.yml  `docker compose up --build` wires the two containers together

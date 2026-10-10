@@ -1,18 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import WebSocket from 'ws';
-import { attachGameServer, handleHttp } from './realtime.js';
+import { handleHttp } from './realtime.js';
 
 const server = http.createServer((req, res) => {
   if (!handleHttp(req, res)) res.writeHead(404).end();
 });
-const wss = attachGameServer(server);
 await new Promise((resolve) => server.listen(0, resolve));
 const base = `http://localhost:${server.address().port}`;
 
 after(() => {
-  for (const ws of wss.clients) ws.terminate();
   server.closeAllConnections();
   server.close();
 });
@@ -42,19 +39,38 @@ async function pollingClient() {
   };
 }
 
-function wsClient() {
-  const ws = new WebSocket(`${base.replace('http', 'ws')}/ws`);
-  const messages = [];
-  ws.on('message', (raw) => messages.push(JSON.parse(raw)));
-  return new Promise((resolve) => ws.on('open', () => resolve({ ws, messages, send: (m) => ws.send(JSON.stringify(m)) })));
-}
-
 async function waitFor(check, ms = 2000) {
   const start = Date.now();
   while (!check()) {
     if (Date.now() - start > ms) throw new Error('Timed out waiting');
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+async function readSseEvent(response, type, ms = 2000) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const timeout = setTimeout(() => reader.cancel(), ms);
+  let buffer = '';
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+      for (const raw of events) {
+        const lines = raw.split('\n');
+        const eventName = lines.find((line) => line.startsWith('event: '))?.slice(7);
+        const data = lines.find((line) => line.startsWith('data: '))?.slice(6);
+        if (eventName === type && data) return JSON.parse(data);
+      }
+    }
+  } finally {
+    clearTimeout(timeout);
+    reader.cancel().catch(() => {});
+  }
+  throw new Error(`Timed out waiting for ${type} SSE event`);
 }
 
 const gallery = [{ hist: [1, 0], grid: [0, 1] }];
@@ -91,20 +107,6 @@ test('a held poll is answered as soon as a message arrives', async () => {
   b.stop();
 });
 
-test('WebSocket and polling players share a room', async () => {
-  const w = await wsClient();
-  const p = await pollingClient();
-  w.send({ type: 'join', name: 'Socket', room: 'mixed', gallery });
-  await waitFor(() => lastState(w.messages)?.players.length === 1);
-  await p.send({ type: 'join', name: 'Poller', room: 'mixed', gallery });
-
-  await waitFor(() => lastState(w.messages)?.players.length === 2);
-  await waitFor(() => lastState(p.messages)?.players.length === 2);
-  w.ws.close();
-  await waitFor(() => lastState(p.messages)?.players.length === 1);
-  p.stop();
-});
-
 test('unknown polling sessions are told to reconnect', async () => {
   assert.equal((await fetch(`${base}/api/poll?token=nope`)).status, 410);
   assert.equal((await fetch(`${base}/api/send?token=nope`, { method: 'POST', body: '{}' })).status, 410);
@@ -125,6 +127,37 @@ test('shots and damage travel over polling', async () => {
   await waitFor(() => a.messages.some((m) => m.type === 'hitConfirmed'));
   await waitFor(() => b.messages.some((m) => m.type === 'gotHit'));
   await waitFor(() => lastState(b.messages)?.players.find((p) => p.id === bId).hp === 80);
+  a.stop();
+  b.stop();
+});
+
+test('posted hits emit health updates over SSE', async () => {
+  const a = await pollingClient();
+  const b = await pollingClient();
+  const room = 'posted-hit';
+  await a.send({ type: 'join', name: 'A', room, gallery });
+  await b.send({ type: 'join', name: 'B', room, gallery });
+  await waitFor(() => lastState(a.messages)?.players.length === 2);
+  const aId = a.messages.find((m) => m.type === 'welcome').id;
+  const bId = b.messages.find((m) => m.type === 'welcome').id;
+  const events = await fetch(`${base}/events/${room}`);
+  assert.equal(events.ok, true);
+
+  await a.send({ type: 'start' });
+  await waitFor(() => lastState(a.messages)?.status === 'playing', 5000);
+  const res = await fetch(`${base}/api/hit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room, shooterId: aId, targetId: bId, zone: 'body' }),
+  });
+
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).hp, 80);
+  const event = await readSseEvent(events, 'health');
+  assert.equal(event.shooterId, aId);
+  assert.equal(event.targetId, bId);
+  assert.equal(event.hp, 80);
+  await waitFor(() => b.messages.some((m) => m.type === 'gotHit'));
   a.stop();
   b.stop();
 });
