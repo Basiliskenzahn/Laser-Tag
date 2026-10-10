@@ -7,6 +7,7 @@ const POSE_MODEL_URL = '/models/pose_landmarker_lite.task';
 const EMBEDDER_MODEL_URL = '/models/mobilenet_v3_small_embedder.tflite';
 const MIN_SCORE = 0.35;
 const POSE_MIN_LANDMARKS = 6;
+const TRACKED_POSE_MIN_SCORE = 0.55;
 
 // Gameplay hitboxes are intentionally tighter than detector boxes. Detector boxes need to
 // include pose variation and loose arms for tracking; shots should hit the head/torso, not
@@ -157,6 +158,7 @@ export function detectScanPeople(detector, poseDetector, source, timestamp) {
 export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
   const objectBoxes = detectPeople(detector, source, timestamp);
   const poseFallbacks = poseBoxes(poseDetector, source, timestamp).filter((poseBox) =>
+    poseBox.score >= TRACKED_POSE_MIN_SCORE &&
     objectBoxes.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
   );
   const boxes = [...objectBoxes, ...poseFallbacks];

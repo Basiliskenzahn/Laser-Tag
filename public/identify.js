@@ -29,8 +29,8 @@ const EMBED_PRECISION = 10_000;
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
 const MIN_MATCH_HEIGHT_RATIO = 0.18;
 const MIN_BOX_WIDTH_RATIO = 0.035;
-const MIN_ASPECT = 0.9;
-const MAX_ASPECT = 5.4;
+const MIN_ASPECT = 0.58;
+const MAX_ASPECT = 6.5;
 const MIN_SCAN_ASPECT = 0.65;
 const MAX_SCAN_ASPECT = 7.0;
 
@@ -315,40 +315,16 @@ function bestAngleScore(signature, gallery) {
   return best;
 }
 
-const MATCH_THRESHOLD = 0.77; // below this, call it unknown rather than guess
-const SINGLE_PLAYER_THRESHOLD = 0.82; // when there is no rival to compare against, still require a good match
-const MATCH_MARGIN = 0.09; // the winner must clear the runner-up by this much
-const MIN_UPPER_SCORE = 0.72;
-const MIN_LOWER_SCORE = 0.62;
-const MIN_GRID_SCORE = 0.64;
-const MIN_SHAPE_SCORE = 0.68;
-const NEGATIVE_REJECT_SCORE = 0.86;
-const NEGATIVE_PENALTY_START = 0.72;
-const NEGATIVE_PENALTY_WEIGHT = 0.65;
-
-function galleryForPlayer(map, player) {
-  if (!map) return null;
-  return map.get?.(player.id) ?? map.get?.(player.name?.toLowerCase?.()) ?? null;
-}
-
-function applyNegativePenalty(match, signature, negatives) {
-  if (!match || !negatives?.length) return match;
-  const negative = bestAngleScore(signature, negatives);
-  const negativeScore = negative?.score ?? 0;
-  const penalty = Math.max(0, negativeScore - NEGATIVE_PENALTY_START) * NEGATIVE_PENALTY_WEIGHT;
-  return {
-    ...match,
-    rawScore: match.score,
-    negative: negativeScore,
-    score: Math.max(0, match.score - penalty),
-  };
-}
+const MATCH_THRESHOLD = 0.54; // below this, call it unknown rather than guess
+const MATCH_MARGIN = 0.06; // the winner must clear the runner-up by this much
+const MIN_UPPER_SCORE = 0.5;
+const MIN_LOWER_SCORE = 0.38;
+const MIN_GRID_SCORE = 0.4;
+const MIN_SHAPE_SCORE = 0.36;
 
 function rejectionReason(best, candidates, secondScore) {
   if (!best) return 'no-candidate';
-  if (best.negative >= NEGATIVE_REJECT_SCORE) return 'negative';
-  const threshold = candidates <= 1 ? SINGLE_PLAYER_THRESHOLD : MATCH_THRESHOLD;
-  if (best.score < threshold) return 'score';
+  if (best.score < MATCH_THRESHOLD) return 'score';
   if (best.upper < MIN_UPPER_SCORE) return 'upper';
   if (best.lower < MIN_LOWER_SCORE) return 'lower';
   if (best.grid < MIN_GRID_SCORE) return 'grid';
@@ -359,13 +335,13 @@ function rejectionReason(best, candidates, secondScore) {
 
 // players: [{ id, name, gallery: [{hist, grid}, ...] }, ...]
 // excludeId: the local player - never matched against their own gallery.
-export function matchGallery(signature, players, excludeId, { includeRejected = false, negatives = null } = {}) {
+export function matchGallery(signature, players, excludeId, { includeRejected = false } = {}) {
   let best = null;
   let secondScore = -Infinity;
   let candidates = 0;
   for (const player of players) {
     if (player.id === excludeId || !player.gallery?.length) continue;
-    const match = applyNegativePenalty(bestAngleScore(signature, player.gallery), signature, galleryForPlayer(negatives, player));
+    const match = bestAngleScore(signature, player.gallery);
     if (!match) continue;
     candidates++;
     if (!best || match.score > best.score) {
@@ -376,8 +352,8 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
     }
   }
   const reason = rejectionReason(best, candidates, secondScore);
-  if (!reason) return { ...best, accepted: true };
-  return includeRejected && best ? { ...best, accepted: false, reason } : null;
+  if (!reason) return { ...best, accepted: true, candidates };
+  return includeRejected && best ? { ...best, accepted: false, reason, candidates } : null;
 }
 
 function iou(a, b) {
@@ -450,6 +426,7 @@ function updateTrackBox(track, box, now) {
   track.lastSeen = now;
   track.lastUpdated = now;
   track.seenThisFrame = true;
+  track.missedFrames = 0;
   track.checks++;
 }
 
@@ -469,7 +446,6 @@ function clearIdentity(track) {
   track.grid = 0;
   track.shape = 0;
   track.embed = 0;
-  track.negative = 0;
   track.streak = 0;
   track.streakId = undefined;
 }
@@ -490,18 +466,18 @@ function resolveDuplicateIdentities(tracks, now) {
 }
 
 const ASSOCIATION_MATCH = 0.3;
-const TRACK_TIMEOUT_MS = 2500;
+const TRACK_TIMEOUT_MS = 900;
 const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
 const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
 const INITIAL_STREAK = 2; // a new track must agree a couple of times before getting a name
 const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
-const HIGH_CONFIDENCE_INITIAL_LOCK = 0.84;
-const HIGH_CONFIDENCE_NEGATIVE_LIMIT = 0.78;
+const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66;
 const EVIDENCE_DECAY = 0.82;
-const EVIDENCE_ACCEPT = 1.8;
-const EVIDENCE_MARGIN = 0.55;
-const EVIDENCE_MIN_SCORE = 0.7;
-const EVIDENCE_MIN_PART = 0.54;
+const EVIDENCE_ACCEPT = 0.72;
+const EVIDENCE_MARGIN = 0.18;
+const EVIDENCE_MIN_SCORE = 0.46;
+const EVIDENCE_MIN_PART = 0.28;
+const SOFT_LABEL_SCORE = 0.48;
 
 function decayEvidence(track) {
   for (const [id, value] of track.evidence) {
@@ -523,6 +499,24 @@ function evidenceWeight(match) {
     return 0;
   }
   return match.accepted ? 1.25 : 0.45 + Math.max(0, match.score - EVIDENCE_MIN_SCORE);
+}
+
+function softLabelMatch(match) {
+  if (!match || match.accepted || match.reason === 'margin') return null;
+  if (match.score < SOFT_LABEL_SCORE) return null;
+  if (
+    match.upper < EVIDENCE_MIN_PART ||
+    match.lower < EVIDENCE_MIN_PART ||
+    match.grid < EVIDENCE_MIN_PART ||
+    match.shape < EVIDENCE_MIN_PART
+  ) {
+    return null;
+  }
+  return { ...match, soft: true };
+}
+
+function trackerCandidate(match, evidenceMatch) {
+  return match?.accepted ? match : evidenceMatch ?? softLabelMatch(match);
 }
 
 function addEvidence(track, match) {
@@ -556,7 +550,6 @@ function assignIdentity(track, match) {
   track.grid = match?.grid ?? 0;
   track.shape = match?.shape ?? 0;
   track.embed = match?.embed ?? 0;
-  track.negative = match?.negative ?? 0;
   track.misses = 0;
   track.streak = 0;
   track.streakId = undefined;
@@ -573,7 +566,7 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
-  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null, negatives = null } = {}) {
+  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null } = {}) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
     const pairs = [];
@@ -600,6 +593,7 @@ export class Tracker {
       if (age < TRACK_TIMEOUT_MS) {
         track.vx = (track.vx ?? 0) * 0.82;
         track.vy = (track.vy ?? 0) * 0.82;
+        track.missedFrames = (track.missedFrames ?? 0) + 1;
       }
     }
 
@@ -623,13 +617,13 @@ export class Tracker {
         grid: 0,
         shape: 0,
         embed: 0,
-        negative: 0,
         debugMatch: null,
         evidence: new Map(),
         evidenceDetails: new Map(),
         streakId: undefined,
         streak: 0,
         misses: 0,
+        missedFrames: 0,
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
@@ -641,11 +635,11 @@ export class Tracker {
       track.lastCheck = now;
 
       const signature = extractSignature(video, track.box, embedder, now);
-      const match = matchGallery(signature, players, selfId, { includeRejected: true, negatives });
+      const match = matchGallery(signature, players, selfId, { includeRejected: true });
       decayEvidence(track);
       addEvidence(track, match);
       const evidenceMatch = evidenceWinner(track);
-      const candidateMatch = match?.accepted ? match : evidenceMatch;
+      const candidateMatch = trackerCandidate(match, evidenceMatch);
       const candidateId = candidateMatch?.id ?? null;
       track.debugMatch = includeRejected && !match?.accepted ? (match ?? null) : null;
 
@@ -670,8 +664,7 @@ export class Tracker {
         if (
           !track.playerId &&
           candidateMatch?.accepted &&
-          candidateMatch.score >= HIGH_CONFIDENCE_INITIAL_LOCK &&
-          (candidateMatch.negative ?? 0) < HIGH_CONFIDENCE_NEGATIVE_LIMIT
+          candidateMatch.score >= HIGH_CONFIDENCE_INITIAL_LOCK
         ) {
           assignIdentity(track, candidateMatch);
         }

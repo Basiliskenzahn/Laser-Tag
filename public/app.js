@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
 const FIRE_COOLDOWN_MS = 350;
-const LIVE_TRACK_MS = 450;
+const LIVE_TRACK_MS = 180;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
 const SCAN_CACHE_VERSION = 9;
@@ -44,7 +44,6 @@ const state = {
   gallery: [], // signatures captured so far during enrolment
   scanThumbs: [], // data URLs matching gallery samples, used for the reusable debug cache
   savedScan: null,
-  negativeGallery: new Map(),
   autoScanning: false,
   postProcessingScan: false,
   scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
@@ -78,7 +77,6 @@ $('join-form').addEventListener('submit', async (event) => {
     state.poseDetector = poseDetector;
     state.embedder = embedder;
     state.delegate = delegate;
-    state.negativeGallery = loadNegativeGallery();
   } catch (err) {
     console.error(err);
     setJoinStatus(startupErrorMessage(err));
@@ -91,7 +89,6 @@ $('join-form').addEventListener('submit', async (event) => {
   $('join-screen').hidden = true;
   $('scan-screen').hidden = false;
   $('debug').hidden = !DEBUG;
-  $('not-me-btn').hidden = !DEBUG;
   keepScreenOn();
   renderSavedScan();
   startScanStep();
@@ -223,38 +220,6 @@ function saveScanCache() {
     renderSavedScan();
   } catch {
     // The scan cache is only a debug convenience; the live scan still works.
-  }
-}
-
-function negativeCacheKey() {
-  return `negative:${state.room}`;
-}
-
-function loadNegativeGallery() {
-  const map = new Map();
-  try {
-    const cache = JSON.parse(localStorage.getItem(`laser-tag:${negativeCacheKey()}`));
-    if (cache?.room !== state.room || !cache.samples || typeof cache.samples !== 'object') return map;
-    for (const [name, samples] of Object.entries(cache.samples)) {
-      if (!Array.isArray(samples)) continue;
-      const clean = samples.filter(
-        (s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape),
-      );
-      if (clean.length) map.set(name, clean.slice(-12));
-    }
-  } catch {
-    // Negative samples are a local debug aid only.
-  }
-  return map;
-}
-
-function saveNegativeGallery() {
-  try {
-    const samples = {};
-    for (const [name, gallery] of state.negativeGallery) samples[name] = gallery.slice(-12);
-    localStorage.setItem(`laser-tag:${negativeCacheKey()}`, JSON.stringify({ version: 1, room: state.room, samples }));
-  } catch {
-    // Ignore storage failures; this only affects future debug sessions.
   }
 }
 
@@ -615,7 +580,18 @@ function connect() {
 }
 
 function sendJoin() {
-  if (state.scanDone) send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery });
+  if (state.scanDone) send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery, debug: DEBUG });
+}
+
+function matchingRoster() {
+  if (!state.gallery.length) return state.roster;
+  const selfId = localSelfId();
+  const self = { id: selfId, name: state.name || 'You', gallery: state.gallery };
+  return [...state.roster.filter((player) => player.id !== selfId), self];
+}
+
+function localSelfId() {
+  return state.myId ?? '__local-self';
 }
 
 // Connection problems go on whichever screen is showing: the scan panel or the game banner.
@@ -751,7 +727,7 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 // ---- Shooting ----
 
 function isLiveTrack(track, now = performance.now()) {
-  return now - track.lastSeen <= LIVE_TRACK_MS;
+  return track.seenThisFrame && now - track.lastSeen <= LIVE_TRACK_MS;
 }
 
 // Which (if any) tracked person is under the crosshair, and which zone of them.
@@ -760,7 +736,7 @@ function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   const now = performance.now();
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
-    if (!includeSelf && t.playerId === state.myId) continue;
+    if (!includeSelf && t.playerId === localSelfId()) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
     if (contains(bodyBox(t.box), px, py)) bodyTrack = t;
   }
@@ -782,46 +758,10 @@ function fire() {
   }
 }
 
-function clearTrackIdentity(track) {
-  track.playerId = null;
-  track.name = null;
-  track.score = 0;
-  track.upper = 0;
-  track.lower = 0;
-  track.grid = 0;
-  track.shape = 0;
-  track.embed = 0;
-  track.negative = 0;
-  track.streak = 0;
-  track.streakId = undefined;
-  track.misses = 0;
-}
-
-function markTargetAsNotMe() {
-  const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2, { includeSelf: true });
-  const track = hit?.track;
-  if (!track?.playerId || !track.name) return;
-
-  const key = track.name.toLowerCase();
-  const signature = extractSignature(video, track.box, state.embedder, performance.now());
-  const gallery = state.negativeGallery.get(key) ?? [];
-  gallery.push(signature);
-  state.negativeGallery.set(key, gallery.slice(-12));
-  saveNegativeGallery();
-  clearTrackIdentity(track);
-
-  const button = $('not-me-btn');
-  button.textContent = 'Saved';
-  setTimeout(() => {
-    button.textContent = 'Not me';
-  }, 900);
-}
-
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fire();
 });
-$('not-me-btn').addEventListener('click', markTargetAsNotMe);
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && !$('game-screen').hidden) fire();
@@ -845,10 +785,9 @@ function loop() {
       state.boxes = detectScanPeople(state.detector, state.poseDetector, video, t0);
     } else {
       state.boxes = detectTrackedPeople(state.detector, state.poseDetector, video, t0);
-      state.tracks = state.tracker.update(state.boxes, video, state.roster, DEBUG ? null : state.myId, t0, {
+      state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
         includeRejected: DEBUG,
         embedder: state.embedder,
-        negatives: state.negativeGallery,
       });
     }
     inferenceMs = performance.now() - t0;
@@ -877,7 +816,7 @@ function loop() {
             ? `\n${identified
                 .map(
                   (t) =>
-                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)} n${t.negative?.toFixed(2)}`,
+                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)}`,
                 )
                 .join(' ')}`
             : '')
@@ -886,7 +825,7 @@ function loop() {
         ? `\nRejected ${rejected
             .map(
               (t) =>
-                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)} n${(t.debugMatch.negative ?? 0).toFixed(2)}`,
+                `${t.debugMatch.name}:${t.debugMatch.score.toFixed(2)} ${t.debugMatch.reason} u${t.debugMatch.upper.toFixed(2)} l${t.debugMatch.lower.toFixed(2)} g${t.debugMatch.grid.toFixed(2)} s${t.debugMatch.shape.toFixed(2)} e${(t.debugMatch.embed ?? 0).toFixed(2)}`,
             )
             .join(' ')}`
         : '');
@@ -938,7 +877,7 @@ function drawScan({ toScreen }) {
 function drawGame({ vw, vh, toScreen }) {
   const cx = vw / 2;
   const cy = vh / 2;
-  const hit = targetUnderCrosshair(cx, cy, { includeSelf: true });
+  const hit = targetUnderCrosshair(cx, cy);
   $('crosshair').classList.toggle('on-target', hit !== null);
 
   ctx.lineWidth = 3;
