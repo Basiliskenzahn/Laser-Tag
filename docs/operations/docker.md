@@ -20,7 +20,7 @@ flowchart LR
 | --- | --- |
 | Dockerfile | `backend/Dockerfile` |
 | Base image | `python:3.12-slim` |
-| Installs | `backend/requirements.txt` (`aiohttp==3.10.11`) |
+| Installs | `backend/requirements.txt` (`aiohttp==3.13.5`) |
 | Runs | `python -m backend.app` on port 4000 |
 | Exposed | Only inside the Compose network. Not published to the host. |
 | Restart | `unless-stopped` |
