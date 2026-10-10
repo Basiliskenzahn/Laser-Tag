@@ -12,7 +12,7 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 64 JS tests
+npm test                                              # 119 JS tests
 python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
 ```
 
@@ -29,6 +29,7 @@ python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
 | `luxkaiwalker/scan-optimisation` | **merged** | Select-then-embed: OSNet now runs on the frames backing chosen samples rather than every usable frame, pose becomes a rescue-only pass, detection moves to 512 px, thumbnails deferred. **240 → 150 model inferences per scan.** Plus rewritten scanning/detection/identification docs |
 | `luxkaiwalker/roster-fanout` | **merged** | The server half of the "nothing happens after a scan" complaint. The `roster` message carried every player's full gallery and was re-sent to everyone whenever anyone scanned, i.e. **N × N copies of ~190 KB per scan** (7.8 MB for six players, over captive-portal wifi). It is now a per-connection delta: membership always complete, a gallery attached only to the phone that doesn't have it yet. **6 players: 7782 → 1148 KB per scan; the scanning phone's own wait 1297 → 191 KB, flat in room size.** Poll responses also lost `json.dumps`' default whitespace (~13%) |
 | `luxkaiwalker/startup-latency` | **merged** | Two user-reported waits. **Join → lobby:** the lobby now opens on camera + object detector alone (7.25 MB) instead of all three MediaPipe models (17.1 MB), with pose and the embedder created in parallel behind it and `connect()` dialled *before* the wait so the lobby arrives populated. Enrolment waits for the models it enrols with, so nothing degrades a gallery silently. **After the rotation:** the idle scan screen was running full-resolution object+pose on every video frame through the countdown *and* the recording (~360 inferences, more than the entire processing pass) — now a throttled object-only preview, off during recording. OSNet's deferred pass is pipelined into `reid.js`'s worker instead of serialised. New `startup.js` and `scan-reid.js`; 26 new tests |
+| `luxkaiwalker/camera-zoom` | **ready, not merged** | LuxKaiwalker branch. Extends identification range by zooming the **camera sensor** during gameplay (`?zoom=`, off by default), which is the only option costed for this that has **no per-frame cost** — it changes what the sensor delivers rather than adding inference — and the only one that helps both halves of the problem: the object detector sees a larger person *and* OSNet gets a larger, sharper crop. **Enrolment deliberately stays at 1×** whatever `?zoom=` says, because galleries are shared between phones and each phone has its own zoom capability, so "the same zoom for both" is not available and 1× is the one level every phone agrees on; `SCAN_CACHE_VERSION` is unchanged. Degrades to today's behaviour completely on a device without zoom (one probe, then never again; `advanced` constraint so a half-supporting device still gets a stream; nothing awaited on the lobby-gate path). New `camera-zoom.js` with no imports, following `startup.js`'s precedent, because `camera.js` cannot be imported under Node. 34 new tests, each mutation-checked. **Informed by but not reusing `335ccac`** — see the note below |
 | `luxkaiwalker/asset-delivery` | **merged** | LuxKaiwalker branch. Static delivery only — no client code. Every static response was `no-store` with ETags off, so the **~18 MB of models plus the 11–14 MB WASM runtime were re-fetched on every page load, reload and rejoin**, and nothing was compressed. Now split **by path**: `/models/` and `/vendor/` are cacheable with ETag revalidation (300 s / 1 day), while the app shell stays `no-store` so `git pull && docker compose up --build -d` still takes effect at once. `gzip on` covering text and `application/wasm` — the WASM shrinks ~70%, the models only 7.9–14.0% and so are deliberately excluded (measured, tabulated in [the Docker doc](docs/operations/docker.md#compression)). `/events/` and `/api/` get an explicit `gzip off` on top of the existing `proxy_buffering off`. Adds `test/asset-delivery.test.js` (7 Docker-free checks on the shipped config). Touches no file any other branch in this session touches |
 
 | `luxkaiwalker/range-reid-gate` | **pending** | LuxKaiwalker branch. Players past ~10–12 m were never identified **at any score**: `MIN_MATCH_HEIGHT_RATIO` (0.18 of frame height, 130 px at 720p) made `extractSignature` stamp `usable: false` and `bestAngleScore` return `null`. Not a relaxed constant — below 0.18 a box now reaches a **far band** where only re-identification may score it, and only against a *stricter* bar (the squared shortfall below 0.18, 0 at the line and +0.11 at the floor, i.e. 0.76 there). Both floors are read off OSNet's own 128 × 256 input at the 4×-upscale point (0.09 height, 0.025 width), so the band buys ~1.6× range for a standing person: **10–12 m → 16–19 m**. `MIN_MATCH_HEIGHT_RATIO`, `REID_DEFAULT_THRESHOLD`, `MIN_SHAPE_SCORE`, `EVIDENCE_MIN_PART` and every weight are **unchanged**; at or above 0.18 the whole match object is identical to a pre-band one and `npm run eval:shape` is byte-identical over its 2880 sightings. Also stops the waste it uncovered: `reid.request` ran before `matchGallery` and was never gated by `usable`, so every too-small box bought a full 128 × 256 OSNet inference per check whose result was then discarded. Adds `rangeDiagnostics()` for the `?debug` range readout, exports the three thresholds `tools/shape-evaluation.mjs` had to mirror by value, and `test/range-reid-gate.test.js` (13 cases through the real pixel path, each mutation-checked) |
@@ -39,6 +40,34 @@ python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
 Merged as `git merge --no-ff 3a9f783`, i.e. the branch **minus its tip commit**:
 
 - **`335ccac` (camera zoom) is excluded.** The merge stops at `3a9f783`, one commit earlier.
+
+  Worth being precise about what that commit is, because its subject line has caused confusion:
+  despite the name, **it contains no camera zoom at all.** It adds a *digital crop* pass —
+  `detectZoomedPeople`, a second object-detector inference on the central 1/2.5 of each frame on
+  every second detection, plus `mergeZoomedPeople`, `ZOOM_FACTOR` and `ZOOM_EDGE_RATIO` in
+  `detector.js`. It also lowers the live size gate (`MIN_MATCH_HEIGHT_RATIO` 0.18 → 0.07 plus a
+  96 px floor) and writes `docs/development/detection-tuning.md`.
+
+  `luxkaiwalker/camera-zoom` is a **fresh implementation informed by it, not a reuse.** The crop
+  pass was rejected: by its own measurements it costs a third of the detection rate (6.7–9.5 → 5.7–6.1
+  detections per second), it only helps the detector — the crop is taken *after* detection, so
+  OSNet still embeds the same small region of the same frame and gets no extra pixels — and it
+  only covers the middle of the picture. Sensor zoom costs nothing per frame and fixes both halves.
+
+  There is one more difference that decides it. The live size gate on this branch is still
+  `MIN_MATCH_HEIGHT_RATIO` **0.18** (`identify.js`), i.e. a box must be 18% of the frame's height
+  to be identified at all. The crop pass maps its boxes back into full-frame coordinates, so a far
+  person's *share of the frame* is unchanged by it and still fails that gate — which is precisely
+  why `335ccac` also had to lower the gate to 0.07/96 px, accepting much smaller crops into
+  recognition. Sensor zoom instead makes the person genuinely larger in the frame: at 2×, someone
+  at 12% of frame height becomes 24% and clears the existing 0.18 honestly, with real pixels rather
+  than a relaxed threshold. So zoom needs no gate change to pay off, and that is the main reason it
+  was chosen over reusing the crop pass.
+
+  The two are nevertheless **complementary rather than competing**, and composable: they touch
+  different files (`detector.js` vs `camera-zoom.js`) and different stages, so taking the crop pass
+  later is still open. Its lowered size gate is a separate decision from either — see the open item
+  below.
 - **The 80/120 ms detection cadence is not taken.** `GAME_ACQUIRE_DETECT_INTERVAL_MS` /
   `GAME_TRACK_DETECT_INTERVAL_MS` stay at **120 / 180 ms**. His `DETECT_MAX_BUSY_SHARE` (0.7) *is*
   kept, which is safe in either direction: it can only *lengthen* the interval on a phone that
@@ -78,6 +107,7 @@ Experiment and test-harness branches stay separate — they are instruments, not
 | --- | --- | --- |
 | **`MIN_SHAPE_SCORE` / `EVIDENCE_MIN_PART` recalibration.** Deferred out of `luxkaiwalker/shape-normalisation` deliberately. The corrected `shape` gate is now *reachable* at 0.36 and, on synthetic fixtures, rejects 0% of correct pairs and 0% of wrong-person pairs — harmless but near-inert as a way of telling people apart. Whether it should be stricter (or should stop being a hard rejection criterion at all) needs real colour-only `s` scores off a phone where OSNet does not load, via `?debug`. **Do not pick new numbers from the synthetic distributions**; they give the same person the same body aspect by construction and are far too tight. | LuxKaiwalker | open, and deliberately so — the safe state is the one it is in |
 | **Motion on by default.** Flagged under the `detection-tuning` exclusions above. | — | open |
+| **The live size gate, `MIN_MATCH_HEIGHT_RATIO` (0.18).** The other half of `335ccac`'s range work, and separable from its crop pass: boxes shorter than 18% of the frame are never identified even when detected, which `335ccac` measured as leaving everyone beyond ~6 m unidentifiable and relaxed to 0.07 with a 96 px floor. `luxkaiwalker/camera-zoom` deliberately does **not** touch it — zoom raises a far player's actual share of the frame, so they clear 0.18 on real pixels, and lowering the gate as well would admit genuinely tiny crops into recognition on top of that. Worth deciding on its own, with `?debug` scores from small boxes, and ideally *after* zoom has been tried in the field, since it changes which boxes exist in the first place. Owner of `identify.js` | LuxKaiwalker | open, deliberately deferred |
 | **Starting the model fetch earlier.** `luxkaiwalker/asset-delivery` deliberately added **no** `<link rel="preload">` hints and left `frontend/public/index.html` untouched. Two reasons: the WASM path is chosen at runtime after a SIMD probe, so a static hint would have to guess among four variants and a wrong guess costs an unused 11 MB on a phone; and an `as="fetch"` hint for a model has to match the eventual request's CORS/credentials mode or the browser fetches twice, which on the 7.25 MB detector would be worse than the bug. The right mechanism is an explicit `fetch()` warm-up where load order is already being decided — i.e. in the startup-sequencing work, not in the delivery layer. | LuxKaiwalker | open, deferred to whoever owns the startup path |
 
 ## Also on this branch
