@@ -57,7 +57,7 @@ docker-compose.yml
 - **No runtime dependencies beyond what's there.** The client only uses MediaPipe and ONNX Runtime Web; the Python server only uses aiohttp. Versions are pinned exactly.
 - **Comments explain why**, not what. Modules start with a short header comment describing their role, and anything tuned against measurements records the numbers (see the threshold tables in `identify.js` and `motion/matching.js`).
 - **Small, named constants** at the top of each module rather than magic numbers. Document new tunables in [Configuration](configuration.md).
-- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, opt-in motion, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
+- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, motion, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
 - **Keep browser APIs out of pure logic.** `motion/matching.js` touches no DOM and is therefore unit-tested in Node. Prefer that split for new identification logic over mocking the browser.
 - **User-facing errors are plain sentences** that say what to do ("step a little closer"), not codes.
 
@@ -100,7 +100,7 @@ Useful starting points if you're looking for something to work on:
 - **Trust model:** the shooter's phone decides hits and the server trusts it, so a modified client can cheat.
 - **Similar outfits:** much better since the [re-identification model](../client/identification.md#the-re-identification-embedding-reidjs) landed, but a phone where it fails to load falls back to the colour signature, where players dressed alike are still often left unidentified.
 - **Re-identification latency:** the model is asynchronous and a track isn't identified at all until its first embedding arrives, which costs a moment on a newly visible player. A second in-flight inference, or a worker, would cut it.
-- **Motion is opt-in and needs movement:** use `?motion=on` or `?motion=strict`; iOS only prompts inside a tap, and two players standing still produce no usable correlation, so motion is a bonus signal rather than something that can be relied on.
+- **Motion needs movement:** it's on by default (`?motion=off` to disable); iOS only prompts inside a tap, and two players standing still produce no usable correlation, so motion is a bonus signal rather than something that can be relied on.
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.
 - **Solo scanning:** a scan needs a second person holding the phone. A front-camera or mirror mode would remove that.
 - **iOS vibration:** Safari doesn't support `navigator.vibrate`.

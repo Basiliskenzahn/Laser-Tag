@@ -18,7 +18,7 @@ Read once at startup in `frontend/public/env.js`:
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
-| `?motion=on` | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
+| `?motion=off` | Clears `MOTION_ENABLED` (on by default): no motion-sensor prompt, no shared samples, and appearance alone decides who is shootable. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
 | `?motion=off` or no motion parameter | Sets `MOTION_OFF`: skips motion permission, sample sharing and motion fusion, so targeting uses appearance identity + `isStableTarget()` only. This is the default. |
 
@@ -166,6 +166,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 | Constant | Default | Effect |
 | --- | --- | --- |
 | re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.76 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark) and 0.72 let bystanders through. |
+| `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
 | `REID_EVIDENCE_MIN_SCORE` | threshold − 0.03 | Below this a rejected match contributes no evidence. Fixed at 0.62 before, which let evidence name anyone above it regardless of the threshold. |
 | `REID_SOFT_LABEL_SCORE` | threshold − 0.015 | A rejected match this good can still be the track's candidate |
@@ -253,9 +254,9 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or require motion confirmation with `?motion=strict`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
-- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict`. In debug mode, `motion off` means tracking is disabled, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
-- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which bypasses `fuseMotion()` entirely and restores the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
+- **Motion never confirms anyone:** first make sure the URL doesn't have `?motion=off`. In debug mode, `motion off` means tracking is disabled, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
+- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** use `?motion=off`, which bypasses `fuseMotion()` entirely and restores the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

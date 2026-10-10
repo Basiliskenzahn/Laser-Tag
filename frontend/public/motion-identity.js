@@ -4,8 +4,8 @@
 // much it is being moved (motion/sensor.js) and motion/matching.js checks whose phone rises and
 // falls with the person the camera is watching. resolveIdentity() fuses the two and is the only
 // way the rest of the app asks "who is that?" - all of the motion plumbing is deliberately
-// sealed in this one file, so the game loop never has to know motion exists. Motion is disabled
-// by default; ?motion=on enables it, and ?motion=strict demands the motion confirmation.
+// sealed in this one file, so the game loop never has to know motion exists. Motion is on by
+// default; ?motion=off disables it, and ?motion=strict demands the motion confirmation.
 
 import { fuseMotion, motionCheck, visualActivity } from './motion/matching.js';
 import { MotionSensor } from './motion/sensor.js';
@@ -120,8 +120,8 @@ function classifierOpinion(track, now) {
 // verdicts rest on correlating accelerometer streams from separate phones, so ordinary field
 // conditions that the matching tests do not simulate (clock drift between phones, a phone in a
 // pocket rather than held, a backgrounded tab throttling its sensor) can produce them from noise
-// alone. Motion is off unless explicitly enabled, which takes the whole mechanism out of the loop
-// and skips sensor permission prompts, outgoing samples and remote motion history.
+// alone. ?motion=off takes the whole mechanism out of the loop and skips sensor permission
+// prompts, outgoing samples and remote motion history.
 export function resolveIdentity(track, now = performance.now()) {
   if (MOTION_OFF) return appearanceOnlyIdentity(track, now);
   if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {

@@ -42,7 +42,7 @@ stateDiagram-v2
 ### Join (`#join-screen`)
 
 - Pre-fills name and room from `localStorage`, or the room from a `?room=` URL parameter. The default room is `demo`.
-- On **Continue**: unlocks audio, starts motion only if `?motion=on` or `?motion=strict` is set (`startMotion()` has to happen inside the tap, because that's the only place iOS will show the prompt), starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the models in parallel (`prepareCameraAndDetector`): the MediaPipe detector/pose/embedder plus the [re-identification model](identification.md#the-re-identification-embedding-reidjs). A re-identification failure is caught and logged — the game continues on the colour signature, and the delegate label loses its `+ReID` suffix.
+- On **Continue**: unlocks audio, starts motion unless `?motion=off` is set (`startMotion()` has to happen inside the tap, because that's the only place iOS will show the prompt), starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the models in parallel (`prepareCameraAndDetector`): the MediaPipe detector/pose/embedder plus the [re-identification model](identification.md#the-re-identification-embedding-reidjs). A re-identification failure is caught and logged — the game continues on the colour signature, and the delegate label loses its `+ReID` suffix.
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error.
 - On success: switches to the lobby, requests a screen wake lock, starts the render loop and opens the connection.
 - Refused motion access doesn't block anything when motion is enabled; `startMotion()` is retried on the first **FIRE** press, which also covers an automatic rejoin where there was no join tap.
@@ -94,13 +94,13 @@ When enabled, motion itself runs on its own timers rather than in the loop: this
 
 ### Who counts as a target
 
-`targetUnderCrosshair()` (in `screens/game.js`) walks the live tracks and asks `resolveIdentity(track)` (in `motion-identity.js`) who each one is. By default, that uses the appearance-only gate below. With `?motion=on` or `?motion=strict`, it takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `resolveIdentity()` returns a `playerId` the server says is alive.
+`targetUnderCrosshair()` (in `screens/game.js`) walks the live tracks and asks `resolveIdentity(track)` (in `motion-identity.js`) who each one is. With `?motion=off`, that uses the appearance-only gate below. Otherwise (the default), it takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `resolveIdentity()` returns a `playerId` the server says is alive.
 
 A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Beyond that, the usual route is classifier-only; motion-confirmed identities are available only when motion is enabled:
 
 | Route | Requirements |
 | --- | --- |
-| **Motion-confirmed** | Only with `?motion=on` or `?motion=strict`: the target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
+| **Motion-confirmed** | Unless `?motion=off`: the target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
 | **Classifier-only** | No usable motion data, and the appearance identity is "confident on its own": `isStableTarget()` below. Unavailable with `?motion=strict`. |
 
 With motion enabled, a motion-confirmed identity is targetable immediately, with no lock-time requirement - only liveness (`LIVE_TRACK_MS`) applies. `isStableTarget(track)` (in `motion-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 350 ms (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:

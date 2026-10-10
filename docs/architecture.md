@@ -40,7 +40,7 @@ flowchart LR
 | Detection | `frontend/public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
 | Identification | `frontend/public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
 | Re-identification | `frontend/public/reid.js` | OSNet person re-identification embeddings in ONNX Runtime Web; the strongest identification signal when it loads | [Identification](client/identification.md#the-re-identification-embedding-reidjs) |
-| Motion matching | `frontend/public/motion/sensor.js`, `frontend/public/motion/matching.js` | Optional (`?motion=on`/`?motion=strict`): phones share accelerometer activity so a tracked person's on-screen motion can confirm or veto who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
+| Motion matching | `frontend/public/motion/sensor.js`, `frontend/public/motion/matching.js` | On by default (`?motion=off` disables it, `?motion=strict` requires it): phones share accelerometer activity so a tracked person's on-screen motion can confirm or veto who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
 | Sound | `frontend/public/sound.js` | Synthesised sound effects | [Feedback](client/feedback.md) |
 | Models | `frontend/public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder, OSNet x0.25 | [Detection](client/detection.md#models) |
 | Python backend | `backend/` (`app.py` entrypoint, `models.py`, `transport.py`, `sanitize.py`) | The only game server - production, and local dev | [Python backend](server/python-backend.md) |

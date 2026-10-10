@@ -34,7 +34,7 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
-  startMotion(); // no-op unless ?motion=on or ?motion=strict is set
+  startMotion(); // no-op with ?motion=off
   enterLobbyFromForm();
 });
 

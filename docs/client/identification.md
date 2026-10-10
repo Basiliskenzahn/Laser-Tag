@@ -19,7 +19,7 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
 
-If enabled with `?motion=on` or `?motion=strict`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
+Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
 
 Both models are optional. `createReid()` failures are caught in `app.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking.
 
@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.76 by default (`?reid=` to tune) | `score` |
+| Overall score | ≥ 0.76 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`) | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -201,7 +201,7 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 
 ## Motion confirmation (`motion/`)
 
-Motion tracking is disabled by default. The code below is used only when the page is opened with `?motion=on` or `?motion=strict`.
+Motion tracking is on by default. The code below is skipped when the page is opened with `?motion=off`.
 
 Appearance alone can't tell apart two people in similar clothes, and it can put a player's name on a bystander who happens to look like them. Motion matching adds a signal that has nothing to do with appearance: **every phone knows how much it is being moved, and the camera can see how much each person on screen is moving.** They should rise and fall together for the right pairing, and be unrelated for a wrong one.
 
@@ -269,7 +269,7 @@ The 6-second window and the 0.75 threshold come from simulation (random walk/sta
 
 "Confident on its own" is `isStableTarget()` in `motion-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
 
-With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Without `?motion=on` or `?motion=strict`, motion is off and `resolveIdentity()` skips `fuseMotion()` entirely, falling back unconditionally to the appearance gate (`isStableTarget()` alone).
+With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. With `?motion=off`, motion is off and `resolveIdentity()` skips `fuseMotion()` entirely, falling back unconditionally to the appearance gate (`isStableTarget()` alone).
 
 ### How the client drives it
 

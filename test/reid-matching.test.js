@@ -108,3 +108,35 @@ test('the threshold can be tuned in the field (?reid=)', async () => {
     setReidThreshold(before);
   }
 });
+
+// Feeds one tracked box a sequence of re-identification scores against Rex, one check every
+// 300 ms, and returns the track after each check.
+async function trackScores(scores) {
+  const { Tracker } = await import('../frontend/public/identify.js');
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
+  let current;
+  const reid = { latest: () => current, request() {} };
+  const tracker = new Tracker();
+  let now = 1000;
+  return scores.map((score) => {
+    current = similarTo(rexReid, score);
+    const track = tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
+    return { playerId: track.playerId, score: track.score };
+  });
+}
+
+test('a brief spike from someone who usually scores low does not name them', async () => {
+  const steps = await trackScores([0.62, 0.64, 0.6, 0.63, 0.65, 0.62, 0.79, 0.8, 0.78, 0.63, 0.61]);
+  assert.ok(steps.every((s) => s.playerId == null), JSON.stringify(steps));
+});
+
+test('a player who usually scores high keeps their name and stays shootable through a dip', async () => {
+  const { reidTargetMinScore } = await import('../frontend/public/identify.js');
+  const steps = await trackScores([0.84, 0.86, 0.83, 0.85, 0.87, 0.6, 0.84, 0.86]);
+  assert.equal(steps[4].playerId, 'rex');
+  for (const s of steps.slice(4)) {
+    assert.equal(s.playerId, 'rex');
+    assert.ok(s.score >= reidTargetMinScore(), `score ${s.score} after a dip`);
+  }
+});

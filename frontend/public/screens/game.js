@@ -421,7 +421,9 @@ function drawGame({ vw, vh, toScreen }) {
     ctx.setLineDash([]);
     // In debug mode every box also shows its best match and score, for tuning ?reid= in the field.
     const best = DEBUG ? (track.rankings ?? []).find((r) => r.id !== localSelfId()) : null;
-    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${best.hasReid ? '' : ' colour'}]` : '';
+    // Typical (median) score, then this check's in brackets when it differs.
+    const latestNote = best?.rawScore != null && Math.abs(best.rawScore - best.score) >= 0.005 ? ` (now ${best.rawScore.toFixed(2)})` : '';
+    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${latestNote}${best.hasReid ? '' : ' colour'}]` : '';
     const label = (known
       ? `${id.name}${dead ? ' down' : id.source === 'both' ? ' (moves)' : ''}`
       : id.reason === 'vetoed' && DEBUG

@@ -52,7 +52,7 @@ The response isn't used for feedback. Confirmation arrives as `hitConfirmed` on 
 
 ## Motion samples
 
-Motion samples are disabled by default. This channel is used only when the page is opened with `?motion=on` or `?motion=strict`.
+Motion samples are sent by default. This channel is unused when the page is opened with `?motion=off`.
 
 The polling session is also how phones share motion for [identity confirmation](identification.md#motion-confirmation-motion). Every 500 ms `flushMotion()` takes whatever new 100 ms bins the sensor has produced and sends them as one message:
 

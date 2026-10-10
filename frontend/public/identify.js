@@ -153,6 +153,11 @@ const reidSoftLabelScore = () => reidMatchThreshold - 0.015;
 export const reidTargetMinScore = () => reidMatchThreshold - 0.01;
 // Name a brand new track on a single check this strong.
 const reidInitialLock = () => Math.max(0.8, reidMatchThreshold + 0.08);
+// One check can spike (a bystander turned at just the right angle) or dip (motion blur, a side
+// view), so a track decides on its *typical* score for each player: the median of its scores over
+// the last few seconds. Someone who usually scores 0.62 and hits 0.77 for a moment stays unnamed;
+// a player who usually scores 0.82 and dips to 0.60 once stays named and shootable.
+const REID_HISTORY_MS = 3000;
 
 // -- tracker association and lifecycle: matching boxes to tracks frame to frame --
 const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
@@ -538,6 +543,12 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
     if (!match) continue;
     rankings.push({ id: player.id, name: player.name, ...match });
   }
+  return decideRankings(rankings, excludeId, { includeRejected, closedSet });
+}
+
+// The accept/reject decision on already scored rankings: shared by matchGallery and the
+// tracker, which re-decides on its smoothed scores.
+function decideRankings(rankings, excludeId, { includeRejected = false, closedSet = false } = {}) {
   rankings.sort((a, b) => b.score - a.score);
   for (let i = 0; i < rankings.length; i++) {
     const rival = i === 0 ? rankings[1] : rankings[0];
@@ -555,7 +566,7 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
   // thresholds - fine for weak colour features, but it's what made the classifier label
   // bystanders as players. Re-identification scores are reliable enough to keep the thresholds.
   if (closedSet && best) return { ...best, accepted: best.hasReid ? !reason : true, reason, candidates, rankings };
-  if (!reason) return { ...best, accepted: true, candidates };
+  if (!reason) return { ...best, accepted: true, candidates, rankings };
   return includeRejected && best ? { ...best, accepted: false, reason, candidates, rankings } : null;
 }
 
@@ -653,10 +664,35 @@ function identityConfidence(track, now) {
 function revokedByReid(track, match) {
   const current = (track.rankings?.length ? track.rankings : [match]).find((r) => r?.id === track.playerId);
   if (!current?.hasReid) return false;
-  track.reidMisses = current.score < REID_REVOKE_SCORE ? (track.reidMisses ?? 0) + 1 : 0;
+  // The latest check, not the median: a different person stepping in should show quickly.
+  track.reidMisses = (current.rawScore ?? current.score) < REID_REVOKE_SCORE ? (track.reidMisses ?? 0) + 1 : 0;
   if (track.reidMisses < REID_REVOKE_CHECKS) return false;
   track.reidMisses = 0;
   return true;
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Records this check's re-identification scores in the track's history and returns the rankings
+// with each player's score replaced by its median over REID_HISTORY_MS (the latest stays in
+// `rawScore`, for the debug overlay and revokedByReid).
+function smoothRankings(track, rankings, now) {
+  track.reidHistory ??= new Map();
+  for (const [id, list] of track.reidHistory) {
+    while (list.length && list[0].t < now - REID_HISTORY_MS) list.shift();
+    if (!list.length) track.reidHistory.delete(id);
+  }
+  return rankings.map((r) => {
+    if (!r.hasReid) return r;
+    const list = track.reidHistory.get(r.id) ?? [];
+    list.push({ t: now, score: r.score });
+    track.reidHistory.set(r.id, list);
+    return { ...r, rawScore: r.score, score: median(list.map((h) => h.score)) };
+  });
 }
 
 function clearIdentity(track) {
@@ -944,7 +980,12 @@ export class Tracker {
         reid.request(track, video, track.box);
         if (!signature.reid) continue;
       }
-      const match = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
+      const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
+      const smoothed = () =>
+        latest?.hasReid && latest.rankings
+          ? decideRankings(smoothRankings(track, latest.rankings, now), selfId, { includeRejected: true, closedSet })
+          : latest;
+      let match = smoothed();
       track.rankings = match?.rankings ?? (match ? [match] : []);
       if (match?.reason === 'self' && match.id === selfId) {
         // The camera is looking at its own owner (a mirror, or a mis-scan). Drop the identity and
@@ -963,6 +1004,10 @@ export class Tracker {
         clearIdentity(track);
         track.evidence.clear();
         track.evidenceDetails.clear();
+        // That history belongs to the person who left: decide on this check alone.
+        track.reidHistory?.clear();
+        match = smoothed();
+        track.rankings = match?.rankings ?? (match ? [match] : []);
       }
       decayEvidence(track);
       addEvidence(track, match);
@@ -997,6 +1042,10 @@ export class Tracker {
           assignIdentity(track, candidateMatch);
         }
       }
+      // A latched name keeps following its player's typical score, so the shot gate
+      // (reidTargetMinScore) sees someone who has stopped looking like them.
+      const current = track.hasReid && track.rankings.find((r) => r.id === track.playerId && r.hasReid);
+      if (current) track.score = current.score;
     }
     if (closedSet) resolveClosedSetIdentities(this.tracks, now, selfId);
     resolveDuplicateIdentities(this.tracks, now);
