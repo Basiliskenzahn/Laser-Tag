@@ -5,7 +5,11 @@
 // features and the generic MobileNet embedding, it was trained specifically to tell people apart
 // across cameras, angles and lighting. On Market-1501 (people it never saw), in games of 2-4
 // enrolled players with 20 bystanders each, it recognised 77% of players at a 5% bystander
-// acceptance rate, against 34% for the colour + MobileNet signature.
+// acceptance rate, against 34% for the colour + MobileNet signature. This is a *game-level*
+// number (several checks, the tracker's hysteresis, 20 bystanders at once); identify.js's
+// REID_MATCH_THRESHOLD comment gives the *per-single-check* figures the 0.72 threshold was
+// picked from (83% recognised / 7.6% bystanders accepted at that threshold alone) - the two
+// aren't the same measurement, so don't expect them to match if you're comparing numbers.
 //
 // Because of that, it overrides the other appearance signals outright rather than being blended
 // with them: identify.js has the full priority order of the four identification signals.

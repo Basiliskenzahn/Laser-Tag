@@ -117,7 +117,9 @@ const MIN_SHAPE_SCORE = 0.36;
 // single check:
 //   threshold 0.70 / 0.72 / 0.74 / 0.76 -> players recognised 87% / 83% / 77% / 71%,
 //   bystanders accepted 10.8% / 7.6% / 4.9% / 3.1%, wrong player 0.3-0.5%.
-// The tracker also needs agreeing checks before it names a track, so per person it's lower.
+// The tracker also needs agreeing checks before it names a track, so per person it's lower - see
+// reid.js's header for the resulting *game-level* number (77% recognised at 5% bystander
+// acceptance), which is lower than the 83%/7.6% above because it is not the same measurement.
 // The margin halves wrong-player assignments.
 const REID_MATCH_THRESHOLD = 0.72;
 const REID_MATCH_MARGIN = 0.03;
