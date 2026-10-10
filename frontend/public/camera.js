@@ -23,7 +23,7 @@ export async function prepareCameraAndDetector() {
   // already in `state` has been through the warm-up (and probably a round) once already.
   const hadVision = Boolean(state.detector);
   const hadReid = Boolean(state.reid);
-  const camera = video.srcObject ? Promise.resolve() : startCamera();
+  const camera = cameraIsLive() ? Promise.resolve() : startCamera();
   const detector = state.detector
     ? Promise.resolve({
         detector: state.detector,
@@ -163,17 +163,79 @@ export function startupErrorMessage(err) {
 }
 
 async function startCamera() {
+  video.srcObject = await requestCameraStream();
+  await video.play();
+}
+
+function requestCameraStream() {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera API not available');
-  video.srcObject = await navigator.mediaDevices.getUserMedia({
+  return navigator.mediaDevices.getUserMedia({
     audio: false,
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
   });
-  await video.play();
 }
 
 export function stopCamera() {
   for (const track of video.srcObject?.getTracks?.() ?? []) track.stop();
   video.srcObject = null;
+}
+
+function cameraIsLive() {
+  return Boolean(video.srcObject?.getVideoTracks().some((track) => track.readyState === 'live'));
+}
+
+// ---- Coming back from the background ----
+//
+// Hiding the browser pauses the <video>, and phones often end the camera track outright (iOS
+// sometimes leaves it "live" but never sends another frame). Nothing restarts either by itself,
+// so the picture froze on the last frame until the page was reloaded. On the way back: play
+// again, and if the frames still do not move, ask for a fresh stream.
+
+// How long a resumed stream gets to produce a new frame before it is written off as stuck.
+const RESUME_FRAME_TIMEOUT_MS = 1200;
+
+let resuming = null;
+
+export function resumeCamera() {
+  resuming ??= resumeCameraOnce().finally(() => {
+    resuming = null;
+  });
+  return resuming;
+}
+
+async function resumeCameraOnce() {
+  const stream = video.srcObject;
+  // No stream means the camera was never started or was stopped on purpose (left the lobby).
+  if (!stream || document.visibilityState !== 'visible') return;
+  if (cameraIsLive()) {
+    try {
+      await video.play();
+    } catch (err) {
+      console.warn('Camera playback did not resume', err);
+    }
+    if (await videoAdvances()) return;
+  }
+  if (video.srcObject !== stream) return; // stopped or replaced while we waited
+  for (const track of stream.getTracks()) track.stop();
+  try {
+    const fresh = await requestCameraStream();
+    // Left the lobby while the new stream was being granted: do not bring the camera back.
+    if (video.srcObject !== stream) {
+      for (const track of fresh.getTracks()) track.stop();
+      return;
+    }
+    video.srcObject = fresh;
+    await video.play();
+  } catch (err) {
+    console.warn('Could not restart the camera', err);
+  }
+}
+
+function videoAdvances() {
+  const startTime = video.currentTime;
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(video.currentTime !== startTime), RESUME_FRAME_TIMEOUT_MS);
+  });
 }
 
 export async function keepScreenOn() {

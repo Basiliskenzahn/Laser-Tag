@@ -6,7 +6,7 @@
 // lobby a refresh interrupted.
 
 import { $ } from './env.js';
-import { keepScreenOn } from './camera.js';
+import { keepScreenOn, resumeCamera } from './camera.js';
 import { identity } from './identity.js';
 import { send } from './net.js';
 import { state } from './state.js';
@@ -41,8 +41,14 @@ $('join-form').addEventListener('submit', async (event) => {
 for (const type of ['touchend', 'click', 'keydown']) document.addEventListener(type, sound.unlock);
 
 document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
   // The browser releases the wake lock whenever the page is hidden.
-  if (document.visibilityState === 'visible' && state.detector) keepScreenOn();
+  if (state.detector) keepScreenOn();
+  resumeCamera();
+});
+// A page restored from the back/forward cache comes back with its camera stopped too.
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) resumeCamera();
 });
 
 // ---- Lobby screen ----
