@@ -6,6 +6,9 @@
 | --- | --- |
 | [`detector.js`](detection.md) | Creating the MediaPipe models and finding people in frames |
 | [`identify.js`](identification.md) | Signatures, matching and the `Tracker` |
+| [`reid.js`](identification.md#the-re-identification-embedding-reidjs) | The OSNet person re-identification embedding, the strongest identification signal when it loads |
+| [`motion/sensor.js`](identification.md#what-each-phone-shares-motionsensorjs) | This phone's own accelerometer/gyroscope activity |
+| [`motion/matching.js`](identification.md#motion-confirmation-motion) | Checking a tracked person's on-screen motion against each player's phone, and fusing that with the classifier |
 | [`transport.js`](networking.md) | The long-polling connection |
 | [`sound.js`](feedback.md) | Sound effects |
 
@@ -30,20 +33,23 @@ stateDiagram-v2
 ### Join (`#join-screen`)
 
 - Pre-fills name and room from `localStorage`, or the room from a `?room=` URL parameter. The default room is `demo`.
-- On **Continue**: unlocks audio, starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the detector models in parallel (`prepareCameraAndDetector`).
+- On **Continue**: unlocks audio, asks for motion-sensor access (`startMotion()` — it has to happen inside the tap, because that's the only place iOS will show the prompt), starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the models in parallel (`prepareCameraAndDetector`): the MediaPipe detector/pose/embedder plus the [re-identification model](identification.md#the-re-identification-embedding-reidjs). A re-identification failure is caught and logged — the game continues on the colour signature, and the delegate label loses its `+ReID` suffix.
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error.
 - On success: switches to the lobby, requests a screen wake lock, starts the render loop and opens the connection.
+- Refused motion access doesn't block anything; `startMotion()` is retried on the first **FIRE** press, which also covers an automatic rejoin where there was no join tap.
 
 ### Lobby (`#lobby-screen`)
 
 - Rendered by `renderLobby()` from the latest `state` and `roster` messages.
 - One row per player with a **Scan/Rescan** button. Debug clones have no button and show *"Mirrors <name>'s scan"*.
-- **Launch** (`launchGame`) first checks locally that everyone is scanned, then shows a local 5-second countdown, switches to the game screen, and sends `{type: 'start'}`. If the server rejects the start, the client returns to the lobby with the error.
+- **Launch** (`launchGame`) first checks locally that everyone is scanned, then starts a local countdown of `GAME_LAUNCH_COUNTDOWN_MS` (3 s, mirroring the Node server's `COUNTDOWN_MS`), switches to the game screen, and sends `{type: 'start'}`. The local countdown is only a prediction so the first second isn't dead time: every `state` message with status `countdown` resets it to the server's own `startsInMs`. If the server rejects the start, the client returns to the lobby with the error.
 - **Leave** (`leaveLobby`) tells the server immediately (`sendBeacon` to `/api/disconnect`), stops the camera and clears the saved lobby.
 
 ### Scan (`#scan-screen`)
 
-`beginPlayerScan(player)` switches to this screen and starts `runAutoScan()` after the next paint. The full pipeline is described in [Scanning](scanning.md). While the scan screen is idle, the render loop draws every detected person, highlighting in green the one that would be captured.
+`beginPlayerScan(player)` switches to this screen and starts `runAutoScan()` after the next paint. The full pipeline is described in [Scanning](scanning.md). While the scan screen is idle, the render loop draws every detected person, highlighting in green the one the scan would use.
+
+A **✕** button in the corner calls `cancelScan()`, which just sets `state.autoScanning = false` and returns to the lobby with *"Scan cancelled."*. The recording, processing and countdown loops all check that flag every iteration and bail out cleanly, and their `finally` blocks notice the screen has changed and leave the UI alone.
 
 ### Game (`#game-screen`)
 
@@ -63,7 +69,9 @@ stateDiagram-v2
 3. In game mode, update the countdown display.
 4. In debug mode, update the debug overlay.
 
-`refreshGameDetection()` downscales the frame to at most 512 px wide, detects people, scales the boxes back up, and passes them to `Tracker.update()` in closed-set mode (see [Identification](identification.md#4-closed-set-assignment)).
+`refreshGameDetection()` downscales the frame to at most 512 px wide, detects people, scales the boxes back up, and passes them to `Tracker.update()` in closed-set mode along with the embedder and the re-identification handle (see [Identification](identification.md#5-closed-set-assignment)). It then records each visible track's box in `state.trackMotion`, which is the history [motion matching](identification.md#motion-confirmation-motion) correlates against the other phones' accelerometer data.
+
+Motion itself runs on its own timers rather than in the loop: this phone's new samples are sent every 500 ms (`MOTION_SEND_INTERVAL_MS`), and a track's motion checks are recomputed at most every 300 ms (`MOTION_CHECK_MS`), lazily, the first time something asks for that track's identity.
 
 ## Shooting
 
@@ -75,15 +83,25 @@ stateDiagram-v2
 4. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
 5. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
 
-A track is **targetable** (`isTargetableTrack`) only if all of these hold:
+### Who counts as a target
 
-| Condition | Value |
+`targetUnderCrosshair()` walks the live tracks and asks `identity(track)` who each one is. That function is the join between the two identification layers: it takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `identity()` returns a `playerId` the server says is alive.
+
+A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Beyond that there are two ways to get a usable identity:
+
+| Route | Requirements |
 | --- | --- |
-| Track seen within | 520 ms (`LIVE_TRACK_MS`) |
-| Identified as the same player for at least | 350 ms (`TARGET_LOCK_MS`) |
-| Match score at least | 0.48 (`TARGET_MIN_SCORE`) |
-| Upper, lower and grid similarity each at least | 0.22 (`TARGET_MIN_PART`) |
-| Player is | alive, not yourself |
+| **Motion-confirmed** | The target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
+| **Classifier-only** | No usable motion data, and the appearance identity is "confident on its own": `isStableTarget()` below. Unavailable with `?motion=strict`. |
+
+`isStableTarget(track)` requires the identity to have been held for at least 350 ms (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
+
+| | Score floor | Per-part floors |
+| --- | --- | --- |
+| Re-identification embedding decided (`track.hasReid`) | 0.70 (`TARGET_MIN_REID_SCORE`) | none — the embedding has already cleared its own threshold, and lighting can push the colour parts down for the right person |
+| Colour signature decided | 0.48 (`TARGET_MIN_SCORE`) | upper, lower and grid each ≥ 0.22 (`TARGET_MIN_PART`) |
+
+Motion can also actively *remove* a target: if the appearance classifier names a player but that player's phone clearly isn't moving with the person on screen, the identity is vetoed and the track draws as an unnamed "Person" (in debug mode, *"not Name (motion)"*). If exactly one other ranked candidate's phone does match, the identity is corrected to them instead.
 
 Head hitboxes are checked before body hitboxes across all tracks, so a headshot wins if boxes overlap.
 
@@ -99,7 +117,7 @@ All keys are prefixed with `laser-tag:`. Reads and writes are wrapped in `try/ca
 | `activeLobby` | `{version: 1, name, room, playerId, debug}`. Used on page load to rejoin automatically as the same player. Cleared on Leave or rejection. |
 | `scan:<room>:<name>` | Cached scan `{version, name, room, savedAt, gallery, thumbs}`. Your own cached scan is sent with your `join` message, so rejoining doesn't need a rescan. |
 
-The scan cache is versioned (`SCAN_CACHE_VERSION`, currently 10). Bump it when the signature format changes so old caches are ignored.
+The scan cache is versioned (`SCAN_CACHE_VERSION`, currently **11** — version 11 is the one whose samples carry a re-identification embedding). Bump it when the signature format changes so old caches are ignored.
 
 ## Wake lock
 

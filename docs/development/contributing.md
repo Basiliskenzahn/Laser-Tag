@@ -9,10 +9,14 @@ public/                 The phone client (static files, no build step)
   app.js                Screens, camera, loop, scanning, shooting, HUD
   detector.js           MediaPipe models, person boxes, hitboxes
   identify.js           Signatures, matching, tracker
+  reid.js               OSNet re-identification embeddings (ONNX Runtime Web)
+  motion/
+    sensor.js           This phone's accelerometer/gyroscope activity
+    matching.js         Correlating that with on-screen motion; fusing it with the classifier
   transport.js          Long-polling connection
   sound.js              Synthesised sound effects
   identify.test.js
-  models/               Committed .tflite / .task model files
+  models/               Committed .tflite / .task / .onnx model files
 backend/                Python game server (Docker, production)
   app.py
   Dockerfile
@@ -22,6 +26,7 @@ server/                 Node game server (npm start, tests)
   realtime.js           Protocol
   game.js               Rules
   *.test.js
+test/                   Browser-free client tests (motion, reid matching)
 frontend/               nginx container: Dockerfile, config, cert entrypoint
 scripts/                Windows PowerShell helpers
 docs/                   You are here
@@ -39,10 +44,11 @@ docker-compose.yml
 ## Conventions
 
 - **No build step and no framework.** The client is plain ES modules loaded straight by the browser. Keep it that way unless there's a strong reason.
-- **No runtime dependencies beyond what's there.** The client only uses MediaPipe; the Python server only uses aiohttp; the Node server only uses `selfsigned`. Versions are pinned exactly.
-- **Comments explain why**, not what. Modules start with a short header comment describing their role.
+- **No runtime dependencies beyond what's there.** The client only uses MediaPipe and ONNX Runtime Web; the Python server only uses aiohttp; the Node server only uses `selfsigned`. Versions are pinned exactly.
+- **Comments explain why**, not what. Modules start with a short header comment describing their role, and anything tuned against measurements records the numbers (see the threshold tables in `identify.js` and `motion/matching.js`).
 - **Small, named constants** at the top of each module rather than magic numbers. Document new tunables in [Configuration](configuration.md).
-- **Graceful degradation.** Optional features (pose model, embedder, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game.
+- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, motion permission, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
+- **Keep browser APIs out of pure logic.** `motion/matching.js` touches no DOM and is therefore unit-tested in Node. Prefer that split for new identification logic over mocking the browser.
 - **User-facing errors are plain sentences** that say what to do ("step a little closer"), not codes.
 
 ## Keep both backends in sync
@@ -62,27 +68,35 @@ If you add, remove or resize a signature field in `identify.js`:
 
 - bump `SCAN_CACHE_VERSION` in `app.js` so phones discard old cached scans;
 - update `GALLERY_FIELDS` in **both** servers, or the new field is silently dropped;
-- check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES`;
-- update the scan cache validator `validScanCache()` if the field is required.
+- check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES` (and nginx's `client_max_body_size`);
+- update the scan cache validator `validScanCache()` if the field is required;
+- round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
+- decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `app.js` too.
+
+`reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
 
 ## Updating models or MediaPipe
 
-- Model files live in `public/models/` and are referenced by URL constants at the top of `detector.js`.
-- `@mediapipe/tasks-vision` is pinned in `package.json`. After bumping it, run `npm install` to update `package-lock.json`. The frontend image copies the package from `node_modules`, and the Node dev server serves it from there.
-- New file types need a MIME type in `frontend/common-locations.conf` and in the `MIME` table in `server/index.js`.
+- Model files live in `public/models/` and are referenced by URL constants at the top of `detector.js` (MediaPipe models) and `reid.js` (the OSNet `.onnx`).
+- `@mediapipe/tasks-vision` and `onnxruntime-web` are pinned in `package.json`. After bumping either, run `npm install` to update `package-lock.json`. The frontend image copies both packages out of `node_modules` (to `/vendor/tasks-vision/` and `/vendor/ort/`), and the Node dev server serves them from there.
+- New file types need a MIME type in `frontend/common-locations.conf` and in the `MIME` table in `server/index.js`. (`.onnx` is currently served as `application/octet-stream` by the fallback in both, which browsers are happy with.)
+- Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring `REID_MATCH_THRESHOLD` — a wrong pre-processing step degrades accuracy silently rather than failing.
 
 ## Known issues and loose ends
 
 Useful starting points if you're looking for something to work on:
 
 - **Trust model:** the shooter's phone decides hits and the server trusts it, so a modified client can cheat.
-- **Similar outfits:** players dressed alike are often left unidentified. A stronger re-identification model would help; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
+- **Similar outfits:** much better since the [re-identification model](../client/identification.md#the-re-identification-embedding-reidjs) landed, but a phone where it fails to load falls back to the colour signature, where players dressed alike are still often left unidentified.
+- **`COUNTDOWN_MS` differs between the backends:** 3000 in `server/game.js`, 5000 in `backend/app.py`. Harmless (phones correct from `startsInMs`) but it should be one number.
+- **Re-identification latency:** the model is asynchronous and a track isn't identified at all until its first embedding arrives, which costs a moment on a newly visible player. A second in-flight inference, or a worker, would cut it.
+- **Motion needs permission and movement:** iOS only prompts inside a tap, and two players standing still produce no usable correlation, so motion is a bonus signal rather than something that can be relied on.
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.
 - **Solo scanning:** a scan needs a second person holding the phone. A front-camera or mirror mode would remove that.
 - **iOS vibration:** Safari doesn't support `navigator.vibrate`.
 - **Untested Python backend:** a small pytest suite mirroring `realtime.test.js` would catch drift between the two servers.
 - **No CI tests:** the deploy job doesn't run the test suite first.
-- **Large galleries:** only `embed` is rounded, so full galleries approach the 256 KB body limit.
+- **Large galleries:** the colour fields are still sent at full float precision, so a full gallery is ~210 KB against a 1 MB limit. Fine now, worth watching.
 - **SSE events are unused** by the client beyond debug logging.
-- **Dead code in `app.js`:** `captureScanSignature`, `useSavedScan`, `clearScanCache`, and the empty `updateScanButtons` / `renderSavedScan` are left over from the earlier four-pose scan flow.
+- **Dead code in `app.js`:** `captureScanSignature`, `recordScanCapture`, `useSavedScan`, `clearScanCache`, and the empty `updateScanButtons` / `renderSavedScan` are left over from the earlier four-pose scan flow. `hitTest()` in `detector.js` is also unused by the client.
 - **In-memory state:** restarting the server ends all games.

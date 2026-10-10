@@ -5,7 +5,7 @@ The fastest path from a fresh clone to a game running on phones.
 ## Requirements
 
 - **Host:** Docker Desktop or Docker Engine with Compose. (Alternatively Node.js 20+, see [Node dev server](server/node-dev-server.md).)
-- **Players:** one phone each, with a rear camera and a recent Chrome, Safari or Firefox.
+- **Players:** one phone each, with a rear camera and a recent Chrome, Safari or Firefox. Motion sensors are used if available, but aren't required.
 - **Network:** host and phones on the same Wi-Fi, or a tunnel (below).
 - **Space:** enough room for players to see each other's whole body from a few metres away.
 
@@ -32,7 +32,7 @@ More about what this starts: [Docker setup](operations/docker.md).
 2. Accept the certificate warning. The server signs its own certificate, and phones only allow camera access over HTTPS.
    - **iPhone:** *Show Details* → *visit this website*.
    - **Android:** *Advanced* → *Proceed*.
-3. Enter a name and the **same room code** as everyone else, then allow camera access.
+3. Enter a name and the **same room code** as everyone else, then allow camera access — and, on an iPhone, motion access as well (it's used to confirm who's who; see [How to play](how-to-play.md#joining)).
 
 Tip: share a link with the room code pre-filled, e.g. `https://192.168.1.23:3443/?room=friday`.
 

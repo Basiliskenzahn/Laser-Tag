@@ -29,9 +29,9 @@ flowchart LR
 | | |
 | --- | --- |
 | Dockerfile | `frontend/Dockerfile` (two stages) |
-| Stage 1 | `node:20-bookworm-slim`: `npm ci --omit=dev`, only to get `@mediapipe/tasks-vision` onto disk |
+| Stage 1 | `node:20-bookworm-slim`: `npm ci --omit=dev`, only to get the browser runtimes (`@mediapipe/tasks-vision`, `onnxruntime-web`) onto disk |
 | Stage 2 | `nginx:1.27-alpine` plus `openssl` |
-| Serves | `public/` at `/`, and MediaPipe's files at `/vendor/tasks-vision/` |
+| Serves | `public/` at `/`, MediaPipe's files at `/vendor/tasks-vision/`, and ONNX Runtime Web at `/vendor/ort/` (needed by [`reid.js`](../client/identification.md#the-re-identification-embedding-reidjs)) |
 | Ports | `8080 → 80` (HTTP), `3443 → 443` (HTTPS) |
 | Volume | `certs` mounted at `/certs` |
 
@@ -52,13 +52,13 @@ It mounts the repo into a `node:20-bookworm-slim` container, keeps `node_modules
 | Location | Behaviour |
 | --- | --- |
 | `*.mjs` | Served as `text/javascript`. Browsers refuse to load a module script with the wrong MIME type. |
-| `*.wasm` | Served as `application/wasm`, needed for WebAssembly streaming compilation |
-| `*.task`, `*.tflite` | Served as `application/octet-stream` |
-| `/api/` | Proxied to `http://backend:4000`, buffering off, 60 s read timeout (polls are held for up to 20 s) |
+| `*.wasm` | Served as `application/wasm`, needed for WebAssembly streaming compilation — by both MediaPipe and ONNX Runtime Web |
+| `*.task`, `*.tflite` | Served as `application/octet-stream`. The OSNet `.onnx` has no rule of its own and gets nginx's default type, which is also `application/octet-stream`. |
+| `/api/` | Proxied to `http://backend:4000`, buffering off, 60 s read timeout (polls are held for up to 20 s), `client_max_body_size 2m` so a gallery upload with re-identification embeddings (~210 KB) has room to spare |
 | `/events/` | Proxied to the backend, buffering and caching off, 1 h read timeout for long-lived SSE streams |
 | `/` | Static files |
 
-Every static response carries `Cache-Control: no-store` with ETags disabled, so phones always get the latest client after a redeploy. The trade-off is that the ~17 MB of models are downloaded again on every page load.
+Every static response carries `Cache-Control: no-store` with ETags disabled, so phones always get the latest client after a redeploy. The trade-off is that the ~18 MB of models in `public/models/`, plus both WebAssembly runtimes, are downloaded again on every page load.
 
 ## TLS certificate
 

@@ -30,7 +30,7 @@ Errors:
 | --- | --- | --- |
 | `410 {"error": "Unknown session"}` | Unknown or expired token | Reconnect with a new `/api/connect` |
 | `400` | Body isn't valid JSON | Fix the request |
-| `413` (Python) / `400` (Node) | Body over 256 KB | Send less |
+| `413` (Python) / `400` (Node) | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
 
 ### `POST /api/hit`
 
@@ -106,6 +106,18 @@ Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
 
 The same as `POST /api/hit` but over the polling session. The current client uses `/api/hit` instead. Invalid shots are silently ignored.
 
+### `motion`
+
+```json
+{ "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
+```
+
+This phone's own motion activity, for [motion-based identity confirmation](../client/identification.md#motion-confirmation-motion). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
+
+The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `v >= 0`, `t` truncated to an integer and `v` rounded to 2 decimals. An empty result is dropped, not relayed.
+
+There's no reply, and no error if the room has nobody else in it.
+
 ## Server → client messages
 
 Delivered through `/api/poll`.
@@ -116,6 +128,7 @@ Delivered through `/api/poll`.
 | `error` | `message` | Sender | A join, scan or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
 | `roster` | `players: [{id, name, gallery}]` | Everyone in the room | Joins, leaves, scans |
+| `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
 | `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
@@ -158,7 +171,8 @@ A gallery is an array of samples, one per viewing angle. The server cleans it de
 | `lower` | 64 | No | 64 |
 | `shape` | 8 | No | 2 |
 | `embed` | 512 | No | 256 |
+| `reid` | 512 | No | 512 |
 
-Field meanings: [Identification → Signatures](../client/identification.md#signatures). A new signature field must be added to `GALLERY_FIELDS` in **both** servers, or it will be silently dropped.
+Field meanings: [Identification → Signatures](../client/identification.md#signatures). A new signature field must be added to `GALLERY_FIELDS` in **both** servers, or it will be silently dropped. `reid` is the [person re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs); it's optional in the format because a phone where the ONNX model failed to load still produces a usable colour-only gallery.
 
-**Watch the size.** Only `embed` is rounded; the other fields are sent at full float precision. A full 24-sample gallery is about **150 KB** of JSON without embeddings and about **195 KB** with them. That fits under the 256 KB body limit, but without much room to spare. If you add a field or more samples, round the values (as `compactEmbedding` does) or raise `MAX_BODY_BYTES` in both servers.
+**Watch the size.** `embed` and `reid` are rounded to 4 decimals by the client; the colour fields are sent at full float precision. A full 24-sample gallery is roughly **150 KB** of JSON with colour features only, and about **210 KB** with both embeddings. `MAX_BODY_BYTES` is 1 MB on both servers, and nginx allows 2 MB on `/api/`, so there's comfortable headroom — but if you add a field or more samples, round the values (as `compactEmbedding` and `reid.js`'s `normalize` do) and re-check both limits.

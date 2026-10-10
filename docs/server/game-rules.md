@@ -15,7 +15,9 @@ The rules live in a `Room` class with no networking, implemented twice with the 
 | `DAMAGE.body` | 20 | Body hit damage |
 | `DAMAGE.head` | 50 | Headshot damage |
 | `SHOT_COOLDOWN_MS` | 350 | Minimum time between a player's accepted shots |
-| `COUNTDOWN_MS` | 5000 | Countdown before a round starts |
+| `COUNTDOWN_MS` | 3000 (Node) / 5000 (Python) | Countdown before a round starts |
+
+> The two implementations currently disagree on `COUNTDOWN_MS`: `server/game.js` has 3000, `backend/app.py` has 5000, and the client's local countdown mirrors the Node value. Phones self-correct from the server's `startsInMs`, so nothing breaks, but the number should be the same in all three. See [Configuration → Game rules](../development/configuration.md#game-rules).
 
 ## Room states
 
@@ -23,7 +25,7 @@ The rules live in a `Room` class with no networking, implemented twice with the 
 stateDiagram-v2
   [*] --> waiting: first join
   waiting --> countdown: start() with ≥2 players, all scanned
-  countdown --> playing: 5 s elapsed
+  countdown --> playing: COUNTDOWN_MS elapsed
   countdown --> waiting: a player leaves and <2 remain
   playing --> over: ≤1 player alive
   over --> countdown: start()
