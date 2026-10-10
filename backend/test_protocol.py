@@ -261,18 +261,22 @@ class ProtocolTests(AioHTTPTestCase):
         send = await self.client.post("/api/send", params={"token": "nope"}, json={})
         self.assertEqual(send.status, 410)
 
-    async def test_shots_and_damage_travel_over_polling(self):
+    async def test_posted_hit_damage_and_confirmation_travel_over_polling(self):
+        # The real client never sends a session "shoot" message (see test_protocol module
+        # docstring) - it posts /api/hit directly and the result reaches both players through
+        # their own poll loops. This is that path, not the session message one.
         a = self.track(await self.polling_client())
         b = self.track(await self.polling_client())
         room = unique_room("shoot")
         await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
         await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
         await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
-        b_id = b.welcome_id()
+        a_id, b_id = a.welcome_id(), b.welcome_id()
 
         await a.send({"type": "start"})
         await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
-        await a.send({"type": "shoot", "targetId": b_id, "zone": "body"})
+        hit_resp = await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "body"})
+        self.assertEqual(hit_resp.status, 200)
 
         await wait_for(lambda: any(m["type"] == "hitConfirmed" for m in a.messages))
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
@@ -290,17 +294,20 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_roster(a.messages) and len(last_roster(a.messages)) == 3)
         a_id, b_id, c_id = a.welcome_id(), b.welcome_id(), c.welcome_id()
 
+        async def hit(shooter_id, target_id):
+            return await self.client.post("/api/hit", json={"room": room, "shooterId": shooter_id, "targetId": target_id, "zone": "head"})
+
         await a.send({"type": "start"})
         await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
-        await a.send({"type": "shoot", "targetId": b_id, "zone": "head"})
-        await c.send({"type": "shoot", "targetId": b_id, "zone": "head"})
+        await hit(a_id, b_id)
+        await hit(c_id, b_id)
         await wait_for(lambda: last_state(a.messages)["status"] == "playing"
                         and next(p for p in last_state(a.messages)["players"] if p["id"] == b_id)["alive"] is False)
 
         await asyncio.sleep(0.38)
-        await a.send({"type": "shoot", "targetId": c_id, "zone": "head"})
+        await hit(a_id, c_id)
         await asyncio.sleep(0.38)
-        await a.send({"type": "shoot", "targetId": c_id, "zone": "head"})
+        await hit(a_id, c_id)
 
         await wait_for(lambda: last_state(a.messages)["status"] == "over")
         self.assertEqual(last_state(a.messages)["winner"], a_id)
@@ -347,11 +354,12 @@ class ProtocolTests(AioHTTPTestCase):
         await debug.send({"type": "start"})
         await wait_for(lambda: last_state(debug.messages) and last_state(debug.messages)["status"] == "playing", 7)
 
-        await debug.send({"type": "shoot", "targetId": debug_id, "zone": "body"})
-        await asyncio.sleep(0.08)
+        self_hit = await self.client.post("/api/hit", json={"room": room, "shooterId": debug_id, "targetId": debug_id, "zone": "body"})
+        self.assertEqual(self_hit.status, 400)
         self.assertEqual(next(p for p in last_state(debug.messages)["players"] if p["id"] == debug_id)["hp"], 100)
 
-        await debug.send({"type": "shoot", "targetId": clone["id"], "zone": "body"})
+        clone_hit = await self.client.post("/api/hit", json={"room": room, "shooterId": debug_id, "targetId": clone["id"], "zone": "body"})
+        self.assertEqual(clone_hit.status, 200)
         await wait_for(lambda: next(p for p in last_state(debug.messages)["players"] if p["id"] == clone["id"])["hp"] == 80)
 
     async def test_motion_samples_are_cleaned_and_relayed_to_others_only(self):

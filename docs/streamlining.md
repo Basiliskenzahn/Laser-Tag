@@ -30,9 +30,22 @@ to the Python backend (`unittest` + `aiohttp.test_utils`, no new dependency) - s
 `python -m unittest discover -s backend`.
 
 What's still open: the CI/CD pipeline doesn't run *either* test suite before deploying (next
-item), and while writing the Python tests it turned out the session-based `{"type": "shoot"}`
-message path is dead from the real client's perspective - see
-[Testing → backend/test_protocol.py](development/testing.md) for the note on that.
+item).
+
+### The session-based `shoot` message - now removed
+
+Was: `Session.receive()` handled a `{"type": "shoot"}` message over the polling session, as well
+as `POST /api/hit`, two paths to the same `process_hit()`. Discovered while writing
+`backend/test_protocol.py` that the real client (`screens/game.js`) has never sent the former -
+git history shows `/api/hit` was introduced in the same commit that moved the client off
+WebSockets, and the client was wired straight to it; the session message was only ever exercised
+by the archived Node test suite.
+
+Now: removed from `Session.receive()`, `backend/app.py`'s docstring, and the protocol docs. The 3
+tests that had been driving shots through it (`test_protocol.py`) now use `POST /api/hit`, matching
+the real client - including a sharper assertion the old version missed: shooting yourself now
+explicitly checks for the `400` the server was already returning, not just that your own HP didn't
+move.
 
 ### Dead frontend code - now archived
 
@@ -146,15 +159,6 @@ code calls them today - listed so they don't surprise someone who changes a call
   `classifierOpinion()` is their only caller - but they read like targeting constants that
   conceptually belong next to the rest of the game loop in `screens/game.js`. Moving them would
   create a `game.js` ↔ `motion-identity.js` import cycle, which is why they're there instead.
-- **The session-based `{"type": "shoot"}` message is dead from the real client's perspective.**
-  `backend.transport.Session.receive()` still handles it (and it's part of the documented
-  protocol, exercised by `backend/test_protocol.py`), but `screens/game.js` only ever fires via
-  the stateless `POST /api/hit` shortcut - for the latency reasons in
-  [Protocol](server/protocol.md#post-apihit): that response carries the hit's result directly,
-  rather than needing the shooter's own `/api/poll` loop to cycle back around with it. Not
-  removed, since it's a documented, tested part of the protocol that some other client could use -
-  just worth knowing before assuming both paths are equally live.
-
 ## Already fixed in this pass (recorded so nobody re-discovers them as open)
 
 - `COUNTDOWN_MS` was `5000` in the Python backend (`backend/models.py`) and `3000` everywhere else

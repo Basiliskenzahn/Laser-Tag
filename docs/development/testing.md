@@ -68,20 +68,19 @@ directions.
 Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
 phones), 14 cases: joining and starting, launching only once everyone is scanned, resuming with a
 remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
-being targetable instead of the owner), a full room of 8, a held poll answered promptly, `410` for
-unknown sessions, damage over polling (via the session `shoot` message - see note below), a
-three-player free-for-all, `POST /api/hit` producing an SSE `health` event, and motion samples
-being sanitised and relayed to everyone except the sender.
+being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
+room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
+reaching both players over their poll loops and producing an SSE `health` event, a three-player
+free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
+everyone except the sender.
 
 `rooms`/`connections`/`pollers`/`sse_clients` in `backend.transport` are module-level globals
 shared by the whole test process (there's no per-test app state to reset) - every test uses a
 **unique room code**, same as the Node suite did.
 
-> **Note found while writing this:** the session-based `{"type": "shoot"}` message
-> (`test_shots_and_damage_travel_over_polling` exercises it) is part of the documented protocol and
-> still works, but the real client (`screens/game.js`) doesn't use it - it only ever calls the
-> stateless `POST /api/hit` shortcut, for the latency reasons noted in
-> [Protocol](../server/protocol.md#post-apihit). Worth knowing before "simplifying" one path away.
+Every shot in this suite goes through `POST /api/hit`, matching the real client - see
+[Streamlining](../streamlining.md) for why the session-based `{"type": "shoot"}` message these
+tests originally used no longer exists.
 
 ### `frontend/public/identify.test.js`: tracker
 

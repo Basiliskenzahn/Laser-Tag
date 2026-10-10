@@ -46,7 +46,7 @@ Errors:
 
 On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if neither room nor shooter is found. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
 
-A successful hit triggers the same messages and events as the `shoot` message below.
+A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message; see [Streamlining](../streamlining.md) for why one briefly existed in the protocol and why it was removed.
 
 ### `GET /events/<room>` (Server-Sent Events)
 
@@ -97,14 +97,6 @@ Saves a scan for any player in the room. Replies `scanSaved` to the sender, then
 ```
 
 Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
-
-### `shoot`
-
-```json
-{ "type": "shoot", "targetId": "<player id>", "zone": "head" }
-```
-
-The same as `POST /api/hit` but over the polling session. The current client uses `/api/hit` instead. Invalid shots are silently ignored.
 
 ### `motion`
 

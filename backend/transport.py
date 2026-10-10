@@ -218,9 +218,7 @@ class Session:
         if self.room is None:
             return
 
-        if msg.get("type") == "shoot":
-            await process_hit(self.room, self.id, msg.get("targetId"), msg.get("zone"))
-        elif msg.get("type") == "scan":
+        if msg.get("type") == "scan":
             target_id = msg.get("targetId")
             gallery = clean_gallery(msg.get("gallery"))
             result = self.room.set_gallery(target_id, gallery)
