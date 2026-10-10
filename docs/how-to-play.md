@@ -7,8 +7,8 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 1. Everyone opens the game and enters the **same room code**.
 2. In the lobby, **scan** every player: someone holds a phone on them while they turn slowly in a circle.
 3. Anyone taps **Launch**. After a short countdown, the round starts.
-4. Point the crosshair at another player and tap **FIRE**.
-5. Last player standing wins. Everyone returns to the lobby, and anyone can launch the next round.
+4. Point the crosshair at another player and tap anywhere on the screen to fire.
+5. Last player standing wins. Your placing and stats show up when you're knocked out or win; tap **Rematch** for the next round or **Done** to go back to the lobby.
 
 ## Joining
 
@@ -67,7 +67,7 @@ Your phone also remembers your own scan for that room and name. If you leave and
 The round starts after a 3-second countdown with beeps and a **GO!**.
 
 - The **crosshair** is the centre of the screen. It lights up when it's on a player you can hit.
-- Tap **FIRE** (or press **Space** on a laptop). You can fire roughly three times a second.
+- Tap anywhere on the screen to fire (or press **Space** on a laptop). You can fire roughly three times a second.
 - Each person the camera sees gets an outline:
 
 | Outline | Meaning |

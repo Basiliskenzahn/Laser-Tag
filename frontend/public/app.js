@@ -65,6 +65,17 @@ $('game-screen').addEventListener('pointerdown', (event) => {
   identity.start(); // in case a sensor was never granted at join, or there was no join tap
   fire();
 });
+// Rapid taps (firing) still read as a double-tap zoom on some iPhones despite touch-action, so
+// the camera screens cancel the touchend. Nothing there but the buttons needs the click it makes.
+for (const id of ['game-screen', 'scan-screen']) {
+  $(id).addEventListener(
+    'touchend',
+    (event) => {
+      if (!event.target.closest('button, dialog')) event.preventDefault();
+    },
+    { passive: false },
+  );
+}
 // Clears both, so a lingering `hit` never masks the next `firing` (or the other way round).
 $('crosshair').addEventListener('animationend', () => $('crosshair').classList.remove('firing', 'hit'));
 document.addEventListener('keydown', (event) => {

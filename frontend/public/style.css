@@ -13,6 +13,8 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  /* No double-tap zoom on any screen; iOS ignores the viewport's user-scalable=no. */
+  touch-action: manipulation;
 }
 
 html,
