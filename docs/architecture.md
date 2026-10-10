@@ -20,12 +20,11 @@ flowchart LR
   subgraph Host["Docker host"]
     NGINX["frontend<br/>nginx :80 / :443"]
     PY["backend<br/>Python aiohttp :4000"]
-    NGINX -- "/api/*, /events/*" --> PY
+    NGINX -- "/api/*" --> PY
   end
 
   TR -- "HTTPS" --> NGINX
   APP -- "POST /api/hit" --> NGINX
-  APP -. "SSE /events/room" .-> NGINX
   NGINX -- "static files + models" --> Phone
 ```
 
@@ -73,7 +72,6 @@ All realtime traffic uses ordinary HTTP:
 
 - **Long polling** (`/api/poll`) for room state and personal messages.
 - **POST** (`/api/send`, `/api/hit`) for actions.
-- **Server-Sent Events** (`/events/<room>`) for room-wide health and death events.
 
 This works unchanged through reverse proxies, SSO gateways, Cloudflare tunnels and self-signed local HTTPS, which were all part of the hackathon's hosting setup. There is no WebSocket code path. See [Networking](client/networking.md) and [Protocol](server/protocol.md).
 

@@ -112,18 +112,6 @@ export function installBrowserStubs({ search = '' } = {}) {
     },
   };
   globalThis.requestAnimationFrame = (fn) => setImmediate(() => fn(0));
-  globalThis.EventSource = class {
-    constructor(url) {
-      this.url = url;
-      EventSource.opened.push(url);
-    }
-    addEventListener() {}
-    close() {
-      EventSource.closed.push(this.url);
-    }
-  };
-  globalThis.EventSource.opened = [];
-  globalThis.EventSource.closed = [];
   globalThis.Audio = class {
     play() {
       return Promise.resolve();
@@ -169,8 +157,6 @@ export function installBrowserStubs({ search = '' } = {}) {
         element.classes.clear();
         element.srcObject = null;
       }
-      globalThis.EventSource.opened.length = 0;
-      globalThis.EventSource.closed.length = 0;
       globalThis.localStorage.store.clear();
     },
   };

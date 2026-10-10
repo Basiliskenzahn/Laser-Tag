@@ -85,4 +85,3 @@ The response isn't used for feedback. Confirmation arrives as `hitConfirmed` on 
 
 ## Server-Sent Events
 
-On entering the game screen the client opens `EventSource('/events/<room>')` and closes it on returning to the lobby. The stream carries `health` and `death` events for the whole room. Currently the client only logs them in debug mode; HP shown in the HUD comes from `state` messages. The stream is there for features that need a room-wide event feed, such as a kill feed or spectator view.

@@ -18,7 +18,6 @@ import * as matcher from '../identify.js';
 import { rangeReadout } from '../range-readout.js';
 import { emptyInputStats, inputLatencyLine, recordBlock, recordShot } from '../input-latency.js';
 import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
-import { openGameEvents } from '../net.js';
 import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
 import { targetPlayerId } from '../target.js';
@@ -76,7 +75,6 @@ export function enterGame() {
   video.hidden = false;
   canvas.hidden = false;
   state.mode = 'game';
-  openGameEvents();
   renderHud();
 }
 

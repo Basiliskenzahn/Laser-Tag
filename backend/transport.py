@@ -51,7 +51,6 @@ SWEEP_INTERVAL_S = 5  # how often sweep_pollers looks for expired mailboxes
 MAX_QUEUED_MESSAGES = 512
 
 #: Most events one SSE spectator feed will hold before the oldest are dropped.
-MAX_SSE_BACKLOG = 1000
 
 #: room code -> Room
 rooms = {}
@@ -60,7 +59,6 @@ connections = {}
 #: poll token -> Poller
 pollers = {}
 #: room code -> set of asyncio.Queue, one per open SSE listener (see app.events)
-sse_clients = {}
 
 
 def now_ms():
@@ -346,38 +344,6 @@ async def broadcast_roster(room):
             session.sent_gallery_revs = revisions
 
 
-def drop_sse_client(room_code, queue):
-    """Forget one SSE listener, and the room's entry with the last of them.
-
-    The entry has to go too: room codes are client-chosen (16 characters of
-    ``[a-z0-9-]``), so keeping an empty set per code anyone ever asked for grows
-    for the lifetime of the process, one request per key.
-    """
-    listeners = sse_clients.get(room_code)
-    if listeners is None:
-        return
-    listeners.discard(queue)
-    if not listeners:
-        sse_clients.pop(room_code, None)
-
-
-async def broadcast_room_event(room, event):
-    """Fan an event out to the room's SSE spectators (scoreboards, overlays).
-
-    Separate from the per-player channels above: these listeners are not players
-    and are addressed by room code only.
-
-    A listener that has stopped reading gets its oldest events dropped rather than
-    being allowed to grow without bound; these are advisory spectator
-    notifications, and the scoreboard is re-sent on every state change anyway.
-    """
-    for queue in list(sse_clients.get(room.code, set())):
-        try:
-            if queue.full():
-                queue.get_nowait()
-            queue.put_nowait(event)
-        except (RuntimeError, asyncio.QueueFull, asyncio.QueueEmpty):
-            drop_sse_client(room.code, queue)
 
 
 async def process_hit(room, shooter_id, target_id, zone):
@@ -405,23 +371,6 @@ async def process_hit(room, shooter_id, target_id, zone):
         "damage": result["damage"],
         "ko": result["ko"],
     })
-    await broadcast_room_event(room, {
-        "type": "health",
-        "room": room.code,
-        "shooterId": shooter_id,
-        "targetId": result["victimId"],
-        "zone": result["zone"],
-        "damage": result["damage"],
-        "hp": result["hp"],
-        "alive": result["alive"],
-    })
-    if result["ko"]:
-        await broadcast_room_event(room, {
-            "type": "death",
-            "room": room.code,
-            "playerId": result["victimId"],
-            "killerId": shooter_id,
-        })
     await broadcast_state(room)
     return result
 

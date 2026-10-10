@@ -90,14 +90,13 @@ test('compression is on, and never applied to the models', () => {
 });
 
 test('the realtime paths are never compressed or buffered', () => {
-  // Breaking either of these is far worse than a slow first load: /events/ is the live game
+  // Breaking either of these is far worse than a slow first load: /api/ is the live game
   // event stream and /api/ holds polls open for ~20s. Compressing means buffering.
-  for (const path of ['/events/', '/api/']) {
+  for (const path of ['/api/']) {
     const body = locationBody(path);
     assert.match(body, /^\s*gzip\s+off\s*;/m, `${path} must set gzip off`);
     assert.match(body, /proxy_buffering\s+off/, `${path} must keep proxy_buffering off`);
   }
-  assert.match(locationBody('/events/'), /proxy_cache\s+off/, 'SSE must not be cached');
 });
 
 test('if_modified_since only ever gets a value nginx accepts', () => {
@@ -148,7 +147,7 @@ test('every static location includes the isolation snippet', () => {
   // add_header of their own, and every static block here sets its own Cache-Control. So a
   // server-level COOP/COEP would be dropped exactly where the document is served, with no
   // error. The snippet therefore has to be included per block.
-  const proxied = new Set(['/api/', '/events/']);
+  const proxied = new Set(['/api/']);
   for (const match of locationMatches()) {
     if (proxied.has(match)) continue;
     assert.match(

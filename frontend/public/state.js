@@ -42,7 +42,6 @@ export const state = {
   postProcessingScan: false,
   lastScanPreviewAt: 0,
   loopStarted: false,
-  events: null,
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
   lastGameDetectAt: 0,

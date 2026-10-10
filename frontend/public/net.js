@@ -130,31 +130,6 @@ export function send(msg) {
   return state.conn?.send(msg) ?? Promise.resolve(false);
 }
 
-export function openGameEvents() {
-  state.events?.close();
-  const room = encodeURIComponent(state.room);
-  const events = new EventSource(`/events/${room}`);
-  events.onmessage = handleGameEvent;
-  events.addEventListener('health', (event) => handleGameEvent(event));
-  events.addEventListener('death', (event) => handleGameEvent(event));
-  events.onerror = () => {
-    // EventSource reconnects automatically; no UI noise needed during play.
-  };
-  state.events = events;
-}
-
-function handleGameEvent(event) {
-  let msg;
-  try {
-    msg = JSON.parse(event.data);
-  } catch {
-    return;
-  }
-  if (DEBUG && (msg.type === 'health' || msg.type === 'death')) {
-    console.debug('game event', msg);
-  }
-}
-
 function handleMessage(msg) {
   switch (msg.type) {
     case 'welcome':

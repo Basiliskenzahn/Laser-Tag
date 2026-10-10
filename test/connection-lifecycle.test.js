@@ -195,7 +195,6 @@ test('a countdown that arrives during a scan still takes the phone into the roun
   assert.equal(state.mode, 'game');
   assert.equal(dom.$('game-screen').hidden, false);
   assert.equal(dom.$('scan-screen').hidden, true);
-  assert.deepEqual(globalThis.EventSource.opened, ['/events/demo'], 'and the game events are open');
 });
 
 test('a playing snapshot that arrives during a scan still takes the phone into the round', async () => {
