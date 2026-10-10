@@ -18,7 +18,7 @@ import { DEBUG, canvas, params, video, $ } from '../env.js';
 import { keepScreenOn, prepareCameraAndDetector, startupErrorMessage, stopCamera } from '../camera.js';
 import { markLobbyVisible } from '../startup.js';
 import { clearActiveLobby, load, loadActiveLobby, save, state } from '../state.js';
-import { connect, showConnectionProblem } from '../net.js';
+import { connect, leaveRoom, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, enterGame, loop } from './game.js';
 import { renderLobby } from './lobby.js';
 import { hideScanCountdown, loadScanCache } from './scan.js';
@@ -28,12 +28,30 @@ export function initJoinForm() {
   $('room').value = params.get('room') ?? load('room') ?? 'demo';
 }
 
-export async function enterLobbyFromForm({ resumePlayerId = null, auto = false } = {}) {
+// `startingLobby` latches for the whole of the camera/model wait, and `if (state.startingLobby)
+// return` below is the only thing standing between the player and two connections polling one
+// room. That makes a throw anywhere in startLobby() worse than the error it came from: the flag
+// would stay set and the join button would be permanently inert, with nothing on screen to say
+// why. Nothing in there is known to throw - the camera step, the one part that does, has its own
+// catch - so this is hardening rather than a fix for a reproduced crash. It also means the three
+// callers (app.js twice, resumeActiveLobby below) cannot leave an unhandled rejection: this
+// function never rejects.
+export async function enterLobbyFromForm(options = {}) {
+  if (state.startingLobby) return;
+  try {
+    await startLobby(options);
+  } catch (err) {
+    console.error(err);
+    abandonJoin('Could not start the lobby. Try again.');
+  }
+}
+
+async function startLobby({ resumePlayerId = null, auto = false } = {}) {
   // Two joins at once would leave an orphaned connection polling the room, which matters now that
   // the connection is opened before the wait rather than after it. `startingLobby` doubles as
   // "this attempt is still the live one": showJoinRejected clears it, so an attempt whose room
   // turned it away below cannot go on to unhide the lobby when its models finally arrive.
-  if (state.startingLobby) return;
+  // (enterLobbyFromForm above is what rejects a second attempt; by here we are the live one.)
   state.name = $('name').value.trim();
   state.room = $('room').value.trim().toLowerCase();
   state.resumePlayerId = resumePlayerId;
@@ -72,15 +90,7 @@ export async function enterLobbyFromForm({ resumePlayerId = null, auto = false }
   state.startingLobby = false;
 
   if (failure) {
-    // The camera is what failed, but the server has us in the room already. Leave it again rather
-    // than parking a player in everyone else's roster who can never be scanned or shot.
-    state.conn?.close({ notify: true });
-    state.conn = null;
-    state.myId = null;
-    state.game = null;
-    state.roster = [];
-    setJoinStatus(startupErrorMessage(failure));
-    $('join-btn').disabled = false;
+    abandonJoin(startupErrorMessage(failure));
     return;
   }
 
@@ -107,6 +117,21 @@ export async function enterLobbyFromForm({ resumePlayerId = null, auto = false }
   if (state.game?.status === 'countdown' || state.game?.status === 'playing') enterGame();
 }
 
+// A join that got as far as dialling the room but cannot finish. The server already has us in the
+// room, so leave it again rather than parking a player in everyone else's roster who can never be
+// scanned or shot - and leaveRoom, not conn.close(), because the connection may already have
+// dropped and have a reconnect pending that would rejoin from the join screen.
+function abandonJoin(message) {
+  state.startingLobby = false;
+  leaveRoom({ notify: true });
+  state.myId = null;
+  state.game = null;
+  state.roster = [];
+  setJoinStatus(message);
+  $('join-btn').hidden = false;
+  $('join-btn').disabled = false;
+}
+
 export function setJoinStatus(text) {
   $('join-status').textContent = text;
 }
@@ -115,8 +140,10 @@ export function showJoinRejected(message) {
   // Clearing this is what stops a join whose models are still loading from unhiding the lobby
   // over the top of this screen when they finally arrive (see enterLobbyFromForm).
   state.startingLobby = false;
-  state.conn?.close();
-  state.conn = null;
+  // leaveRoom rather than conn.close(): the room may have turned us away because of a reconnect
+  // that is itself still pending behind a drop, and that retry would rejoin the room we were just
+  // rejected from - the rejection path exists precisely to not leave a phantom behind.
+  leaveRoom();
   state.events?.close();
   state.events = null;
   clearActiveLobby();

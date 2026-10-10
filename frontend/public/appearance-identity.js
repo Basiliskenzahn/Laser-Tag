@@ -65,6 +65,7 @@ export function classifierOpinion(track, now) {
 // whenever the classifier is stable reproduces that gate exactly.
 export const appearanceIdentity = {
   start() {},
+  stop() {}, // nothing to tear down: appearance alone holds no sensor and no per-room state
   observe() {},
   onServerMessage() {},
   debugLine() {
