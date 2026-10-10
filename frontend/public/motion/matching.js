@@ -7,6 +7,10 @@
 // are the same if their activity rises and falls together. Bystanders move independently of
 // every player's phone.
 //
+// This signal is orthogonal to appearance, so it is not blended into the appearance score: it
+// confirms or vetoes whatever identity a tracked person already has (fuseMotion, at the bottom
+// of this file). identify.js has the full priority order of the four identification signals.
+//
 // Pure functions, no browser APIs: used by app.js and tested in Node.
 
 export const SAMPLE_MS = 100; // both activity series are compared on a 10 Hz grid

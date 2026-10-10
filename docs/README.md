@@ -9,21 +9,20 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Troubleshooting](troubleshooting.md): common problems and fixes
 - [Architecture](architecture.md): how the parts fit together
 
-## Client (`public/`)
+## Client (`frontend/public/`)
 
-- [App flow and screens](client/app-flow.md): join → lobby → scan → game, and what `app.js` does on each
-- [Networking](client/networking.md): long polling, hit posts, SSE, reconnect and resume
+- [App flow and screens](client/app-flow.md): join → lobby → scan → game, and which module owns each
+- [Networking](client/networking.md): long polling, hit posts, motion sharing, SSE, reconnect and resume
 - [Person detection and hitboxes](client/detection.md): MediaPipe models and `detector.js`
 - [Scanning (enrolment)](client/scanning.md): how a player's appearance is recorded
-- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`
+- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`, the re-identification model in `reid.js`, and motion confirmation in `motion/`
 - [HUD, sound and feedback](client/feedback.md): what players see and hear
 
 ## Server
 
 - [Game rules and room lifecycle](server/game-rules.md): HP, damage, countdown, winning
 - [API and protocol reference](server/protocol.md): every endpoint and message
-- [Python backend](server/python-backend.md): `backend/app.py`, used in Docker and production
-- [Node dev server](server/node-dev-server.md): `server/`, used for `npm start` and tests
+- [Python backend](server/python-backend.md): `backend/`, the only server implementation - used in Docker and production, and in local dev
 
 ## Operations
 
@@ -37,3 +36,4 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Debug mode](development/debug-mode.md)
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
+- [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting

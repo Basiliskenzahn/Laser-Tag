@@ -40,18 +40,29 @@ Read the hint in the failure message; [How to play → Scanning](how-to-play.md#
 **Launch says "Scan everyone before launch: …"**
 Each listed player needs a scan. Any phone can scan them from the lobby.
 
+**"Processing recorded rotation…" takes a while.**
+Expected. After recording, the phone runs detection *and* the re-identification model over every recorded frame; the counter in the text shows the progress (`… 34/66, 21 usable frames`). It's slower on older phones. The **✕** cancels if you'd rather not wait.
+
 ## During the game
 
 **Players show up as grey "Person" instead of by name.**
 The phone can see someone but isn't confident who it is. Usually:
-- two players are dressed too similarly;
+- the player has only just come into frame — recognition needs a moment per person;
+- the player is too far away, partly out of frame, or turned at an angle the scan didn't cover well;
 - the lighting is very different from where they were scanned;
-- the player is too far away, partly out of frame, or turned at an angle the scan didn't cover well.
+- two players are dressed too similarly;
+- it genuinely isn't a player. A bystander who resembles someone is deliberately left unnamed rather than guessed at.
 
-Rescan the affected players in the playing area. To see *why* a match was rejected, use [debug mode](development/debug-mode.md).
+Rescan the affected players in the playing area. To see *why* a match was rejected, use [debug mode](development/debug-mode.md); if its first line has no `+ReID`, the strongest recognition model didn't load on that phone and it's running on clothing colour alone, which is much weaker.
+
+**Everyone shows up as "Person", on one phone only.**
+Check that phone with `?debug`. A missing `+ReID` on the first overlay line means the re-identification model failed to load — usually ONNX Runtime Web (`/vendor/ort/`) or `/models/osnet_x0_25_msmt17.onnx` not being served. The browser console has the warning. Behind a custom web server, check those paths exist and that `.wasm` is served as `application/wasm`.
+
+**A player's name flickers onto a bystander, or onto the wrong player.**
+By default, targeting uses appearance only. Rescan the affected players in the playing area and check debug mode for the rejection reason. If you deliberately enable motion with `?motion=on`, a name gets the *"(moves)"* suffix when that player's own phone reports motion matching the person on screen; `?motion=strict` makes that confirmation mandatory, at the cost of not being able to shoot motionless players.
 
 **The crosshair is on a named player but shots don't count.**
-A player becomes targetable only after they've been recognised steadily for about 0.35 seconds with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit.
+A player becomes targetable after they've been recognised steadily for about 0.35 seconds with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit. If you enabled motion with `?motion=on` or `?motion=strict`, a name can also be blocked when motion vetoes it.
 
 **It's slow or laggy.**
 Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 120–180 ms, so some delay between movement and the outline is normal.
@@ -68,4 +79,6 @@ Browsers only allow audio after you've tapped something. Sound is enabled when y
 Docker Desktop may not be on your `PATH`. Run `scripts/add-docker-path.ps1`, or use `scripts/docker.ps1`, which finds Docker on its own. See [Windows helper scripts](operations/windows-scripts.md).
 
 **Models or the detector fail to load ("Could not start: …").**
-The client loads MediaPipe's `.mjs`, `.wasm`, `.tflite` and `.task` files. Behind a custom web server, check they're served with the correct MIME types (`text/javascript` for `.mjs`, `application/wasm` for `.wasm`). The bundled nginx config already does this; see [Docker setup](operations/docker.md#nginx).
+The client loads MediaPipe's `.mjs`, `.wasm`, `.tflite` and `.task` files from `/vendor/tasks-vision/`, and ONNX Runtime Web's `.mjs`/`.wasm` from `/vendor/ort/`. Behind a custom web server, check they're served with the correct MIME types (`text/javascript` for `.mjs`, `application/wasm` for `.wasm`). The bundled nginx config already does this; see [Docker setup](operations/docker.md#nginx).
+
+Only the person detector is fatal. A failure of the pose model, the embedder or the re-identification model is logged as a warning and the game starts anyway with that signal missing — which is why the `?debug` delegate line is the quick way to see what actually loaded.

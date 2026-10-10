@@ -1,6 +1,6 @@
 # API and protocol reference
 
-Both server implementations ([Python](python-backend.md) and [Node](node-dev-server.md)) speak this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` and `/events/` to the backend.
+The [Python backend](python-backend.md) speaks this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` and `/events/` to it.
 
 All bodies are JSON. Responses carry `Cache-Control: no-store`.
 
@@ -14,15 +14,15 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 | `POST` | `/api/disconnect?token=T` | — | `204` |
 | `POST` | `/api/hit` | [Hit request](#post-apihit) | `200` result, or `400`/`404` with `{ok: false, error}` |
 | `GET` | `/events/<room>` | — | `text/event-stream` |
-| `GET` | `/` | — | Python backend only: `laser-tag python backend` (health check) |
+| `GET` | `/` | — | `laser-tag python backend` (health check) |
 
 ### Sessions and long polling
 
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
-`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one answers the first with `[]` (Node).
+`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one replaces the first poll's waiter, which never resolves on its own.
 
-A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s (Python) or 10 s (Node).
+A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
 
 Errors:
 
@@ -30,7 +30,7 @@ Errors:
 | --- | --- | --- |
 | `410 {"error": "Unknown session"}` | Unknown or expired token | Reconnect with a new `/api/connect` |
 | `400` | Body isn't valid JSON | Fix the request |
-| `413` (Python) / `400` (Node) | Body over 256 KB | Send less |
+| `413` | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
 
 ### `POST /api/hit`
 
@@ -46,7 +46,7 @@ Errors:
 
 On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if neither room nor shooter is found. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
 
-A successful hit triggers the same messages and events as the `shoot` message below.
+A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message; see [Streamlining](../streamlining.md) for why one briefly existed in the protocol and why it was removed.
 
 ### `GET /events/<room>` (Server-Sent Events)
 
@@ -98,13 +98,17 @@ Saves a scan for any player in the room. Replies `scanSaved` to the sender, then
 
 Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
 
-### `shoot`
+### `motion`
 
 ```json
-{ "type": "shoot", "targetId": "<player id>", "zone": "head" }
+{ "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
 ```
 
-The same as `POST /api/hit` but over the polling session. The current client uses `/api/hit` instead. Invalid shots are silently ignored.
+This phone's own motion activity, for [motion-based identity confirmation](../client/identification.md#motion-confirmation-motion). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
+
+The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `v >= 0`, `t` truncated to an integer and `v` rounded to 2 decimals. An empty result is dropped, not relayed.
+
+There's no reply, and no error if the room has nobody else in it.
 
 ## Server → client messages
 
@@ -116,6 +120,7 @@ Delivered through `/api/poll`.
 | `error` | `message` | Sender | A join, scan or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
 | `roster` | `players: [{id, name, gallery}]` | Everyone in the room | Joins, leaves, scans |
+| `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
 | `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
@@ -158,7 +163,8 @@ A gallery is an array of samples, one per viewing angle. The server cleans it de
 | `lower` | 64 | No | 64 |
 | `shape` | 8 | No | 2 |
 | `embed` | 512 | No | 256 |
+| `reid` | 512 | No | 512 |
 
-Field meanings: [Identification → Signatures](../client/identification.md#signatures). A new signature field must be added to `GALLERY_FIELDS` in **both** servers, or it will be silently dropped.
+Field meanings: [Identification → Signatures](../client/identification.md#signatures). A new signature field must be added to `GALLERY_FIELDS` in **both** servers, or it will be silently dropped. `reid` is the [person re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs); it's optional in the format because a phone where the ONNX model failed to load still produces a usable colour-only gallery.
 
-**Watch the size.** Only `embed` is rounded; the other fields are sent at full float precision. A full 24-sample gallery is about **150 KB** of JSON without embeddings and about **195 KB** with them. That fits under the 256 KB body limit, but without much room to spare. If you add a field or more samples, round the values (as `compactEmbedding` does) or raise `MAX_BODY_BYTES` in both servers.
+**Watch the size.** `embed` and `reid` are rounded to 4 decimals by the client; the colour fields are sent at full float precision. A full 24-sample gallery is roughly **150 KB** of JSON with colour features only, and about **210 KB** with both embeddings. `MAX_BODY_BYTES` is 1 MB on both servers, and nginx allows 2 MB on `/api/`, so there's comfortable headroom — but if you add a field or more samples, round the values (as `compactEmbedding` and `reid.js`'s `normalize` do) and re-check both limits.

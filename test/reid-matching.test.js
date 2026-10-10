@@ -1,7 +1,7 @@
-// Matching rules once signatures carry a person re-identification embedding (public/reid.js).
+// Matching rules once signatures carry a person re-identification embedding (frontend/public/reid.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { averageSignatures, matchGallery } from '../public/identify.js';
+import { averageSignatures, matchGallery } from '../frontend/public/identify.js';
 
 // A random unit vector; random high-dimensional vectors are nearly orthogonal to each other.
 function unit(n, seed) {

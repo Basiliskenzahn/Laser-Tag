@@ -1,9 +1,8 @@
 # Game rules and room lifecycle
 
-The rules live in a `Room` class with no networking, implemented twice with the same behaviour:
-
-- `server/game.js` (Node, unit-tested in `server/game.test.js`)
-- the `Room` class in `backend/app.py` (Python, used in production)
+The rules live in a `Room` class with no networking, in `backend/models.py` (Python - the only
+backend; see [Streamlining → Two complete backend implementations](../streamlining.md) for the
+Node implementation this replaced, archived under `deprecated/server/`).
 
 ## Constants
 
@@ -15,7 +14,7 @@ The rules live in a `Room` class with no networking, implemented twice with the 
 | `DAMAGE.body` | 20 | Body hit damage |
 | `DAMAGE.head` | 50 | Headshot damage |
 | `SHOT_COOLDOWN_MS` | 350 | Minimum time between a player's accepted shots |
-| `COUNTDOWN_MS` | 5000 | Countdown before a round starts |
+| `COUNTDOWN_MS` | 3000 | Countdown before a round starts |
 
 ## Room states
 
@@ -23,7 +22,7 @@ The rules live in a `Room` class with no networking, implemented twice with the 
 stateDiagram-v2
   [*] --> waiting: first join
   waiting --> countdown: start() with ≥2 players, all scanned
-  countdown --> playing: 5 s elapsed
+  countdown --> playing: COUNTDOWN_MS elapsed
   countdown --> waiting: a player leaves and <2 remain
   playing --> over: ≤1 player alive
   over --> countdown: start()

@@ -1,8 +1,9 @@
 # Testing
 
-The tests use Node's built-in test runner (`node:test`). There are no test dependencies beyond the project's own.
+Two separate test suites: JS (`node --test`, for the client) and Python (`unittest`, for the
+backend). Neither needs a dependency beyond the project's own.
 
-## Running
+## Running the JS suite
 
 In Docker, with nothing installed locally:
 
@@ -21,48 +22,95 @@ npm test
 `npm test` runs:
 
 ```
-node --test server/game.test.js server/realtime.test.js public/identify.test.js
+node --test test/*.test.js frontend/public/identify.test.js
 ```
+
+That is: the two browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
+
+## Running the Python suite
+
+In Docker:
+
+```bash
+docker compose run --rm backend-tests
+```
+
+Or with Python 3.12+ and the backend's own dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+python -m unittest discover -s backend -p "test_*.py" -v
+```
+
+`backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the Node
+implementation's archived test suites (`deprecated/server/game.test.js`,
+`deprecated/server/realtime.test.js`) against the Python backend that's actually deployed -
+written when it turned out, during an unrelated cleanup, that `backend/` had no tests of its own
+at all (see [Streamlining](../streamlining.md) for that history). `test_models.py` uses
+`unittest.TestCase` with a fake clock (`room.now = lambda: t`, since `Room.now()` isn't
+constructor-injectable in Python the way the Node version was); `test_protocol.py` uses
+`aiohttp.test_utils.AioHTTPTestCase` to drive the real `create_app()` with polling clients, exactly
+like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ## What's covered
 
-### `server/game.test.js`: game rules
+### `backend/test_models.py`: game rules
 
-Unit tests for the `Room` class with an injected fake clock, so countdowns and cooldowns are tested without waiting:
+Unit tests for the `Room` class, 14 cases: starting needs 2 players and full scans, room capacity,
+no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
+unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
+it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round, that
+`roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
+directions.
 
-```js
-let t = 0;
-const room = new Room('test', { now: () => t });
-t += COUNTDOWN_MS; // skip the countdown
-```
+### `backend/test_protocol.py`: HTTP/SSE protocol
 
-Covers: starting needs 2 players and full scans, room capacity, no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, knockouts and winners, free-for-all eliminations, leaving mid-round, and that `roster()` carries galleries while `snapshot()` doesn't.
+Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
+phones), 14 cases: joining and starting, launching only once everyone is scanned, resuming with a
+remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
+being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
+room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
+reaching both players over their poll loops and producing an SSE `health` event, a three-player
+free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
+everyone except the sender.
 
-### `server/realtime.test.js`: protocol
+`rooms`/`connections`/`pollers`/`sse_clients` in `backend.transport` are module-level globals
+shared by the whole test process (there's no per-test app state to reset) - every test uses a
+**unique room code**, same as the Node suite did.
 
-Starts a real `http.Server` on a random port with `handleHttp` and drives it with `fetch`-based polling clients, just like phones do. Helpers:
+Every shot in this suite goes through `POST /api/hit`, matching the real client - see
+[Streamlining](../streamlining.md) for why the session-based `{"type": "shoot"}` message these
+tests originally used no longer exists.
 
-- `pollingClient()`: connects, polls in the background into a `messages` array, and exposes `send`, `disconnect` and `stop`.
-- `waitFor(check)`: waits until a condition holds (2 s default timeout).
-- `readSseEvent(response, type)`: reads one named event from an SSE stream.
-
-Covers: joining and starting, launching only once everyone is scanned, resuming with a remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways, being targetable), a full room of 8, held polls answered promptly, `410` for unknown sessions, damage over polling, a three-player free-for-all, and `/api/hit` producing an SSE `health` event.
-
-Some tests wait out the real 5-second countdown, so the suite takes several seconds.
-
-### `public/identify.test.js`: tracker
+### `frontend/public/identify.test.js`: tracker
 
 Checks that when two visible tracks carry the same player id, only the higher-scoring one keeps it. `identify.js` is mostly browser code (canvas, MediaPipe), so only canvas-free parts like the tracker's bookkeeping can be tested under Node.
 
+### `test/reid-matching.test.js`: matching with re-identification embeddings
+
+Drives `matchGallery()` and `averageSignatures()` with synthetic 512-dimensional unit vectors at chosen cosine similarities, and colour parts deliberately set to look like a perfect match so only the `reid` score can decide. Covers: the re-identification score deciding when both sides have one; a bystander being rejected in closed-set mode *despite* matching colours; two players scoring alike being a tie rather than a guess; galleries without `reid` falling back to the old colour behaviour; and averaged scan samples keeping a normalised embedding.
+
+This is the suite that pins down the priority rules described in [Identification](../client/identification.md#the-signals-in-order-of-strength) — it needs no browser because the embedding is just a vector by the time matching sees it.
+
+### `test/motion.test.js`: motion matching
+
+Tests `resample()`, `visualActivity()`, `motionCheck()` and `fuseMotion()` from `frontend/public/motion/matching.js` against a simulation: a seeded random walk/stand schedule, an accelerometer series at 10 Hz on the phone's own clock, and camera boxes at ~7 detections per second with detector jitter.
+
+Covers: interpolation and gap handling; the real player matching their own phone across five seeds; at most 2 of 30 bystanders matching by coincidence (and at least 12 of 30 clearly rejected); tolerance of a 300 ms clock offset; `unknown` when nobody moves; panning bins being masked out (the same corrupted series matches with the ego mask and fails without it); and every branch of the fusion table — confirm, veto, correct, classifier-only, motion-only, ambiguous, self and `requireMotion`.
+
+The thresholds in `motion/matching.js` were chosen against this simulation, so changing them will usually show up here first.
+
 ## What isn't covered
 
-- **The Python backend.** Production runs `backend/app.py`, but every server test targets the Node implementation. Behaviour is only verified to match by keeping the code in sync. If you change the Python side, a quick way to check it is to run the frontend and backend in Docker and play through the change with [debug mode](debug-mode.md).
+- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.
 - **Detection, signatures and scanning.** These need a real browser, camera and models. Test them by hand with `?debug`.
-- **CI.** The deploy workflow doesn't run tests. Run them before merging.
+- **The re-identification model itself.** `reid.js` needs ONNX Runtime Web, a canvas and the model file, so nothing exercises the loading, pre-processing or the request/collect queue. Only the matching rules built on its output are tested.
+- **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers come from simulation, not from real phones.
+- **CI.** The deploy workflow doesn't run either test suite. Run them before merging - see [Streamlining](../streamlining.md).
 
 ## Writing tests
 
-- Put game-rule tests in `server/game.test.js` and use the fake clock rather than real timers.
-- Put protocol tests in `server/realtime.test.js`. Use a **unique room code per test**, since server state is shared across tests in the same process.
-- Call `client.stop()` at the end of a test so its background poll loop ends.
-- For a new test file, add it to the `test` script in `package.json`.
+- Put browser-free client tests in `test/`. Keeping the pure logic in modules with no browser APIs (as `motion/matching.js` does) is what makes this possible — prefer that over mocking `window`.
+- A new JS file under `test/` is picked up by the glob in the `test` script automatically. Anywhere else, add it to that script in `package.json`.
+- A new Python file under `backend/` matching `test_*.py` is picked up by `python -m unittest discover` automatically - no registration needed.
+- For backend protocol tests: use a **unique room code per test** (`unique_room()` in `test_protocol.py`), since the module-level registries in `backend.transport` are shared across the whole test process. For model tests: fake the clock with `room.now = lambda: t` rather than real `time.sleep()`.

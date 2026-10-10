@@ -4,7 +4,7 @@ The fastest path from a fresh clone to a game running on phones.
 
 ## Requirements
 
-- **Host:** Docker Desktop or Docker Engine with Compose. (Alternatively Node.js 20+, see [Node dev server](server/node-dev-server.md).)
+- **Host:** Docker Desktop or Docker Engine with Compose.
 - **Players:** one phone each, with a rear camera and a recent Chrome, Safari or Firefox.
 - **Network:** host and phones on the same Wi-Fi, or a tunnel (below).
 - **Space:** enough room for players to see each other's whole body from a few metres away.

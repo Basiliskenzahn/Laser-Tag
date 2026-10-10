@@ -1,18 +1,21 @@
 # Person detection and hitboxes
 
-`public/detector.js` finds people in camera frames and turns each one into a head hitbox and a body hitbox. Deciding *who* each person is happens afterwards, in [identification](identification.md).
+`frontend/public/detector.js` finds people in camera frames and turns each one into a head hitbox and a body hitbox. Deciding *who* each person is happens afterwards, in [identification](identification.md).
 
 ## Models
 
-All models run in the browser through [MediaPipe Tasks Vision](https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector) (`@mediapipe/tasks-vision` 0.10.35). The model files are committed to `public/models/` so the game works without internet access.
+All models run in the browser through [MediaPipe Tasks Vision](https://ai.google.dev/edge/mediapipe/solutions/vision/object_detector) (`@mediapipe/tasks-vision` 0.10.35). The model files are committed to `frontend/public/models/` so the game works without internet access.
 
-| Model | File | Role | Required? |
-| --- | --- | --- | --- |
-| EfficientDet-Lite0 | `efficientdet_lite0.tflite` (7 MB) | Main person detector | Yes |
-| Pose Landmarker Lite | `pose_landmarker_lite.task` (6 MB) | Extra person boxes from body landmarks | No |
-| MobileNetV3 Small embedder | `mobilenet_v3_small_embedder.tflite` (4 MB) | Learned appearance embedding for identification | No |
+| Model | File | Role | Loaded by | Required? |
+| --- | --- | --- | --- | --- |
+| EfficientDet-Lite0 | `efficientdet_lite0.tflite` (7 MB) | Main person detector | `detector.js` | Yes |
+| Pose Landmarker Lite | `pose_landmarker_lite.task` (6 MB) | Extra person boxes from body landmarks | `detector.js` | No |
+| MobileNetV3 Small embedder | `mobilenet_v3_small_embedder.tflite` (4 MB) | Learned appearance embedding for identification | `detector.js` | No |
+| OSNet x0.25 (MSMT17) | `osnet_x0_25_msmt17.onnx` (0.9 MB) | Person re-identification embedding — the strongest identification signal | [`reid.js`](identification.md#the-re-identification-embedding-reidjs), via ONNX Runtime Web | No |
 
-The MediaPipe JavaScript bundle and WebAssembly files aren't committed. They're served from `node_modules/@mediapipe/tasks-vision/` at the URL path `/vendor/tasks-vision/`, by nginx in Docker or by the Node dev server.
+The MediaPipe JavaScript bundle and WebAssembly files aren't committed. They're served from `node_modules/@mediapipe/tasks-vision/` at the URL path `/vendor/tasks-vision/` by nginx. ONNX Runtime Web (pinned alongside it in `package.json`) is served the same way, from `node_modules/onnxruntime-web/dist/` at `/vendor/ort/`.
+
+Only the first three run through MediaPipe and are created by `createDetector()`. OSNet is a separate runtime with a separate loader; this page covers the MediaPipe side, and the re-identification model is documented with [identification](identification.md#the-re-identification-embedding-reidjs).
 
 ### Loading
 
@@ -21,7 +24,7 @@ The MediaPipe JavaScript bundle and WebAssembly files aren't committed. They're 
 1. Loads the WebAssembly fileset.
 2. Creates the object detector with the **GPU** delegate, falling back to **CPU** if that fails.
 3. Tries to create the pose landmarker and the embedder on the same delegate. If either fails, it logs a warning and carries on without it.
-4. Returns `{detector, poseDetector, embedder, delegate}`. `delegate` is a label such as `GPU+Pose+Embed` that the debug overlay shows.
+4. Returns `{detector, poseDetector, embedder, delegate}`. `delegate` is a label such as `GPU+Pose+Embed` that the debug overlay shows. `app.js` appends `+ReID` to it when the re-identification model also loaded, so the overlay's first line says exactly which signals are live.
 
 Object detector settings: video mode, score threshold 0.35, up to 8 results, `person` category only.
 Pose settings: video mode, up to 8 poses, detection/presence/tracking confidence 0.18.
@@ -73,7 +76,7 @@ Detector boxes are loose: they include outstretched arms and empty space. Hitbox
 | `headBox(box)` | Head hitbox |
 | `bodyBox(box)` | Body hitbox |
 | `contains(box, x, y)` | Point-in-box test |
-| `hitTest(boxes, x, y)` | `'head'`, `'body'` or `null`. Any head hit wins over a body hit. |
+| `hitTest(boxes, x, y)` | `'head'`, `'body'` or `null`. Any head hit wins over a body hit. Exported for convenience; the game itself walks tracks and calls `contains()` per hitbox, because it needs to know *which* track was hit, not just the zone. |
 
 The constants (`HEAD_TOP`, `HEAD_HEIGHT`, `HEAD_WIDTH`, `BODY_TOP`, `BODY_HEIGHT`, `BODY_WIDTH`) are at the top of `detector.js`. See [Configuration](../development/configuration.md#hitboxes).
 
