@@ -133,6 +133,8 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `SCAN_VIEW_AVERAGE_SIMILARITY` | 0.74 | Similarity needed to be averaged into a sample |
 | `SCAN_DIVERSITY_WEIGHT` | 0.42 | How strongly sample selection prefers varied views |
 | `ROTATION_SAMPLE_AVERAGE_COUNT` | 4 | Frames averaged per sample |
+| `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
+| `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
 | `SCAN_CACHE_VERSION` | 11 | Bump when the signature format changes (11 = samples carry a re-identification embedding) |
 
 `SCAN_SAMPLE_COUNT` (6) and `SCAN_SAMPLE_INTERVAL_MS` (70) belong to an older capture path (`captureScanSignature`) that the current rotation scan doesn't use.
