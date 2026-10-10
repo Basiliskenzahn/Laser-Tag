@@ -16,7 +16,6 @@ import { getReidThreshold } from '../identify.js';
 // namespace and a missing one is just `undefined`, which the readout handles.
 import * as matcher from '../identify.js';
 import { rangeReadout } from '../range-readout.js';
-import { emptyInputStats, inputLatencyLine, recordBlock, recordShot } from '../input-latency.js';
 import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
@@ -287,10 +286,7 @@ function targetUnderCrosshair(px, py) {
   return bodyHit;
 }
 
-// `firedAt` is the originating event's `timeStamp` (app.js), used only by the ?debug input
-// readout: it is when the browser created the tap, so the gap to here is how long the tap waited
-// for the main thread. Optional - the keyboard path and tests may omit it.
-export function fire(firedAt = null) {
+export function fire() {
   if (!canLocalPlayerFire()) return;
   const now = performance.now();
   if (now - state.lastShotAt < FIRE_COOLDOWN_MS) return;
@@ -311,9 +307,6 @@ export function fire(firedAt = null) {
   // object detection - plus the pose model once two players were enrolled - on the one path in
   // the app where the player is waiting.
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
-  if (DEBUG) {
-    recordShot(inputStats, { eventTimeStamp: firedAt, entryAt: now, resolvedAt: performance.now() });
-  }
   if (hit) postHit(hit.playerId, hit.zone);
 }
 
@@ -339,13 +332,6 @@ let fpsWindowStart = performance.now();
 let inferenceMs = 0;
 // The last complete second's range diagnostics, snapshotted on the same window as `fps`.
 let rangeWindow = null;
-// Input-latency samples for the ?debug readout. `null` without ?debug, so the object is never
-// even allocated on a normal load, and every recorder below is a no-op on null even if
-// one somehow escaped its `if (DEBUG)` branch.
-const inputStats = DEBUG ? emptyInputStats() : null;
-// Previous frame's timestamp, for the longest-blocking-chunk figure. Read and written only inside
-// the DEBUG branch of loop().
-let lastDebugFrameAt = performance.now();
 
 // `<pre id="debug">` lives inside `#game-screen` (index.html:80), which is `hidden` until a round
 // starts - so the overlay cannot be read on the join, lobby or scan screens even though join.js
@@ -403,11 +389,6 @@ export function loop() {
 
   if (DEBUG) {
     const now = performance.now();
-    // Frame-to-frame gap: how long the main thread was unavailable to anything, a tap included.
-    // Measured here, at the end of the frame, so the gap spans the previous frame's detection and
-    // draw rather than splitting them.
-    recordBlock(inputStats, now - lastDebugFrameAt, now);
-    lastDebugFrameAt = now;
     if (now - fpsWindowStart >= 1000) {
       fps = (frames * 1000) / (now - fpsWindowStart);
       frames = 0;
@@ -427,8 +408,6 @@ export function loop() {
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
     // Detected-but-refused vs never-detected, and the box heights the gate is judging.
     const rangeLine = rangeReadoutLine(visibleTracks);
-    // Why the FIRE button feels laggy: the tap's queueing delay against what fire() itself costs.
-    const inputLine = inputLatencyLine(inputStats);
     debugOverlay().textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
@@ -444,7 +423,6 @@ export function loop() {
             : '')
         : '') +
       (rangeLine ? `\n${rangeLine}` : '') +
-      (inputLine ? `\n${inputLine}` : '') +
       (ranked.length
         ? `\nRanks ${ranked
             .map(

@@ -161,7 +161,7 @@ What would move: the MediaPipe object detector, the pose landmarker and the Mobi
 3. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
 4. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
 
-No detection runs anywhere in there. `fire()` takes one optional argument, the originating event's `timeStamp`, which `app.js` hands on from the `pointerdown`; it is read only by the `?debug` [input readout](../development/debug-mode.md#the-input-readout) and ignored otherwise.
+No detection runs anywhere in there. `fire()` takes no arguments: everything it needs is already in `state.tracks`.
 
 ### Why the shot doesn't force a detection
 
