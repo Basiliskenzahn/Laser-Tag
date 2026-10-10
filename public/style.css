@@ -34,16 +34,29 @@ button {
   cursor: pointer;
 }
 
-/* ---- Join screen ---- */
+/* ---- Join / lobby screens ---- */
 
-#join-screen {
+#join-screen,
+#lobby-screen {
   min-height: 100%;
   max-width: 420px;
   margin: 0 auto;
   padding: 48px 16px;
+}
+
+#join-screen {
   display: flex;
   flex-direction: column;
   justify-content: center;
+}
+
+#lobby-screen {
+  display: grid;
+  place-items: center;
+}
+
+#lobby-panel {
+  width: min(520px, 100%);
 }
 
 h1 {
@@ -96,6 +109,98 @@ input {
   opacity: 0.6;
 }
 
+#lobby-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+#lobby-heading h1 {
+  font-size: 36px;
+}
+
+#lobby-actions {
+  display: flex;
+  gap: 10px;
+}
+
+#launch-btn,
+#leave-lobby-btn {
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 10px;
+  font-weight: 800;
+}
+
+#launch-btn {
+  background: var(--target);
+  color: #06210f;
+}
+
+#leave-lobby-btn {
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
+}
+
+#launch-btn:disabled {
+  opacity: 0.55;
+}
+
+#lobby-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lobby-player {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #222b35;
+  border-radius: 8px;
+  background: #05070a;
+}
+
+.lobby-player.scanned {
+  border-color: rgba(57, 255, 136, 0.5);
+  background: rgba(57, 255, 136, 0.08);
+}
+
+.lobby-name {
+  min-width: 0;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lobby-state {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lobby-player.scanned .lobby-state {
+  color: var(--target);
+}
+
+.lobby-player button {
+  min-width: 86px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.lobby-player.scanned button {
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
+}
+
 .status {
   min-height: 1.4em;
   color: var(--text);
@@ -141,6 +246,48 @@ input {
   text-align: center;
 }
 
+#scan-screen.countdown #scan-panel {
+  top: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  background: rgba(5, 7, 10, 0.42);
+}
+
+#scan-countdown {
+  margin-bottom: 18px;
+  font-size: 92px;
+  line-height: 1;
+  font-weight: 900;
+  color: var(--target);
+  text-shadow: 0 0 28px rgba(57, 255, 136, 0.55), 0 2px 8px #000;
+}
+
+#scan-screen.countdown #scan-instruction {
+  max-width: 640px;
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.12;
+  font-weight: 900;
+  text-shadow: 0 2px 10px #000;
+}
+
+#scan-screen.countdown #scan-thumbs,
+#scan-screen.countdown .hint {
+  display: none;
+}
+
+@media (min-width: 700px) {
+  #scan-countdown {
+    font-size: 120px;
+  }
+
+  #scan-screen.countdown #scan-instruction {
+    font-size: 42px;
+  }
+}
+
 .connection-problem {
   margin: 0 0 12px;
   padding: 10px 12px;
@@ -176,57 +323,6 @@ input {
   object-fit: cover;
   border-radius: 6px;
   border: 2px solid var(--target);
-}
-
-#saved-scan {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-
-#scan-buttons {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 12px;
-}
-
-#scan-capture-btn,
-#scan-auto-btn,
-#scan-join-btn,
-#use-saved-scan-btn,
-#clear-saved-scan-btn {
-  padding: 14px 28px;
-  border: 0;
-  border-radius: 10px;
-  font-size: 16px;
-  font-weight: 700;
-}
-
-#scan-capture-btn {
-  background: var(--accent);
-  color: #fff;
-}
-
-#scan-auto-btn {
-  background: rgba(232, 238, 245, 0.14);
-  color: var(--text);
-}
-
-#scan-join-btn {
-  background: var(--target);
-  color: #06210f;
-}
-
-#use-saved-scan-btn {
-  background: var(--target);
-  color: #06210f;
-}
-
-#clear-saved-scan-btn {
-  background: rgba(232, 238, 245, 0.14);
-  color: var(--text);
 }
 
 /* ---- Game screen ---- */
@@ -386,6 +482,38 @@ input {
   pointer-events: none;
 }
 
+#game-screen.countdown #banner {
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+  background: rgba(5, 7, 10, 0.42);
+}
+
+#game-countdown {
+  margin-bottom: 18px;
+  font-size: 92px;
+  line-height: 1;
+  font-weight: 900;
+  color: var(--target);
+  text-shadow: 0 0 28px rgba(57, 255, 136, 0.55), 0 2px 8px #000;
+}
+
+#game-screen.countdown #banner-text {
+  max-width: 640px;
+  padding: 0;
+  background: none;
+  font-size: 32px;
+  line-height: 1.12;
+  font-weight: 900;
+  text-shadow: 0 2px 10px #000;
+}
+
+#game-screen.countdown #start-btn {
+  display: none;
+}
+
 #banner-text {
   margin: 0 auto;
   display: inline-block;
@@ -404,6 +532,16 @@ input {
   font-size: 72px;
   background: none;
   text-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+}
+
+@media (min-width: 700px) {
+  #game-countdown {
+    font-size: 120px;
+  }
+
+  #game-screen.countdown #banner-text {
+    font-size: 42px;
+  }
 }
 
 #start-btn {

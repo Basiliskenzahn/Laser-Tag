@@ -31,24 +31,34 @@
         <button type="submit" id="join-btn">Continue</button>
       </form>
       <p id="join-status" class="status" role="status"></p>
-      <p class="hint">Everyone enters the same room code. Next you'll scan yourself so the game can tell players apart during the match, then you'll be asked for camera access.</p>
+      <p class="hint">Everyone enters the same room code. The lobby shows who still needs to be scanned before launch.</p>
+    </main>
+
+    <main id="lobby-screen" class="screen" hidden>
+      <section id="lobby-panel">
+        <p id="lobby-connection" class="connection-problem" role="alert" hidden></p>
+        <div id="lobby-heading">
+          <div>
+            <h1>Lobby</h1>
+            <p id="lobby-room" class="tagline"></p>
+          </div>
+          <div id="lobby-actions">
+            <button id="leave-lobby-btn" type="button">Leave</button>
+            <button id="launch-btn" type="button">Launch</button>
+          </div>
+        </div>
+        <div id="lobby-list"></div>
+        <p id="lobby-status" class="status" role="status"></p>
+      </section>
     </main>
 
     <main id="scan-screen" class="screen" hidden>
       <div id="scan-panel">
         <p id="scan-connection" class="connection-problem" role="alert" hidden></p>
+        <div id="scan-countdown" hidden></div>
         <p id="scan-instruction">Stand where your whole body is visible, then face the camera.</p>
         <div id="scan-thumbs"></div>
-        <div id="saved-scan" hidden>
-          <button id="use-saved-scan-btn" type="button">Use saved scan</button>
-          <button id="clear-saved-scan-btn" type="button">Rescan</button>
-        </div>
-        <div id="scan-buttons">
-          <button id="scan-capture-btn" type="button">Add angle</button>
-          <button id="scan-auto-btn" type="button">Scan rotation</button>
-          <button id="scan-join-btn" type="button" hidden>Join game</button>
-        </div>
-        <p class="hint">Hand the phone to someone else so it can see your whole body. Use Scan rotation, then turn slowly once; the game keeps the best angles.</p>
+        <p class="hint">Hand the phone to someone else so it can see your whole body, then turn slowly once; the game keeps the best angles.</p>
       </div>
     </main>
 
@@ -59,6 +69,7 @@
       <header id="hud"></header>
 
       <div id="banner">
+        <div id="game-countdown" hidden></div>
         <p id="banner-text"></p>
         <button id="start-btn" hidden>Start game</button>
       </div>

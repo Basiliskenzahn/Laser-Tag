@@ -509,7 +509,12 @@ function resolveDuplicateIdentities(tracks, now) {
   }
   for (const duplicates of byPlayer.values()) {
     if (duplicates.length < 2) continue;
-    duplicates.sort((a, b) => identityConfidence(b, now) - identityConfidence(a, now));
+    duplicates.sort((a, b) => {
+      const seenDelta = Number(Boolean(b.seenThisFrame)) - Number(Boolean(a.seenThisFrame));
+      if (seenDelta) return seenDelta;
+      const scoreDelta = (b.score ?? 0) - (a.score ?? 0);
+      return Math.abs(scoreDelta) > 0.0001 ? scoreDelta : identityConfidence(b, now) - identityConfidence(a, now);
+    });
     for (const duplicate of duplicates.slice(1)) clearIdentity(duplicate);
   }
 }
@@ -786,7 +791,7 @@ export class Tracker {
       }
     }
     if (closedSet) resolveClosedSetIdentities(this.tracks, now, selfId);
-    else resolveDuplicateIdentities(this.tracks, now);
+    resolveDuplicateIdentities(this.tracks, now);
     return this.tracks;
   }
 }

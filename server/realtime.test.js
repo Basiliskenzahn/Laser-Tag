@@ -35,6 +35,7 @@ async function pollingClient() {
     messages,
     send: (msg) =>
       fetch(`${base}/api/send?token=${token}`, { method: 'POST', body: JSON.stringify(msg) }),
+    disconnect: () => fetch(`${base}/api/disconnect?token=${token}`, { method: 'POST' }),
     stop: () => aborter.abort(),
   };
 }
@@ -92,6 +93,94 @@ test('two polling players can join, see each other and start a round', async () 
   b.stop();
 });
 
+test('players can join before scans, and launch waits for every gallery', async () => {
+  const a = await pollingClient();
+  const b = await pollingClient();
+  const room = 'scan-lobby';
+  await a.send({ type: 'join', name: 'A', room });
+  await b.send({ type: 'join', name: 'B', room });
+  await waitFor(() => lastState(a.messages)?.players.length === 2);
+
+  await a.send({ type: 'start' });
+  await waitFor(() => a.messages.some((m) => m.type === 'error' && m.message.startsWith('Scan everyone before launch')));
+
+  const aId = a.messages.find((m) => m.type === 'welcome').id;
+  const bId = b.messages.find((m) => m.type === 'welcome').id;
+  await a.send({ type: 'scan', targetId: bId, gallery });
+  await waitFor(() => a.messages.filter((m) => m.type === 'roster').at(-1)?.players.find((p) => p.id === bId)?.gallery.length === 1);
+  await b.send({ type: 'scan', targetId: aId, gallery });
+  await waitFor(() => b.messages.filter((m) => m.type === 'roster').at(-1)?.players.every((p) => p.gallery.length === 1));
+
+  await a.send({ type: 'start' });
+  await waitFor(() => lastState(a.messages)?.status === 'countdown');
+  a.stop();
+  b.stop();
+});
+
+test('a remembered player id can rejoin without creating a duplicate', async () => {
+  const first = await pollingClient();
+  const second = await pollingClient();
+  const room = 'reload-rejoin';
+  await first.send({ type: 'join', name: 'A', room, gallery });
+  await waitFor(() => first.messages.some((m) => m.type === 'welcome'));
+  const playerId = first.messages.find((m) => m.type === 'welcome').id;
+
+  await second.send({ type: 'join', name: 'A', room, playerId, gallery });
+  await waitFor(() => second.messages.some((m) => m.type === 'welcome' && m.id === playerId));
+  await waitFor(() => lastState(second.messages)?.players.length === 1);
+
+  await first.disconnect();
+  await waitFor(() => lastState(second.messages)?.players.length === 1);
+  second.stop();
+});
+
+test('disconnect removes a lobby player immediately', async () => {
+  const a = await pollingClient();
+  const b = await pollingClient();
+  const room = 'leave-lobby';
+  await a.send({ type: 'join', name: 'A', room, gallery });
+  await b.send({ type: 'join', name: 'B', room, gallery });
+  await waitFor(() => lastState(a.messages)?.players.length === 2);
+
+  await b.disconnect();
+  await waitFor(() => lastState(a.messages)?.players.length === 1);
+  assert.equal(lastState(a.messages).players[0].name, 'A');
+  a.stop();
+});
+
+test('debug clone receives the local player scan', async () => {
+  const debug = await pollingClient();
+  await debug.send({ type: 'join', name: 'Debug', room: 'clone-scan-lobby', debug: true });
+  await waitFor(() => lastState(debug.messages)?.players.length === 2);
+  const debugId = debug.messages.find((m) => m.type === 'welcome').id;
+  const clone = lastState(debug.messages).players.find((p) => p.id !== debugId);
+  await debug.send({ type: 'scan', targetId: debugId, gallery });
+  await waitFor(() => {
+    const players = debug.messages.filter((m) => m.type === 'roster').at(-1)?.players ?? [];
+    return players.find((p) => p.id === debugId)?.gallery.length === 1 && players.find((p) => p.id === clone.id)?.gallery.length === 1;
+  });
+  debug.stop();
+});
+
+test('debug clone mirrors scans taken from another device', async () => {
+  const debug = await pollingClient();
+  const scanner = await pollingClient();
+  const room = 'clone-remote-scan';
+  await debug.send({ type: 'join', name: 'Debug', room, debug: true });
+  await scanner.send({ type: 'join', name: 'Scanner', room });
+  await waitFor(() => lastState(debug.messages)?.players.length === 3);
+
+  const debugId = debug.messages.find((m) => m.type === 'welcome').id;
+  const clone = lastState(debug.messages).players.find((p) => p.id !== debugId && p.name === 'Debug clone');
+  await scanner.send({ type: 'scan', targetId: debugId, gallery });
+  await waitFor(() => {
+    const players = debug.messages.filter((m) => m.type === 'roster').at(-1)?.players ?? [];
+    return players.find((p) => p.id === debugId)?.gallery.length === 1 && players.find((p) => p.id === clone.id)?.gallery.length === 1;
+  });
+  debug.stop();
+  scanner.stop();
+});
+
 test('eight polling players can fill a room and start together', async () => {
   const clients = await Promise.all(Array.from({ length: 9 }, () => pollingClient()));
   const players = clients.slice(0, 8);
@@ -106,7 +195,7 @@ test('eight polling players can fill a room and start together', async () => {
   await waitFor(() => extra.messages.some((m) => m.type === 'error' && m.message === 'Room is full'));
 
   await players[0].send({ type: 'start' });
-  await waitFor(() => lastState(players[7].messages)?.status === 'playing', 5000);
+  await waitFor(() => lastState(players[7].messages)?.status === 'playing', 7000);
   assert.equal(lastState(players[7].messages).players.length, 8);
 
   for (const client of clients) client.stop();
@@ -141,7 +230,7 @@ test('shots and damage travel over polling', async () => {
   const bId = b.messages.find((m) => m.type === 'welcome').id;
 
   await a.send({ type: 'start' });
-  await waitFor(() => lastState(a.messages)?.status === 'playing', 5000);
+  await waitFor(() => lastState(a.messages)?.status === 'playing', 7000);
   await a.send({ type: 'shoot', targetId: bId, zone: 'body' });
 
   await waitFor(() => a.messages.some((m) => m.type === 'hitConfirmed'));
@@ -166,7 +255,7 @@ test('three polling players can play a free-for-all until one winner remains', a
   const cId = c.messages.find((m) => m.type === 'welcome').id;
 
   await a.send({ type: 'start' });
-  await waitFor(() => lastState(a.messages)?.status === 'playing', 5000);
+  await waitFor(() => lastState(a.messages)?.status === 'playing', 7000);
   await a.send({ type: 'shoot', targetId: bId, zone: 'head' });
   await c.send({ type: 'shoot', targetId: bId, zone: 'head' });
   await waitFor(() => {
@@ -200,7 +289,7 @@ test('posted hits emit health updates over SSE', async () => {
   assert.equal(events.ok, true);
 
   await a.send({ type: 'start' });
-  await waitFor(() => lastState(a.messages)?.status === 'playing', 5000);
+  await waitFor(() => lastState(a.messages)?.status === 'playing', 7000);
   const res = await fetch(`${base}/api/hit`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -228,7 +317,7 @@ test('debug sessions get a targetable clone instead of self hits', async () => {
   await waitFor(() => debug.messages.filter((m) => m.type === 'roster').at(-1)?.players.find((p) => p.id === clone.id)?.gallery.length === 1);
 
   await debug.send({ type: 'start' });
-  await waitFor(() => lastState(debug.messages)?.status === 'playing', 5000);
+  await waitFor(() => lastState(debug.messages)?.status === 'playing', 7000);
 
   await debug.send({ type: 'shoot', targetId: debugId, zone: 'body' });
   await new Promise((r) => setTimeout(r, 80));

@@ -22,7 +22,8 @@ const SCAN_DUPLICATE_SIMILARITY = 0.992;
 const SCAN_OUTLIER_SIMILARITY = 0.36;
 const SCAN_VIEW_AVERAGE_SIMILARITY = 0.74;
 const SCAN_DIVERSITY_WEIGHT = 0.42;
-const ROTATION_SCAN_COUNTDOWN_MS = 1800;
+const ROTATION_SCAN_COUNTDOWN_MS = 5_000;
+const GAME_LAUNCH_COUNTDOWN_MS = 5_000;
 const ROTATION_SCAN_DURATION_MS = 12_000;
 const ROTATION_RECORD_FRAME_MS = 180;
 const ROTATION_FRAME_MAX_WIDTH = 1024;
@@ -40,7 +41,7 @@ const video = $('video');
 const canvas = $('overlay');
 const ctx = canvas.getContext('2d');
 
-const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible, then slowly turn in one full circle.';
+const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible and face the camera. When recording starts, slowly turn in one full circle.';
 
 const state = {
   name: '',
@@ -53,16 +54,20 @@ const state = {
   poseDetector: null,
   embedder: null,
   delegate: '',
-  mode: 'scan', // 'scan' | 'game' - which screen the shared camera loop renders for
+  mode: 'join', // 'join' | 'lobby' | 'scan' | 'game'
   boxes: [], // people in the latest camera frame, in video pixels
   tracker: new Tracker(),
   tracks: [],
-  gallery: [], // signatures captured so far during enrolment
+  gallery: [], // signatures captured for the player currently being scanned
+  localGallery: [], // this phone owner's gallery, used only as a self-match guard
   scanThumbs: [], // data URLs matching gallery samples, used for the reusable debug cache
   savedScan: null,
+  scanTargetId: null,
+  scanTargetName: '',
+  resumePlayerId: null,
   autoScanning: false,
   postProcessingScan: false,
-  scanDone: false, // the join message (with the gallery) is only sent once scanning is finished
+  loopStarted: false,
   events: null,
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
@@ -70,6 +75,7 @@ const state = {
   lastGamePoseDetectAt: 0,
   countdownEndsAt: null,
   lastCountdownBeep: null,
+  launchingFromLobby: false,
   bannerOverride: null,
 };
 
@@ -77,25 +83,40 @@ const state = {
 
 $('name').value = load('name') ?? '';
 $('room').value = params.get('room') ?? load('room') ?? 'demo';
+for (const input of [$('name'), $('room')]) {
+  input.addEventListener('input', () => {
+    if (!$('join-btn').hidden) return;
+    $('join-btn').hidden = false;
+    setJoinStatus('');
+  });
+}
 
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  sound.unlock();
+  enterLobbyFromForm();
+});
+
+async function enterLobbyFromForm({ resumePlayerId = null, auto = false } = {}) {
   state.name = $('name').value.trim();
   state.room = $('room').value.trim().toLowerCase();
+  state.resumePlayerId = resumePlayerId;
+  state.localGallery = [];
+  state.gallery = [];
+  state.scanThumbs = [];
+  state.scanTargetId = null;
+  state.scanTargetName = '';
   state.savedScan = loadScanCache();
+  if (state.savedScan?.gallery?.length) state.localGallery = state.savedScan.gallery;
   save('name', state.name);
   save('room', state.room);
 
-  // Everything that needs a user gesture happens here.
-  sound.unlock();
+  if (!state.name || !state.room) return;
+  $('join-btn').hidden = false;
   $('join-btn').disabled = true;
-  setJoinStatus('Starting camera and loading the detector…');
+  setJoinStatus(auto ? 'Rejoining lobby...' : 'Starting camera and loading the detector...');
   try {
-    const [, { detector, poseDetector, embedder, delegate }] = await Promise.all([startCamera(), createDetector()]);
-    state.detector = detector;
-    state.poseDetector = poseDetector;
-    state.embedder = embedder;
-    state.delegate = delegate;
+    await prepareCameraAndDetector();
   } catch (err) {
     console.error(err);
     setJoinStatus(startupErrorMessage(err));
@@ -103,22 +124,64 @@ $('join-form').addEventListener('submit', async (event) => {
     return;
   }
 
-  video.hidden = false;
-  canvas.hidden = false;
+  video.hidden = true;
+  canvas.hidden = true;
   $('join-screen').hidden = true;
-  $('scan-screen').hidden = false;
+  $('lobby-screen').hidden = false;
   $('debug').hidden = !DEBUG;
   keepScreenOn();
-  renderSavedScan();
-  startScanStep();
-  requestAnimationFrame(loop);
-  // Connect now rather than after scanning, so a server that can't be reached shows up
-  // straight away instead of after the player has finished scanning.
+  state.mode = 'lobby';
+  renderLobby();
+  if (!state.loopStarted) {
+    state.loopStarted = true;
+    requestAnimationFrame(loop);
+  }
   connect();
-});
+}
 
 function setJoinStatus(text) {
   $('join-status').textContent = text;
+}
+
+async function prepareCameraAndDetector() {
+  const camera = video.srcObject ? Promise.resolve() : startCamera();
+  const detector = state.detector
+    ? Promise.resolve({
+        detector: state.detector,
+        poseDetector: state.poseDetector,
+        embedder: state.embedder,
+        delegate: state.delegate,
+      })
+    : createDetector();
+  const [, vision] = await Promise.all([camera, detector]);
+  state.detector = vision.detector;
+  state.poseDetector = vision.poseDetector;
+  state.embedder = vision.embedder;
+  state.delegate = vision.delegate;
+}
+
+function showJoinRejected(message) {
+  state.conn?.close();
+  state.conn = null;
+  state.events?.close();
+  state.events = null;
+  clearActiveLobby();
+  stopCamera();
+  hideScanCountdown();
+  clearGameCountdown();
+  state.mode = 'join';
+  state.game = null;
+  state.myId = null;
+  $('join-screen').hidden = false;
+  $('lobby-screen').hidden = true;
+  $('scan-screen').hidden = true;
+  $('game-screen').hidden = true;
+  video.hidden = true;
+  canvas.hidden = true;
+  $('join-btn').disabled = false;
+  $('join-btn').hidden = true;
+  setJoinStatus(message);
+  showConnectionProblem(null);
 }
 
 function startupErrorMessage(err) {
@@ -137,6 +200,11 @@ async function startCamera() {
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
   });
   await video.play();
+}
+
+function stopCamera() {
+  for (const track of video.srcObject?.getTracks?.() ?? []) track.stop();
+  video.srcObject = null;
 }
 
 async function keepScreenOn() {
@@ -160,32 +228,25 @@ function startScanStep() {
   const count = state.gallery.length;
   const ready = count >= SCAN_MIN_SAMPLES;
   const scanBusy = state.autoScanning || state.postProcessingScan;
+  const targetName = scanPersonName();
   if (state.postProcessingScan) {
-    $('scan-instruction').textContent = 'Processing recorded rotation...';
+    $('scan-instruction').textContent = `Processing ${targetName}'s rotation...`;
   } else if (state.autoScanning) {
-    $('scan-instruction').textContent = ROTATION_SCAN_PROMPT;
+    $('scan-instruction').textContent = `${targetName}: ${ROTATION_SCAN_PROMPT}`;
   } else if (ready) {
-    $('scan-instruction').textContent =
-      count >= SCAN_TARGET_SAMPLES
-        ? 'Rotation scan complete. Join when ready, or rescan to replace it.'
-        : `${count}/${SCAN_TARGET_SAMPLES} samples captured. Join now or add more angles.`;
+    $('scan-instruction').textContent = `${targetName}'s scan is ready. Returning to lobby...`;
   } else if (count > 0) {
     $('scan-instruction').textContent =
-      `${count}/${SCAN_TARGET_SAMPLES} samples captured. Keep rotating and add more angles.`;
+      `${count}/${SCAN_TARGET_SAMPLES} samples captured for ${targetName}. Keep rotating slowly.`;
   } else {
     $('scan-instruction').textContent =
-      state.savedScan ? 'Use your saved scan, or rescan with a slow rotation.' : ROTATION_SCAN_PROMPT;
+      state.savedScan ? `Use ${targetName}'s saved scan, or rescan with a slow rotation.` : `${targetName}: ${ROTATION_SCAN_PROMPT}`;
   }
-  $('scan-capture-btn').hidden = count >= SCAN_TARGET_SAMPLES;
-  $('scan-auto-btn').hidden = false;
-  $('scan-join-btn').hidden = !ready || scanBusy;
   updateScanButtons();
   renderSavedScan();
 }
 
-function updateScanButtons() {
-  $('scan-capture-btn').disabled = state.autoScanning || state.postProcessingScan || state.gallery.length >= SCAN_TARGET_SAMPLES;
-}
+function updateScanButtons() {}
 
 function cropThumbnail(box, source = video) {
   const c = document.createElement('canvas');
@@ -195,14 +256,18 @@ function cropThumbnail(box, source = video) {
   return c.toDataURL('image/jpeg', 0.7);
 }
 
+function scanPersonName() {
+  return state.scanTargetName || state.name;
+}
+
 function scanCacheKey() {
-  return `scan:${state.room}:${state.name.toLowerCase()}`;
+  return `scan:${state.room}:${scanPersonName().toLowerCase()}`;
 }
 
 function validScanCache(cache) {
   return (
     cache?.version === SCAN_CACHE_VERSION &&
-    cache.name === state.name &&
+    cache.name === scanPersonName() &&
     cache.room === state.room &&
     Array.isArray(cache.gallery) &&
     cache.gallery.length >= SCAN_MIN_SAMPLES &&
@@ -228,7 +293,7 @@ function saveScanCache() {
   try {
     const cache = {
       version: SCAN_CACHE_VERSION,
-      name: state.name,
+      name: scanPersonName(),
       room: state.room,
       savedAt: Date.now(),
       gallery: state.gallery,
@@ -278,11 +343,41 @@ function setScanGallery(gallery, thumbs) {
   for (const thumb of thumbs) appendScanThumb(thumb);
 }
 
-function renderSavedScan() {
-  const readyToUse = Boolean(state.savedScan) && state.gallery.length === 0;
-  $('saved-scan').hidden = !state.savedScan;
-  $('use-saved-scan-btn').hidden = !readyToUse;
-  $('clear-saved-scan-btn').textContent = readyToUse ? 'Rescan' : 'Clear saved scan';
+function renderSavedScan() {}
+
+function afterNextPaint(callback) {
+  requestAnimationFrame(() => requestAnimationFrame(callback));
+}
+
+function showScanCountdown(seconds) {
+  $('scan-screen').classList.add('countdown');
+  $('scan-countdown').hidden = false;
+  $('scan-countdown').textContent = String(seconds);
+  $('scan-instruction').textContent =
+    `${scanPersonName()}: stand fully visible and face the camera. Start turning slowly when recording begins.`;
+}
+
+function hideScanCountdown() {
+  $('scan-screen').classList.remove('countdown');
+  $('scan-countdown').hidden = true;
+}
+
+function showGameCountdown(label) {
+  $('game-screen').classList.add('countdown');
+  $('game-countdown').hidden = false;
+  $('game-countdown').textContent = label;
+  $('banner-text').textContent = label === 'GO!' ? 'Go!' : 'Get ready. Aim when GO appears.';
+}
+
+function hideGameCountdown() {
+  $('game-screen').classList.remove('countdown');
+  $('game-countdown').hidden = true;
+}
+
+function clearGameCountdown() {
+  state.countdownEndsAt = null;
+  state.lastCountdownBeep = null;
+  hideGameCountdown();
 }
 
 function useSavedScan() {
@@ -606,7 +701,7 @@ function rosterCandidateCount() {
   for (const player of state.roster) {
     if (player.gallery?.length) ids.add(player.id);
   }
-  if (state.gallery.length) ids.add(localSelfId());
+  if (state.localGallery.length) ids.add(localSelfId());
   return ids.size;
 }
 
@@ -704,20 +799,6 @@ async function processRotationVideo(frames) {
   return { samples, usableFrames: candidates.length, totalFrames: frames.length };
 }
 
-$('scan-capture-btn').addEventListener('click', async () => {
-  const step = state.gallery.length;
-  $('scan-capture-btn').disabled = true;
-  $('scan-instruction').textContent = 'Capturing this angle...';
-  const captured = await captureScanSignature();
-  $('scan-capture-btn').disabled = false;
-  if (state.gallery.length !== step) return;
-  if (!captured.signature) {
-    $('scan-instruction').textContent = `${ROTATION_SCAN_PROMPT} (${scanProblemMessage(captured.problem)})`;
-    return;
-  }
-  recordScanCapture(captured);
-});
-
 async function runAutoScan() {
   if (state.autoScanning) return;
   let finalMessage = null;
@@ -726,16 +807,16 @@ async function runAutoScan() {
   state.scanThumbs = [];
   $('scan-thumbs').innerHTML = '';
   updateScanButtons();
-  $('scan-auto-btn').textContent = 'Stop';
 
   try {
     const readyAt = performance.now() + ROTATION_SCAN_COUNTDOWN_MS;
     while (state.autoScanning && performance.now() < readyAt) {
       const seconds = Math.ceil((readyAt - performance.now()) / 1000);
-      $('scan-instruction').textContent = `${ROTATION_SCAN_PROMPT} Starting in ${seconds}...`;
+      showScanCountdown(seconds);
       await wait(120);
     }
     if (!state.autoScanning) return;
+    hideScanCountdown();
 
     const frames = await recordRotationVideo();
     if (!state.autoScanning || !frames) return;
@@ -755,39 +836,206 @@ async function runAutoScan() {
     }
 
     saveScanCache();
-    finalMessage = `Saved ${result.samples.length} angles from ${result.usableFrames} usable rotation frames.`;
+    finalMessage = `Saved scan for ${scanPersonName()} with ${result.samples.length} angles.`;
+    state.autoScanning = false;
+    saveCurrentScan(finalMessage);
   } catch (err) {
     console.error(err);
     finalMessage = `Could not process the rotation video: ${err.message || err}`;
   } finally {
     state.autoScanning = false;
-    $('scan-auto-btn').textContent = 'Scan rotation';
+    hideScanCountdown();
     updateScanButtons();
-    startScanStep();
-    if (finalMessage) $('scan-instruction').textContent = finalMessage;
+    if (state.mode === 'scan') {
+      startScanStep();
+      if (finalMessage) showLobby(finalMessage);
+    }
   }
 }
 
-$('use-saved-scan-btn').addEventListener('click', useSavedScan);
-$('clear-saved-scan-btn').addEventListener('click', clearScanCache);
-$('scan-auto-btn').addEventListener('click', () => {
-  if (state.autoScanning) state.autoScanning = false;
-  else runAutoScan();
-});
+$('launch-btn').addEventListener('click', launchGame);
+$('leave-lobby-btn').addEventListener('click', leaveLobby);
 
-$('scan-join-btn').addEventListener('click', () => {
+function scannedGallery(playerId) {
+  return state.roster.find((player) => player.id === playerId)?.gallery ?? [];
+}
+
+function cloneOwnerId(playerId) {
+  const suffix = ':debug-clone';
+  return typeof playerId === 'string' && playerId.endsWith(suffix) ? playerId.slice(0, -suffix.length) : null;
+}
+
+function playerName(playerId) {
+  return (
+    state.roster.find((player) => player.id === playerId)?.name ??
+    state.game?.players?.find((player) => player.id === playerId)?.name ??
+    'player'
+  );
+}
+
+function hasScan(player) {
+  return Boolean(player.gallery?.length);
+}
+
+function missingScanPlayers() {
+  const players = state.game?.players ?? state.roster;
+  return players.filter((player) => !cloneOwnerId(player.id) && !scannedGallery(player.id).length);
+}
+
+function renderLobby() {
+  $('lobby-room').textContent = `Room ${state.game?.code ?? state.room}`;
+  const list = $('lobby-list');
+  list.innerHTML = '';
+  const players = state.game?.players ?? state.roster;
+  for (const player of players) {
+    const rosterPlayer = state.roster.find((candidate) => candidate.id === player.id) ?? player;
+    const ownerId = cloneOwnerId(player.id);
+    const ownerName = ownerId ? playerName(ownerId) : '';
+    const gallery = ownerId ? scannedGallery(ownerId) : rosterPlayer.gallery;
+    const scanned = Boolean(gallery?.length);
+    const row = document.createElement('div');
+    row.className = `lobby-player${scanned ? ' scanned' : ''}${ownerId ? ' mirrored' : ''}`;
+
+    const details = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'lobby-name';
+    name.textContent = `${player.name}${player.id === state.myId ? ' (you)' : ''}`;
+    const status = document.createElement('div');
+    status.className = 'lobby-state';
+    status.textContent = ownerId
+      ? scanned
+        ? `Mirrors ${ownerName}'s scan`
+        : `Waiting for ${ownerName}'s scan`
+      : scanned
+        ? `${gallery.length} scan samples ready`
+        : 'Not scanned';
+    details.append(name, status);
+
+    row.append(details);
+    if (!ownerId) {
+      const scanBtn = document.createElement('button');
+      scanBtn.type = 'button';
+      scanBtn.textContent = scanned ? 'Rescan' : 'Scan';
+      scanBtn.disabled = state.game?.status === 'countdown' || state.game?.status === 'playing';
+      scanBtn.addEventListener('click', () => beginPlayerScan(rosterPlayer));
+      row.append(scanBtn);
+    }
+    list.append(row);
+  }
+  $('launch-btn').disabled = !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
+}
+
+function showLobby(message = '') {
+  state.mode = 'lobby';
+  state.launchingFromLobby = false;
+  state.events?.close();
+  state.events = null;
+  $('join-screen').hidden = true;
   $('scan-screen').hidden = true;
+  hideScanCountdown();
+  clearGameCountdown();
+  $('game-screen').hidden = true;
+  $('lobby-screen').hidden = false;
+  video.hidden = true;
+  canvas.hidden = true;
+  $('lobby-status').textContent = message;
+  renderLobby();
+}
+
+function leaveLobby() {
+  state.autoScanning = false;
+  state.postProcessingScan = false;
+  state.conn?.close({ notify: true });
+  state.conn = null;
+  state.events?.close();
+  state.events = null;
+  clearActiveLobby();
+  hideScanCountdown();
+  clearGameCountdown();
+  state.launchingFromLobby = false;
+  stopCamera();
+  state.mode = 'join';
+  state.myId = null;
+  state.game = null;
+  state.roster = [];
+  state.gallery = [];
+  state.localGallery = [];
+  state.scanThumbs = [];
+  state.scanTargetId = null;
+  state.scanTargetName = '';
+  $('scan-thumbs').innerHTML = '';
+  $('join-screen').hidden = false;
+  $('lobby-screen').hidden = true;
+  $('scan-screen').hidden = true;
+  $('game-screen').hidden = true;
+  video.hidden = true;
+  canvas.hidden = true;
+  $('join-btn').hidden = false;
+  $('join-btn').disabled = false;
+  setJoinStatus('');
+  showConnectionProblem(null);
+}
+
+function beginPlayerScan(player) {
+  if (!player?.id) return;
+  state.scanTargetId = player.id;
+  state.scanTargetName = player.name || 'Player';
+  state.savedScan = null;
+  state.autoScanning = false;
+  state.postProcessingScan = false;
+  setScanGallery([], []);
+  $('lobby-screen').hidden = true;
+  $('game-screen').hidden = true;
+  $('scan-screen').hidden = false;
+  video.hidden = false;
+  canvas.hidden = false;
+  state.mode = 'scan';
+  keepScreenOn();
+  startScanStep();
+  afterNextPaint(() => {
+    if (state.mode === 'scan' && state.scanTargetId === player.id) runAutoScan();
+  });
+}
+
+function saveCurrentScan(message = `Saved scan for ${scanPersonName()}.`) {
+  if (!state.scanTargetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
+  const gallery = state.gallery;
+  if (state.scanTargetId === localSelfId()) state.localGallery = gallery;
+  send({ type: 'scan', targetId: state.scanTargetId, gallery });
+  saveScanCache();
+  showLobby(message);
+}
+
+function launchGame() {
+  const missing = missingScanPlayers();
+  if (missing.length) {
+    $('lobby-status').textContent = `Scan everyone before launch: ${missing.map((p) => p.name).join(', ')}`;
+    return;
+  }
+  $('lobby-status').textContent = 'Launching...';
+  state.countdownEndsAt = performance.now() + GAME_LAUNCH_COUNTDOWN_MS;
+  state.lastCountdownBeep = null;
+  state.launchingFromLobby = true;
+  enterGame();
+  updateCountdown();
+  send({ type: 'start' });
+}
+
+function enterGame() {
+  $('scan-screen').hidden = true;
+  $('lobby-screen').hidden = true;
   $('game-screen').hidden = false;
+  video.hidden = false;
+  canvas.hidden = false;
   state.mode = 'game';
-  state.scanDone = true;
-  sendJoin(); // if the connection isn't open yet, onOpen sends it
   openGameEvents();
   renderHud();
-});
+}
 
 // ---- Networking ----
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
+const LOBBY_RUNNING_MESSAGE = 'Lobby is already running.';
 
 // Game control/state messages use HTTP polling. Health/death notifications use SSE once the
 // player enters the game screen.
@@ -813,14 +1061,23 @@ function connect() {
 }
 
 function sendJoin() {
-  if (state.scanDone) send({ type: 'join', name: state.name, room: state.room, gallery: state.gallery, debug: DEBUG });
+  if (state.name && state.room) {
+    send({
+      type: 'join',
+      name: state.name,
+      room: state.room,
+      playerId: state.resumePlayerId,
+      gallery: state.localGallery,
+      debug: DEBUG,
+    });
+  }
 }
 
 function matchingRoster() {
   const selfId = localSelfId();
   const roster = state.roster.filter((player) => player.id !== selfId);
-  if (!state.gallery.length) return roster;
-  const self = { id: selfId, name: 'Person', gallery: state.gallery };
+  if (!state.localGallery.length) return roster;
+  const self = { id: selfId, name: 'Person', gallery: state.localGallery };
   return [...roster, self];
 }
 
@@ -832,6 +1089,8 @@ function localSelfId() {
 function showConnectionProblem(text) {
   $('scan-connection').textContent = text ?? '';
   $('scan-connection').hidden = !text || state.mode !== 'scan';
+  $('lobby-connection').textContent = text ?? '';
+  $('lobby-connection').hidden = !text || state.mode !== 'lobby';
   state.bannerOverride = text;
   renderHud();
 }
@@ -869,14 +1128,31 @@ function handleMessage(msg) {
   switch (msg.type) {
     case 'welcome':
       state.myId = msg.id;
+      state.resumePlayerId = msg.id;
       state.bannerOverride = null;
+      saveActiveLobby();
       break;
     case 'error':
+      if (!state.myId && [LOBBY_RUNNING_MESSAGE, 'Round already running'].includes(msg.message)) {
+        showJoinRejected(LOBBY_RUNNING_MESSAGE);
+        return;
+      }
+      if (state.launchingFromLobby) {
+        state.launchingFromLobby = false;
+        showLobby(msg.message);
+        return;
+      }
       state.bannerOverride = msg.message;
+      if (state.mode === 'lobby') $('lobby-status').textContent = msg.message;
       renderHud();
       break;
     case 'roster':
       state.roster = msg.players;
+      state.localGallery = scannedGallery(localSelfId());
+      if (state.mode === 'lobby') renderLobby();
+      break;
+    case 'scanSaved':
+      if (state.mode === 'lobby') $('lobby-status').textContent = 'Scan saved.';
       break;
     case 'state':
       onState(msg.state);
@@ -900,9 +1176,24 @@ function onState(game) {
   // Keep the countdown running into "playing" so "GO!" stays up briefly; updateCountdown clears it.
   if (game.status === 'countdown') state.countdownEndsAt = performance.now() + game.startsInMs;
   else if (game.status !== 'playing') state.countdownEndsAt = null;
-  if (game.status === 'over' && previous?.status !== 'over') {
-    game.winner === state.myId ? sound.win() : sound.lose();
+  if (game.status === 'countdown' || game.status === 'playing') state.launchingFromLobby = false;
+  if (game.status === 'over') {
+    const winner = game.players.find((player) => player.id === game.winner);
+    const message = game.winner === state.myId ? 'You win!' : `${winner?.name ?? 'Someone'} wins!`;
+    if (previous?.status !== 'over') {
+      game.winner === state.myId ? sound.win() : sound.lose();
+    }
+    if (state.mode !== 'lobby') showLobby(message);
+    else {
+      $('lobby-status').textContent ||= message;
+      renderLobby();
+    }
+    return;
   }
+  if ((game.status === 'countdown' || game.status === 'playing') && state.mode === 'lobby') {
+    enterGame();
+  }
+  if (state.mode === 'lobby') renderLobby();
   renderHud();
 }
 
@@ -930,7 +1221,7 @@ function renderHud() {
   const text = $('banner-text');
   const me = game?.players.find((p) => p.id === state.myId);
   const winner = game?.players.find((p) => p.id === game.winner);
-  text.classList.remove('big');
+  if (state.countdownEndsAt === null) hideGameCountdown();
   if (state.bannerOverride) text.textContent = state.bannerOverride;
   else if (!game) text.textContent = 'Connecting…';
   else if (game.status === 'waiting') {
@@ -958,7 +1249,6 @@ function escapeHtml(s) {
 
 function updateCountdown() {
   if (state.countdownEndsAt === null) return;
-  const text = $('banner-text');
   const remaining = state.countdownEndsAt - performance.now();
   const n = Math.ceil(remaining / 1000);
   const label = n > 0 ? String(n) : 'GO!';
@@ -966,8 +1256,7 @@ function updateCountdown() {
     state.lastCountdownBeep = label;
     sound.countdownBeep(n <= 0);
   }
-  text.classList.add('big');
-  text.textContent = label;
+  showGameCountdown(label);
   if (remaining < -700) {
     // The server's "playing" update clears the countdown; this just hides "GO!".
     state.countdownEndsAt = null;
@@ -1122,7 +1411,7 @@ function loop() {
       state.boxes = detectScanPeople(state.detector, state.poseDetector, video, t0);
       inferenceMs = performance.now() - t0;
       frames++;
-    } else {
+    } else if (state.mode === 'game') {
       const now = performance.now();
       if (now - state.lastGameDetectAt >= gameDetectInterval(now)) {
         refreshGameDetection();
@@ -1210,7 +1499,7 @@ function draw() {
   const mapping = videoToScreen(cw, ch);
   if (!mapping) return;
   if (state.mode === 'scan') drawScan(mapping);
-  else drawGame(mapping);
+  else if (state.mode === 'game') drawGame(mapping);
 }
 
 // Scan screen: just highlight whoever would be captured if "Capture" were tapped now.
@@ -1277,3 +1566,57 @@ function save(key, value) {
     // Private mode etc.; remembering the name is only a convenience.
   }
 }
+
+function removeSaved(key) {
+  try {
+    localStorage.removeItem(`laser-tag:${key}`);
+  } catch {
+    // Private mode etc.; this is only a convenience.
+  }
+}
+
+function loadActiveLobby() {
+  try {
+    const lobby = JSON.parse(load('activeLobby'));
+    if (
+      lobby?.version === 1 &&
+      lobby.debug === DEBUG &&
+      typeof lobby.name === 'string' &&
+      typeof lobby.room === 'string' &&
+      typeof lobby.playerId === 'string'
+    ) {
+      return lobby;
+    }
+  } catch {
+    // Ignore corrupt resume data.
+  }
+  return null;
+}
+
+function saveActiveLobby() {
+  if (!state.myId || !state.name || !state.room) return;
+  save(
+    'activeLobby',
+    JSON.stringify({
+      version: 1,
+      name: state.name,
+      room: state.room,
+      playerId: state.myId,
+      debug: DEBUG,
+    }),
+  );
+}
+
+function clearActiveLobby() {
+  removeSaved('activeLobby');
+}
+
+function resumeActiveLobby() {
+  const lobby = loadActiveLobby();
+  if (!lobby) return;
+  $('name').value = lobby.name;
+  $('room').value = lobby.room;
+  enterLobbyFromForm({ resumePlayerId: lobby.playerId, auto: true });
+}
+
+resumeActiveLobby();

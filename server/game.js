@@ -5,7 +5,7 @@ export const MAX_PLAYERS = 8;
 export const MAX_HP = 100;
 export const DAMAGE = { body: 20, head: 50 };
 export const SHOT_COOLDOWN_MS = 350;
-export const COUNTDOWN_MS = 3000;
+export const COUNTDOWN_MS = 5000;
 
 export class Room {
   constructor(code, { now = Date.now } = {}) {
@@ -23,13 +23,42 @@ export class Room {
 
   // gallery is the appearance signature captured during enrolment: an array of
   // { hist, grid } samples, one per angle the player was scanned from.
-  join(id, name, gallery) {
+  join(id, name, gallery = []) {
+    if (this.status === 'countdown' || this.status === 'playing') {
+      return { ok: false, error: 'Lobby is already running.' };
+    }
+    if (this.players.size >= MAX_PLAYERS) return { ok: false, error: 'Room is full' };
+    this.players.set(id, { id, name, gallery: gallery ?? [], hp: MAX_HP, wins: 0, alive: true, lastShotAt: -Infinity });
+    return { ok: true };
+  }
+
+  cloneOwnerId(id) {
+    const suffix = ':debug-clone';
+    return typeof id === 'string' && id.endsWith(suffix) ? id.slice(0, -suffix.length) : null;
+  }
+
+  mirroredGallery(player) {
+    const ownerId = this.cloneOwnerId(player.id);
+    return ownerId && this.players.has(ownerId) ? this.players.get(ownerId).gallery : player.gallery;
+  }
+
+  setGallery(id, gallery) {
     if (this.status === 'countdown' || this.status === 'playing') {
       return { ok: false, error: 'Round already running' };
     }
-    if (this.players.size >= MAX_PLAYERS) return { ok: false, error: 'Room is full' };
-    this.players.set(id, { id, name, gallery, hp: MAX_HP, wins: 0, alive: true, lastShotAt: -Infinity });
+    const player = this.players.get(id);
+    if (!player) return { ok: false, error: 'Unknown player' };
+    if (!gallery?.length) return { ok: false, error: 'Scan did not contain enough samples' };
+    player.gallery = gallery;
+    const ownerId = this.cloneOwnerId(id);
+    if (ownerId && this.players.has(ownerId)) this.players.get(ownerId).gallery = gallery;
+    const cloneId = `${id}:debug-clone`;
+    if (this.players.has(cloneId)) this.players.get(cloneId).gallery = gallery;
     return { ok: true };
+  }
+
+  unscannedPlayers() {
+    return [...this.players.values()].filter((p) => !this.cloneOwnerId(p.id) && !this.mirroredGallery(p)?.length);
   }
 
   resetRound() {
@@ -68,6 +97,11 @@ export class Room {
       return { ok: false, error: 'Round already running' };
     }
     if (this.players.size < MIN_PLAYERS) return { ok: false, error: 'Need at least two players' };
+    const missing = this.unscannedPlayers();
+    if (missing.length) {
+      const names = missing.slice(0, 3).map((p) => p.name).join(', ');
+      return { ok: false, error: `Scan everyone before launch: ${names}${missing.length > 3 ? ` +${missing.length - 3}` : ''}` };
+    }
     for (const p of this.players.values()) {
       p.hp = MAX_HP;
       p.alive = true;
@@ -129,6 +163,6 @@ export class Room {
 
   // Sent only when membership changes: everyone's appearance gallery, for on-device matching.
   roster() {
-    return [...this.players.values()].map(({ id, name, gallery }) => ({ id, name, gallery }));
+    return [...this.players.values()].map((player) => ({ id: player.id, name: player.name, gallery: this.mirroredGallery(player) }));
   }
 }

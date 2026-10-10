@@ -13,7 +13,7 @@ MAX_PLAYERS = 8
 MAX_HP = 100
 DAMAGE = {"body": 20, "head": 50}
 SHOT_COOLDOWN_MS = 350
-COUNTDOWN_MS = 3000
+COUNTDOWN_MS = 5000
 POLL_WAIT_MS = 20_000
 POLL_EXPIRY_MS = 30_000
 MAX_BODY_BYTES = 256 * 1024
@@ -46,13 +46,47 @@ class Room:
     def now(self):
         return time.time() * 1000
 
-    def join(self, player_id, name, gallery):
+    def join(self, player_id, name, gallery=None):
         if self.status in ("countdown", "playing"):
-            return {"ok": False, "error": "Round already running"}
+            return {"ok": False, "error": "Lobby is already running."}
         if len(self.players) >= MAX_PLAYERS:
             return {"ok": False, "error": "Room is full"}
-        self.players[player_id] = Player(player_id, name, gallery)
+        self.players[player_id] = Player(player_id, name, gallery or [])
         return {"ok": True}
+
+    def clone_owner_id(self, player_id):
+        suffix = ":debug-clone"
+        return player_id[:-len(suffix)] if isinstance(player_id, str) and player_id.endswith(suffix) else None
+
+    def mirrored_gallery(self, player):
+        owner_id = self.clone_owner_id(player.id)
+        if owner_id and owner_id in self.players:
+            return self.players[owner_id].gallery
+        return player.gallery
+
+    def set_gallery(self, player_id, gallery):
+        if self.status in ("countdown", "playing"):
+            return {"ok": False, "error": "Round already running"}
+        player = self.players.get(player_id)
+        if not player:
+            return {"ok": False, "error": "Unknown player"}
+        if not gallery:
+            return {"ok": False, "error": "Scan did not contain enough samples"}
+        player.gallery = gallery
+        owner_id = self.clone_owner_id(player_id)
+        if owner_id and owner_id in self.players:
+            self.players[owner_id].gallery = gallery
+        clone_id = f"{player_id}:debug-clone"
+        if clone_id in self.players:
+            self.players[clone_id].gallery = gallery
+        return {"ok": True}
+
+    def unscanned_players(self):
+        return [
+            player
+            for player in self.players.values()
+            if not self.clone_owner_id(player.id) and not self.mirrored_gallery(player)
+        ]
 
     def reset_round(self):
         self.status = "waiting"
@@ -87,6 +121,12 @@ class Room:
             return {"ok": False, "error": "Round already running"}
         if len(self.players) < MIN_PLAYERS:
             return {"ok": False, "error": "Need at least two players"}
+        missing = self.unscanned_players()
+        if missing:
+            names = ", ".join(player.name for player in missing[:3])
+            if len(missing) > 3:
+                names += f" +{len(missing) - 3}"
+            return {"ok": False, "error": f"Scan everyone before launch: {names}"}
         for player in self.players.values():
             player.hp = MAX_HP
             player.alive = True
@@ -160,7 +200,7 @@ class Room:
 
     def roster(self):
         return [
-            {"id": player.id, "name": player.name, "gallery": player.gallery}
+            {"id": player.id, "name": player.name, "gallery": self.mirrored_gallery(player)}
             for player in self.players.values()
         ]
 
@@ -193,6 +233,13 @@ def clean_room_code(code):
 
 def clean_name(name):
     return str(name or "").strip()[:20] or "Player"
+
+
+def clean_player_id(player_id):
+    value = str(player_id or "").strip()
+    if 8 <= len(value) <= 80 and all(char.isalnum() or char in ":-" for char in value):
+        return value
+    return ""
 
 
 def clean_vector(vector, max_len):
@@ -320,6 +367,17 @@ class Session:
             room = rooms.get(code) or Room(code)
             name = clean_name(msg.get("name"))
             gallery = clean_gallery(msg.get("gallery"))
+            requested_id = clean_player_id(msg.get("playerId"))
+            if requested_id and requested_id in room.players:
+                self.id = requested_id
+                self.clone_id = f"{self.id}:debug-clone"
+                rooms[code] = room
+                connections[self.id] = self
+                self.room = room
+                await self.send({"type": "welcome", "id": self.id})
+                await broadcast_state(room)
+                await broadcast_roster(room)
+                return
             if msg.get("debug") is True and len(room.players) > MAX_PLAYERS - 2:
                 await self.send({"type": "error", "message": "Room is full"})
                 return
@@ -346,6 +404,16 @@ class Session:
 
         if msg.get("type") == "shoot":
             await process_hit(self.room, self.id, msg.get("targetId"), msg.get("zone"))
+        elif msg.get("type") == "scan":
+            target_id = msg.get("targetId")
+            gallery = clean_gallery(msg.get("gallery"))
+            result = self.room.set_gallery(target_id, gallery)
+            if not result["ok"]:
+                await self.send({"type": "error", "message": result["error"]})
+                return
+            await self.send({"type": "scanSaved", "targetId": target_id})
+            await broadcast_roster(self.room)
+            await broadcast_state(self.room)
         elif msg.get("type") == "start":
             result = self.room.start()
             if not result["ok"]:
@@ -354,6 +422,8 @@ class Session:
             await broadcast_state(self.room)
 
     async def close(self):
+        if connections.get(self.id) is not self:
+            return
         connections.pop(self.id, None)
         if not self.room:
             return
@@ -397,6 +467,16 @@ async def api_send(request):
         return json_response({"error": "Invalid or oversized JSON body"}, 400)
     poller.last_seen = time.time() * 1000
     await poller.session.receive(msg)
+    return web.Response(status=204, headers={"Cache-Control": "no-store"})
+
+
+async def api_disconnect(request):
+    token = request.query.get("token")
+    poller = pollers.pop(token, None)
+    if poller:
+        if poller.waiter and not poller.waiter.done():
+            poller.waiter.set_result(True)
+        await poller.session.close()
     return web.Response(status=204, headers={"Cache-Control": "no-store"})
 
 
@@ -498,6 +578,7 @@ def create_app():
     app = web.Application()
     app.router.add_post("/api/connect", api_connect)
     app.router.add_post("/api/send", api_send)
+    app.router.add_post("/api/disconnect", api_disconnect)
     app.router.add_get("/api/poll", api_poll)
     app.router.add_post("/api/hit", api_hit)
     app.router.add_get("/events/{room}", events)

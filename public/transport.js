@@ -57,7 +57,13 @@ export function openPolling({ onOpen, onMessage, onClose }) {
         )
         .catch(fail);
     },
-    close() {
+    close({ notify = false } = {}) {
+      if (notify && token) {
+        const path = `/api/disconnect?token=${encodeURIComponent(token)}`;
+        if (!navigator.sendBeacon?.(path, '')) {
+          fetch(path, { method: 'POST', cache: 'no-store', keepalive: true }).catch(() => {});
+        }
+      }
       closed = true;
       aborter.abort();
     },
