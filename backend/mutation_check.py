@@ -132,16 +132,6 @@ mutation(
 )
 
 mutation(
-    "M15", "bug 10: the motion cap", "backend/transport.py",
-    """        motion = [i for i, msg in enumerate(self.queue) if msg.get("type") == "motion"]
-        if len(motion) > MAX_QUEUED_MOTION:
-            dropped = set(motion[: len(motion) - MAX_QUEUED_MOTION])
-            self.queue = [msg for i, msg in enumerate(self.queue) if i not in dropped]""",
-    "",
-    [POLLER + "test_a_flood_of_motion_is_shed_without_ending_the_session"],
-)
-
-mutation(
     "M16", "bug 10: superseded state snapshots are collapsed", "backend/transport.py",
     """        newest_state = next(
             (i for i in range(len(self.queue) - 1, -1, -1) if self.queue[i].get("type") == "state"),

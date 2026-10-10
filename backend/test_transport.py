@@ -121,28 +121,11 @@ class PollerMailboxTests(TransportTestCase):
         self.assertEqual(await asyncio.wait_for(patient, 1), [{"type": "ping"}],
                          "the still-parked poll must still be reachable")
 
-    async def test_a_flood_of_motion_is_shed_without_ending_the_session(self):
-        # Motion is a best-effort relay and matching.js only correlates the last
-        # six seconds, so the oldest are the ones to lose - and a phone must never
-        # lose its seat over motion alone.
-        poller = self.mailbox()
-        pushed = 1280
-        for i in range(pushed):
-            self.assertTrue(await poller.push({"type": "motion", "from": "x", "s": [[i, 1.0]]}))
-
-        self.assertEqual(poller.evicted, "", "motion alone must not evict a mailbox")
-        self.assertLess(len(poller.queue), pushed // 4, "the backlog should be shed, not kept")
-        self.assertEqual(poller.queue[-1]["s"][0][0], pushed - 1, "the newest sample must survive")
-        self.assertEqual(poller.queue[0]["s"][0][0], pushed - len(poller.queue),
-                         "and it is the oldest that go")
-
     async def test_only_the_newest_scoreboard_is_kept_under_pressure(self):
         # A `state` is the complete scoreboard and the client just replaces what it
         # holds, so superseded ones are not worth a phone's wifi - and handing over
         # only the newest makes the countdown it carries less stale, not more.
         poller = self.mailbox()
-        for i in range(transport.MAX_QUEUED_MOTION + 10):
-            await poller.push({"type": "motion", "from": "x", "s": [[i, 1.0]]})
         for i in range(6):
             await poller.push({"type": "state", "state": {"tick": i}})
 
@@ -152,7 +135,7 @@ class PollerMailboxTests(TransportTestCase):
     async def test_a_backlog_of_undroppable_messages_evicts_the_mailbox(self):
         # Nothing here can be dropped without lying to the phone, so the mailbox
         # is ended rather than trimmed. Reaching this takes hundreds of messages
-        # that are not motion and not state.
+        # that are not superseded state.
         poller = self.mailbox()
         accepted = 0
         for i in range(transport.MAX_QUEUED_MESSAGES + 10):
@@ -374,7 +357,7 @@ class CountdownTimerTests(TransportTestCase):
 
 class SeatedWriteAccessTests(TransportTestCase):
     async def test_a_session_whose_player_was_removed_cannot_write_to_the_room(self):
-        # receive() gated scan/motion/start on holding a room, never on still
+        # receive() gated scan/start on holding a room, never on still
         # being a player in it. A gallery write fans out to every phone.
         room = self.room("seatless")
         alice, _ = self.seat(room, "Alice")

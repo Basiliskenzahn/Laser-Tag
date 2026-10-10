@@ -86,7 +86,7 @@ async def api_connect(request):
 
 
 async def api_send(request):
-    """One client message (join / scan / motion / start) for a session.
+    """One client message (join / scan / start) for a session.
 
     Shots never arrive here: the client posts them to /api/hit directly (see
     api_hit), which is why that's not in the list above.

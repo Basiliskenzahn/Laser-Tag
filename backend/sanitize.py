@@ -28,9 +28,6 @@ GALLERY_FIELDS = (
 #: An enrolment scan is one sample per angle; more than this is junk or abuse.
 MAX_GALLERY_SAMPLES = 24
 
-MAX_MOTION_SAMPLES = 32  # per relayed message (~3 s at 10 Hz)
-
-
 def clean_room_code(code):
     """Lowercase, alphanumeric-and-dash, max 16 chars, never empty."""
     cleaned = "".join(ch for ch in str(code or "demo").lower() if ch.isalnum() or ch == "-")[:16]
@@ -92,29 +89,4 @@ def clean_gallery(gallery):
             if required or vector:
                 item[name] = vector
         clean.append(item)
-    return clean
-
-
-def clean_motion_samples(samples):
-    """``[[t_ms, activity], ...]`` from a phone's motion sensor: finite numbers, capped length.
-
-    The cap keeps the **newest** samples, not the oldest. A phone normally sends
-    ~5 samples every 500 ms, but one that was backgrounded, throttled or briefly
-    disconnected flushes its whole backlog at once; truncating from the front
-    would then relay only the stale head of that backlog and drop exactly the
-    recent samples the matching needs, since ``motion/matching.js`` only
-    correlates the last 6 seconds.
-    """
-    if not isinstance(samples, list):
-        return []
-    clean = []
-    for item in samples[-MAX_MOTION_SAMPLES:]:
-        if not isinstance(item, list) or len(item) < 2:
-            continue
-        try:
-            t, v = float(item[0]), float(item[1])
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(t) and math.isfinite(v) and v >= 0:
-            clean.append([int(t), round(v, 2)])
     return clean
