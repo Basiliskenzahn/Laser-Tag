@@ -38,12 +38,12 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
-"fps" here is detections per second, not screen frame rate. In the game, detection deliberately runs only every 120–180 ms, so 5–8 is normal.
+"fps" here is detections per second, not screen frame rate. In the game, detection runs every 80–120 ms, and less often if a phone can't keep up, so 7–12 is normal; boxes are moved along between detections.
 
 Use this to tune identification:
 
 - **No `+ReID` on line 1:** the ONNX model didn't load, and matching is running on the much weaker colour signature. Check the console and that `/vendor/ort/` and `/models/osnet_x0_25_msmt17.onnx` are being served.
-- **`reid` on line 3:** scores are OSNet cosine similarities against a 0.72 accept threshold, and the `u`/`l`/`g`/`s`/`e` numbers are informational only — they're computed but not mixed into the score. Without the marker, the score is the colour blend and those parts do count.
+- **`reid` on line 3:** scores are OSNet cosine similarities against the accept threshold shown on line 1 (`reid ≥ 0.76` by default, `?reid=` to change it); each box also shows its best match and score in brackets, and the `u`/`l`/`g`/`s`/`e` numbers are informational only — they're computed but not mixed into the score. Without the marker, the score is the colour blend and those parts do count.
 - **Rejected for `lower`:** the player's lower body doesn't match the scan (different lighting? jacket on?). For `margin`, two candidates look too similar.
 - **`vetoed` or `unconfirmed` in the `Motion` line:** appearance picked someone whose phone isn't moving with them. A real player standing still gives `phone not moving` (which is `unknown`, not a veto); a steady `inconsistent` with a low correlation usually means it's a bystander who looks like that player.
 

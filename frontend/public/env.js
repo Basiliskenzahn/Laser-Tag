@@ -15,6 +15,8 @@ const motionMode = params.get('motion');
 export const MOTION_ENABLED = motionMode === 'on' || motionMode === 'strict';
 export const REQUIRE_MOTION = motionMode === 'strict';
 export const MOTION_OFF = !MOTION_ENABLED;
+// ?reid=0.70: the re-identification accept threshold, for tuning in the field (identify.js).
+export const REID_THRESHOLD = params.has('reid') ? Number(params.get('reid')) : null;
 
 export const video = $('video');
 export const canvas = $('overlay');

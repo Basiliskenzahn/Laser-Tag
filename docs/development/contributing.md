@@ -91,7 +91,7 @@ If you add, remove or resize a signature field in `identify.js`:
 - Model files live in `frontend/public/models/` and are referenced by URL constants at the top of `detector.js` (MediaPipe models) and `reid.js` (the OSNet `.onnx`).
 - `@mediapipe/tasks-vision` and `onnxruntime-web` are pinned in `package.json`. After bumping either, run `npm install` to update `package-lock.json`. `frontend/Dockerfile` copies both packages out of `node_modules` (to `/vendor/tasks-vision/` and `/vendor/ort/`) in its build stage.
 - New file types need a MIME type in `frontend/common-locations.conf`. (`.onnx` is currently served as `application/octet-stream` by the fallback, which browsers are happy with.) New files anywhere under `frontend/public/` don't need any other Docker change - `frontend/Dockerfile` copies the whole directory.
-- Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring `REID_MATCH_THRESHOLD` — a wrong pre-processing step degrades accuracy silently rather than failing.
+- Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring the re-identification threshold (`REID_DEFAULT_THRESHOLD` in `identify.js`) — a wrong pre-processing step degrades accuracy silently rather than failing.
 
 ## Known issues and loose ends
 

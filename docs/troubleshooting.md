@@ -65,7 +65,7 @@ By default, targeting uses appearance only. Rescan the affected players in the p
 A player becomes targetable after they've been recognised steadily for about 0.35 seconds with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit. If you enabled motion with `?motion=on` or `?motion=strict`, a name can also be blocked when motion vetoes it.
 
 **It's slow or laggy.**
-Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 120–180 ms, so some delay between movement and the outline is normal.
+Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 80–120 ms (less often if the phone can't keep up); between detections the outlines are moved along with each person's recent motion.
 
 **No vibration when hit on iPhone.**
 Safari doesn't support the vibration API. iPhones get the red flash and sound only.

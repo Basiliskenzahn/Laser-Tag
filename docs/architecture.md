@@ -55,7 +55,7 @@ sequenceDiagram
   participant V as Victim's phone
   participant O as Other phones
 
-  Note over S: Every 120–180 ms: detect people,<br/>update tracks, identify them
+  Note over S: Every 80–120 ms: detect people,<br/>update tracks, identify them
   S->>S: FIRE: refresh detection if stale,<br/>hit-test the crosshair
   S->>B: POST /api/hit {room, shooterId, targetId, zone}
   B->>B: Room.shoot(): checks, cooldown, damage
