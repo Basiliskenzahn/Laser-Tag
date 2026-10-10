@@ -74,8 +74,11 @@ const EMBED_PRECISION = 10_000;
 // Enrolment ("scan") is a cooperative, posed shot, so it can afford slightly looser limits than
 // live matching, which has to cope with whatever the game gives it.
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
-const MIN_MATCH_HEIGHT_RATIO = 0.18;
-const MIN_BOX_WIDTH_RATIO = 0.035;
+// In game this is the range limit: a typical phone camera (~65° across the long side) sees a
+// 1.75 m person at about 7% of frame height from 20 m away, and at ~0.02 of the width when
+// held sideways.
+const MIN_MATCH_HEIGHT_RATIO = 0.065;
+const MIN_BOX_WIDTH_RATIO = 0.018;
 const MIN_SCAN_BOX_WIDTH_RATIO = 0.025;
 const MIN_ASPECT = 0.58;
 const MAX_ASPECT = 6.5;
