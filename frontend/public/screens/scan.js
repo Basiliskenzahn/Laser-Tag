@@ -614,8 +614,23 @@ async function processRotationVideo(frames) {
   }
 }
 
+// Each run of a scan gets its own token, and every await inside it re-checks that the token is
+// still the current one. `state.autoScanning` cannot do this job alone: it means "a scan is
+// running", and both cancelScan() and beginPlayerScan() clear it - so a cancelled run parked on an
+// await would see it set back to *true* by the next scan, pass its own liveness check, and carry on
+// to completion under whoever is being scanned now. That ended with one player's gallery being sent
+// under another player's id (and cached there), which mislabels them for the whole round. The
+// window used to be the ~120 ms of a countdown tick; waiting for the optional models made it up to
+// SCAN_MODEL_WAIT_MS, so the token is no longer optional.
+let scanRun = 0;
+
 async function runAutoScan() {
   if (state.autoScanning) return;
+  const run = ++scanRun;
+  // Captured now, not read at save time: the player being scanned can change under a stale run.
+  const targetId = state.scanTargetId;
+  // This run is still the live one, still wanted, and still on the scan screen.
+  const live = () => run === scanRun && state.autoScanning && state.mode === 'scan';
   let finalMessage = null;
   state.autoScanning = true;
   state.gallery = [];
@@ -635,27 +650,27 @@ async function runAutoScan() {
     if (pending.length) {
       $('scan-instruction').textContent = `Finishing ${pending.join(' and ')} load...`;
       await whenScanModelsReady();
-      if (!state.autoScanning || state.mode !== 'scan') return;
+      if (!live()) return;
       startScanStep();
     }
 
     const readyAt = performance.now() + ROTATION_SCAN_COUNTDOWN_MS;
-    while (state.autoScanning && performance.now() < readyAt) {
+    while (live() && performance.now() < readyAt) {
       const seconds = Math.ceil((readyAt - performance.now()) / 1000);
       showScanCountdown(seconds);
       await wait(120);
     }
-    if (!state.autoScanning) return;
+    if (!live()) return;
     hideScanCountdown();
 
     const recordStartedAt = performance.now();
     const frames = await recordRotationVideo();
     scanCost.recordMs = performance.now() - recordStartedAt;
-    if (!state.autoScanning || !frames) return;
+    if (!live() || !frames) return;
 
     $('scan-instruction').textContent = `Recorded ${frames.length} frames. Processing usable angles...`;
     const result = await processRotationVideo(frames);
-    if (!state.autoScanning || !result) return;
+    if (!live() || !result) return;
 
     const signatures = result.samples.map((sample) => sample.signature);
     const thumbs = result.samples.map((sample) => sample.thumb);
@@ -670,18 +685,22 @@ async function runAutoScan() {
     saveScanCache();
     finalMessage = `Saved scan for ${scanPersonName()} with ${result.samples.length} angles.`;
     state.autoScanning = false;
-    saveCurrentScan(finalMessage);
+    saveCurrentScan(targetId, finalMessage);
   } catch (err) {
     console.error(err);
     finalMessage = `Could not process the rotation video: ${err.message || err}`;
   } finally {
-    state.autoScanning = false;
-    state.recordingScan = false;
-    hideScanCountdown();
-    if (DEBUG && scanCost.frames) console.debug(scanCostLine());
-    if (state.mode === 'scan') {
-      startScanStep();
-      if (finalMessage) showLobby(finalMessage);
+    // Only the live run owns the shared flags and the screen. A superseded run unwinding here
+    // would otherwise cancel the scan that replaced it and overwrite its instruction text.
+    if (run === scanRun) {
+      state.autoScanning = false;
+      state.recordingScan = false;
+      hideScanCountdown();
+      if (DEBUG && scanCost.frames) console.debug(scanCostLine());
+      if (state.mode === 'scan') {
+        startScanStep();
+        if (finalMessage) showLobby(finalMessage);
+      }
     }
   }
 }
@@ -707,24 +726,29 @@ export function beginPlayerScan(player) {
   });
 }
 
-// recordRotationVideo/processRotationVideo/attachRotationSampleReid/runAutoScan all check
-// state.autoScanning on every loop iteration and bail cleanly when it goes false, so cancelling
-// is just flipping that flag and leaving the scan screen - their own `finally` blocks notice
+// recordRotationVideo/processRotationVideo/attachRotationSampleReid all check state.autoScanning
+// on every loop iteration and bail cleanly when it goes false; their own `finally` blocks notice
 // state.mode is no longer 'scan' and skip touching the UI again. Every one of them returns null
 // rather than a partial result, and runAutoScan only touches the gallery once it has a non-null
 // result, so a cancel can never leave a half-built gallery behind.
+//
+// Clearing the flag is necessary but NOT sufficient, which is why cancelScan also retires the run
+// token (see runAutoScan): the flag says "a scan is running", so the next scan setting it back to
+// true would let a cancelled run that is parked on an await resume and finish under the new
+// target. The flag handles stopping the work; the token handles whose work it is.
 export function cancelScan() {
+  scanRun++; // retire whatever is in flight: a parked run must not resume later
   state.autoScanning = false;
   state.recordingScan = false;
   state.postProcessingScan = false;
   showLobby('Scan cancelled.');
 }
 
-function saveCurrentScan(message = `Saved scan for ${scanPersonName()}.`) {
-  if (!state.scanTargetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
+function saveCurrentScan(targetId, message = `Saved scan for ${scanPersonName()}.`) {
+  if (!targetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
   const gallery = state.gallery;
-  if (state.scanTargetId === localSelfId()) state.localGallery = gallery;
-  send({ type: 'scan', targetId: state.scanTargetId, gallery });
+  if (targetId === localSelfId()) state.localGallery = gallery;
+  send({ type: 'scan', targetId, gallery });
   saveScanCache();
   showLobby(message);
 }

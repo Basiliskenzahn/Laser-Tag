@@ -115,10 +115,18 @@ test('embeddings overlap instead of running one at a time', async () => {
   // Let a batch be dispatched, then check it really is a batch. The serial version this replaced
   // could never have more than one embedding outstanding at a time, so this is the assertion that
   // fails if someone puts the per-frame `await` back in front of each embed.
+  //
+  // The expected width is written out as a literal on purpose. Comparing against the imported
+  // REID_DISPATCH_BATCH made this `peak >= peak`, so setting the constant to 1 - full
+  // re-serialisation, the exact regression this test names - left the suite green. An expectation
+  // derived from the value under test asserts nothing. Change the 4 here deliberately if the
+  // batch width is ever retuned.
+  const EXPECTED_BATCH = 4;
+  assert.equal(REID_DISPATCH_BATCH, EXPECTED_BATCH, 'batch width changed; retune this test on purpose');
   await nextTick();
   assert.ok(
-    peak >= REID_DISPATCH_BATCH,
-    `expected at least ${REID_DISPATCH_BATCH} embeddings in flight at once, saw ${peak}`,
+    peak >= EXPECTED_BATCH,
+    `expected at least ${EXPECTED_BATCH} embeddings in flight at once, saw ${peak}`,
   );
 
   // Drain, letting each newly dispatched batch arrive.
@@ -164,7 +172,7 @@ test('a cancel stops dispatching further batches', async () => {
     },
     cancelled: () => cancelled,
   });
-  assert.equal(embeds, REID_DISPATCH_BATCH, 'only the batch already in flight was paid for');
+  assert.equal(embeds, 4, 'only the batch already in flight was paid for'); // literal, not the constant - see above
 });
 
 test('a failed inference fails the whole scan rather than a gallery with holes', async () => {

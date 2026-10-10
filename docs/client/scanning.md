@@ -193,9 +193,26 @@ See [Identification → Signatures](identification.md#signatures) for how each v
 
 ## Cancelling
 
-The **✕** button cancels at any point — countdown, recording, per-frame processing or the embedding pass. It sets `state.autoScanning = false` and returns to the lobby with *"Scan cancelled."*
+The **✕** button cancels at any point — countdown, recording, per-frame processing or the embedding pass. It sets `state.autoScanning = false`, **retires the run token**, and returns to the lobby with *"Scan cancelled."*
 
 Every loop in the scan path checks that flag on each iteration and returns `null` rather than a partial result, and `runAutoScan()` only touches `state.gallery` once it holds a non-null result. So a cancel can never leave a half-built gallery behind: nothing is sent, nothing is cached, and the player keeps whichever gallery they already had. The `finally` blocks notice `state.mode` is no longer `'scan'` and leave the lobby's message alone.
+
+### Why the flag alone is not enough
+
+`state.autoScanning` means "a scan is running", and both `cancelScan()` and `beginPlayerScan()` clear
+it. So the flag cannot tell a *cancelled* run from a *superseded* one: a run parked on an await —
+`whenScanModelsReady()` can hold for up to `SCAN_MODEL_WAIT_MS` — would see the flag set back to
+`true` by the next scan, pass its own liveness check, and run to completion under whoever is being
+scanned **now**. Because `saveCurrentScan` used to read `state.scanTargetId` at save time, that
+finished as one player's gallery sent and cached under another player's id, mislabelling them for
+the rest of the round. Its `finally` would also have cleared the flag out from under the scan that
+replaced it, silently killing that one too.
+
+So each run takes a token (`scanRun`), captures its `targetId` up front, and re-checks
+`run === scanRun` after every await; `cancelScan()` bumps the token so a parked run dies even when
+no rescan follows, and the `finally` touches the shared flags only if its run is still the live one.
+`test/scan-run-token.test.js` drives the cancel-then-rescan sequence and asserts the gallery is sent
+under the id the run started with.
 
 Up to `REID_DISPATCH_BATCH` (4) in-flight OSNet inferences may still finish after a cancel — they are awaited, not abortable — but their results are discarded and no further batch is dispatched. The lobby appears immediately regardless: `cancelScan()` changes the screen synchronously, and the draining happens behind it.
 
