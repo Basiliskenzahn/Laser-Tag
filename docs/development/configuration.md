@@ -19,13 +19,8 @@ Read once at startup in `frontend/public/env.js`:
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
 | `?reid=<0-1>` | Overrides the re-identification accept threshold for this device (`REID_THRESHOLD` in `env.js`, applied by `setReidThreshold()` in `identify.js`). Defaults to `REID_DEFAULT_THRESHOLD` (0.65). See the re-identification table below. |
-| `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
-| `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
-| `?motion=off` or no motion parameter | The default. `identity.js` installs the appearance-only provider instead, so there is no motion permission prompt, no sample sharing and no motion fusion: targeting uses appearance identity + `isStableTarget()` only. |
-| `?zoom=<1-10>` or `?zoom=on` | Magnifies the camera sensor **during gameplay only**, so far-away players are big enough to detect and recognise (`CAMERA_ZOOM` in `env.js`, applied by `camera-zoom.js`). `?zoom=on` means 2×. See [Camera zoom](#camera-zoom) below. |
-| `?zoom=off` or no zoom parameter | The default: no zoom, and the camera track is never touched. |
 
-Any value that cannot be read — `?zoom=abc`, `?zoom=0.5`, `?zoom=99` — is treated as off, so a typo in the address bar cannot stop the camera.
+Targeting uses appearance identity + `isStableTarget()` (`frontend/public/target.js`) and nothing else. The `?motion=` phone-motion cross-check and the `?zoom=` camera-sensor zoom were both removed — see [BRANCH.md](../../BRANCH.md).
 
 ## Game rules
 
@@ -104,31 +99,9 @@ Model options that aren't separate constants but are worth knowing about, in `de
 | `WARMUP_TIMESTAMP_MS` | 1 | Timestamp handed to the MediaPipe tasks. Must stay **below** every timestamp the game can pass, since VIDEO mode requires strictly increasing values per task; every real call derives one from `performance.now()`, already in the thousands by the time a model loads. Raising this is how you'd silently break detection later. |
 | `WARMUP_REGION` | 0.3–0.7 × 0.08–0.95 | Where a person roughly stands in frame, so the embedder and re-identification warm their crop paths instead of being handed the whole frame |
 
-### Camera zoom
-
-`frontend/public/camera-zoom.js`, enabled with `?zoom=` (off by default).
-
-Players beyond roughly 10–12 m are detected rarely and identified almost never, for two separate reasons: the object detector sees every frame at 320×320, so a person that far away is a few dozen pixels tall in the tensor; and OSNet's input is 128×256, so a distant player's crop is upscaled about 5× and the embedding is computed mostly from interpolation. Asking the `MediaStreamTrack` to zoom addresses both at once, and is the only option here with **no per-frame cost** — the frame arrives already magnified at the same resolution, so no stage downstream does any extra work.
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `ZOOM_WHEN_ON` | 2 | What `?zoom=on` means. Zoom narrows the field of view, which makes a target harder to find and aiming twitchier, so this stays conservative. |
-| `ZOOM_PARAM_MAX` | 10 | Sanity bound on `?zoom=`, before the device's own range is consulted. Beyond this is a typo, not an intent. |
-| `ZOOM_POLL_MS` (`camera.js`) | 250 | How often the screen the player is on is compared with the zoom the track is at. A string comparison off the render path, not per-frame work. |
-
-Three properties are deliberate and worth not undoing:
-
-- **Enrolment always runs at 1×, whatever `?zoom=` says.** The scan builds the gallery every phone in the room matches against for the whole round, so a gallery captured zoomed and matched un-zoomed is a domain mismatch that would *cost* accuracy rather than buy it. "Use the same zoom for both" is not actually available: galleries are shared between phones, and each phone has its own zoom capability and its own URL, so the scanning phone's zoom is not the matching phone's. 1× is the one level they all agree on. Zooming the scan would also narrow its field of view, which its own gates (`MIN_SCAN_HEIGHT_RATIO`, the aspect bounds, `boxScanQuality`'s centring term) assume is wide enough for a whole person at arm's length. `SCAN_CACHE_VERSION` is therefore unchanged — what the scan captures is exactly what it captured before.
-- **An unsupported device is unaffected.** `getCapabilities` may be absent, may not list `zoom`, and `applyConstraints` may reject; zoom was missing from iOS Safari for most of its life. Every probe is wrapped and nothing throws, the constraint goes inside `advanced` so it is best-effort rather than a required constraint that would fail the whole call, and a device that answers "unsupported" is asked once and never again. With zoom off the track is not touched at all.
-- **Zoom cannot delay the lobby.** It is applied with a follow-up `applyConstraints` after the stream exists — not in the `getUserMedia` constraints, where a `zoom` entry would be a *required* constraint on a property most phones lack, i.e. an `OverconstrainedError` and a camera that never starts. `startCamera()` does not await it, so it never reaches `startup.js`'s camera promise, and nothing is sent while the lobby or scan screen is up, so it cannot renegotiate the stream underneath a model warm-up frame either.
-
-What the sensor actually did is read back from `track.getSettings().zoom` rather than echoed from the request, and appended to the delegate string the `?debug` overlay already shows, so the field can tell `GPU+ReID zoom 2x` from `GPU+ReID zoom n/a`.
-
-Tuning it in the field: start at `?zoom=2`. If players are found but lost as soon as they move off centre, the field of view is too narrow — drop to `1.5` or off. If far players are outlined but rarely shootable, that is recognition rather than detection, so a slightly lower `?reid=` helps more than more zoom. Every phone in a game should use the same value.
-
 ## Targeting
 
-`frontend/public/appearance-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
+`frontend/public/target.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot, and are the main guard against crediting the wrong player.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -138,7 +111,7 @@ Tuning it in the field: start at `?zoom=2`. If players are found but lost as soo
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
 | `reidTargetMinScore()` (identify.js) | threshold | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
 
-All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own". A track whose motion is confirmed by the target's own phone is targetable without it — only liveness (`LIVE_TRACK_MS`) still applies. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
+All of these go into one flag, `isStableTarget()`, which is the classifier's "confident enough to shoot on". `targetPlayerId()` wraps it with the self-exclusion and is what the game loop actually asks.
 
 ## Scanning
 
