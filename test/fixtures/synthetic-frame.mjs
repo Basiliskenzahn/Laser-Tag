@@ -44,17 +44,48 @@ export const BACKGROUND = [38, 40, 44];
 
 // A frame holding `people`: `[{ box, paint(u, v) }]`, where u/v are fractions across and down that
 // person's own box. First match wins, so earlier people stand in front of later ones.
-export function frame(people, { width = 640, height = 480, background = BACKGROUND } = {}) {
+//
+// `sensorGrid` (off by default, so every existing caller is byte-for-byte unchanged) snaps reads
+// to the pixel lattice - see sensorGrid() below for why that matters and what it still does not
+// model.
+export function frame(people, { width = 640, height = 480, background = BACKGROUND, sensorGrid = false } = {}) {
+  const paintAt = (x, y) => {
+    for (const { box, paint } of people) {
+      if (x >= box.x && x < box.x + box.w && y >= box.y && y < box.y + box.h) {
+        return paint((x - box.x) / box.w, (y - box.y) / box.h);
+      }
+    }
+    return background;
+  };
+  if (!sensorGrid) return { videoWidth: width, videoHeight: height, pixel: paintAt };
+
+  // Without this, `paint` is an analytic function of position: it answers at infinite resolution,
+  // so a box 20 px wide looks exactly as detailed as one 300 px wide. `extractSignature` reads a
+  // box back through an 18x24 (and 6x8) canvas, so a distant box is *upsampled* into the feature
+  // canvas, and this fixture had been quietly inventing the detail that upsampling cannot recover.
+  // Worse, `noise` was being drawn fresh at every sampled point, so a small box got as many
+  // independent noise samples as a large one and averaged them away just as well.
+  //
+  // Snapping each read to the integer pixel it came from, and remembering what that pixel came
+  // out as, fixes both: a box only ever has as many distinct values as it has sensor pixels, and
+  // its noise is stuck to them. What it still does NOT model: lens blur, motion blur, atmospheric
+  // haze, JPEG/ISP artefacts, or the detector box getting sloppier at range. Nearest-neighbour
+  // replication is also harsher in the high frequencies than a real bilinear upsample. So this is
+  // a floor on how much detail a distant box loses, not an estimate of it.
+  const cache = new Map();
   return {
     videoWidth: width,
     videoHeight: height,
     pixel(x, y) {
-      for (const { box, paint } of people) {
-        if (x >= box.x && x < box.x + box.w && y >= box.y && y < box.y + box.h) {
-          return paint((x - box.x) / box.w, (y - box.y) / box.h);
-        }
+      const px = Math.floor(x);
+      const py = Math.floor(y);
+      const key = py * width + px;
+      let value = cache.get(key);
+      if (value === undefined) {
+        value = paintAt(px + 0.5, py + 0.5);
+        cache.set(key, value);
       }
-      return background;
+      return value;
     },
   };
 }
