@@ -35,6 +35,12 @@ class Player:
 
     ``last_shot_at`` starts at negative infinity so that a player's very first
     shot is never held back by the cooldown check.
+
+    ``gallery_rev`` counts how many times the gallery has been replaced. Nothing
+    in the game rules reads it; it exists so the transport can tell whether a
+    phone it already talked to still holds the current scan, and therefore skip
+    re-sending a payload that phone already has (see
+    :func:`backend.transport.roster_for`).
     """
 
     id: str
@@ -44,6 +50,7 @@ class Player:
     wins: int = 0
     alive: bool = True
     last_shot_at: float = float("-inf")
+    gallery_rev: int = 0
 
 
 class Room:
@@ -111,6 +118,19 @@ class Room:
             return self.players[owner_id].gallery
         return player.gallery
 
+    def mirrored_gallery_rev(self, player):
+        """The revision of whatever :meth:`mirrored_gallery` would return.
+
+        Resolved through the owner for exactly the same reason the gallery is, so
+        the two cannot disagree about *when* a clone's scan changed: a borrowed
+        gallery changes precisely when its owner's does. Callers only ever
+        compare this for equality, so the absolute number means nothing.
+        """
+        owner_id = self.clone_owner_id(player.id)
+        if owner_id and owner_id in self.players:
+            return self.players[owner_id].gallery_rev
+        return player.gallery_rev
+
     def set_gallery(self, player_id, gallery):
         """Store a scan of ``player_id``, keeping any debug clone in sync.
 
@@ -124,14 +144,24 @@ class Room:
             return {"ok": False, "error": "Unknown player"}
         if not gallery:
             return {"ok": False, "error": "Scan did not contain enough samples"}
-        player.gallery = gallery
+        self._store_gallery(player, gallery)
         owner_id = self.clone_owner_id(player_id)
         if owner_id and owner_id in self.players:
-            self.players[owner_id].gallery = gallery
+            self._store_gallery(self.players[owner_id], gallery)
         clone_id = f"{player_id}{CLONE_SUFFIX}"
         if clone_id in self.players:
-            self.players[clone_id].gallery = gallery
+            self._store_gallery(self.players[clone_id], gallery)
         return {"ok": True}
+
+    def _store_gallery(self, player, gallery):
+        """Replace one player's gallery and mark it as a new revision.
+
+        Every write goes through here so no path can change a gallery without
+        the revision moving with it - a phone that was told revision *n* would
+        otherwise keep matching against a scan that has since been replaced.
+        """
+        player.gallery = gallery
+        player.gallery_rev += 1
 
     def unscanned_players(self):
         """Real players nobody has scanned yet - clones are excluded on purpose,
@@ -261,13 +291,27 @@ class Room:
             ],
         }
 
+    def roster_entry(self, player, gallery=True):
+        """One line of the roster, with the heavy part optional.
+
+        An entry without a ``gallery`` key means "whatever you already have for
+        this player is still current" - the transport leaves it out for phones it
+        has already sent that exact scan to. The identity half (``id``, ``name``)
+        is always present, because a phone has to be able to tell who is in the
+        room from the roster alone.
+        """
+        entry = {"id": player.id, "name": player.name}
+        if gallery:
+            entry["gallery"] = self.mirrored_gallery(player)
+        return entry
+
     def roster(self):
         """Who to look for, with the appearance signatures the phones match on.
 
-        Much heavier than :meth:`snapshot`, so it is only sent when enrolment
-        changes rather than on every state tick.
+        Much heavier than :meth:`snapshot` - one full gallery is roughly 190 KB
+        of JSON - so it is only sent when enrolment changes rather than on every
+        state tick, and even then only to a phone that does not already have it
+        (:func:`backend.transport.roster_for`). This method is the complete
+        picture, which is what a freshly connected phone needs.
         """
-        return [
-            {"id": player.id, "name": player.name, "gallery": self.mirrored_gallery(player)}
-            for player in self.players.values()
-        ]
+        return [self.roster_entry(player) for player in self.players.values()]

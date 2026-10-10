@@ -24,6 +24,29 @@ from backend.app import create_app
 
 GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 
+#: Field widths one enrolment sample actually arrives with, per
+#: docs/server/protocol.md. Most tests here only care that a gallery is present,
+#: but the fan-out tests measure bytes, and a two-number stand-in would make a
+#: byte assertion meaningless.
+SAMPLE_WIDTHS = {"hist": 64, "grid": 192, "lower": 64, "shape": 2, "embed": 256, "reid": 512}
+
+
+def full_gallery(seed):
+    """A realistically sized 24-sample enrolment scan (~190 KB of JSON)."""
+    return [
+        {
+            name: [round(((seed + angle * 7 + i * 13) % 2000) / 1000 - 1, 4) for i in range(width)]
+            for name, width in SAMPLE_WIDTHS.items()
+        }
+        for angle in range(24)
+    ]
+
+
+FULL_GALLERY = full_gallery(1)
+RESCAN_GALLERY = full_gallery(2)
+#: One gallery's cost on the wire, the unit the fan-out assertions are written in.
+GALLERY_BYTES = len(json.dumps(FULL_GALLERY, separators=(",", ":")))
+
 
 def unique_room(label):
     return f"{label}-{uuid.uuid4().hex[:8]}"
@@ -35,8 +58,44 @@ def last_state(messages):
 
 
 def last_roster(messages):
-    rosters = [m for m in messages if m.get("type") == "roster"]
-    return rosters[-1]["players"] if rosters else None
+    """The roster a phone would be *holding* after receiving these messages.
+
+    The server sends the roster as a delta (``transport.roster_for``): membership
+    is complete in every message, but a player's ``gallery`` is attached only
+    when it changed for this connection. So the last message on its own is not
+    the roster - this merges them exactly as the client's ``mergeRoster()`` in
+    ``frontend/public/roster.js`` does, which keeps the assertions below about
+    what a phone ends up knowing rather than which bytes one message carried.
+    """
+    merged = {}
+    seen = False
+    for msg in messages:
+        if msg.get("type") != "roster":
+            continue
+        seen = True
+        merged = {
+            entry["id"]: {
+                **entry,
+                "gallery": entry.get("gallery", merged.get(entry["id"], {}).get("gallery", [])),
+            }
+            for entry in msg["players"]
+        }
+    return list(merged.values()) if seen else None
+
+
+def gallery_copies(messages):
+    """How many galleries these messages actually put on the wire.
+
+    The regression guard for the fan-out: this used to be one per player per
+    roster message, i.e. N x N per scan in an N-player room.
+    """
+    return sum(
+        1
+        for msg in messages
+        if msg.get("type") == "roster"
+        for entry in msg["players"]
+        if entry.get("gallery")
+    )
 
 
 async def wait_for(check, timeout=2.0):
@@ -78,6 +137,9 @@ class PollingClient:
     def __init__(self, client):
         self.client = client
         self.messages = []
+        #: Raw bytes of every poll response body, i.e. what this phone actually
+        #: had to pull down. Tests diff it across an action to cost that action.
+        self.poll_bytes = 0
         self.token = None
         self._task = None
 
@@ -93,7 +155,9 @@ class PollingClient:
                 resp = await self.client.get("/api/poll", params={"token": self.token})
                 if resp.status != 200:
                     return
-                self.messages.extend(await resp.json())
+                raw = await resp.read()
+                self.poll_bytes += len(raw)
+                self.messages.extend(json.loads(raw))
         except asyncio.CancelledError:
             pass
 
@@ -109,6 +173,18 @@ class PollingClient:
 
     def welcome_id(self):
         return next(m["id"] for m in self.messages if m["type"] == "welcome")
+
+    def mark(self):
+        """A point in the message history, to ask what arrived after it.
+
+        Used instead of clearing ``messages``, because the roster arrives as a
+        delta: what this phone *holds* can only be read from the whole history
+        (see :func:`last_roster`), while what an action *cost* it is the slice.
+        """
+        return len(self.messages)
+
+    def since(self, mark):
+        return self.messages[mark:]
 
 
 class ProtocolTests(AioHTTPTestCase):
@@ -361,6 +437,150 @@ class ProtocolTests(AioHTTPTestCase):
         clone_hit = await self.client.post("/api/hit", json={"room": room, "shooterId": debug_id, "targetId": clone["id"], "zone": "body"})
         self.assertEqual(clone_hit.status, 200)
         await wait_for(lambda: next(p for p in last_state(debug.messages)["players"] if p["id"] == clone["id"])["hp"] == 80)
+
+    async def roster_room(self, label, count, gallery=FULL_GALLERY):
+        """``count`` enrolled players in a fresh room, settled and quiet.
+
+        The fan-out tests all start from a steady state so that what they measure
+        afterwards is the cost of one further change and nothing else.
+        """
+        room = unique_room(label)
+        clients = [self.track(await self.polling_client()) for _ in range(count)]
+        for i, client in enumerate(clients):
+            await client.send({"type": "join", "name": f"P{i}", "room": room, "gallery": gallery})
+        await wait_for(
+            lambda: all(
+                (last_roster(c.messages) or []) and len(last_roster(c.messages)) == count
+                and all(p["gallery"] for p in last_roster(c.messages))
+                for c in clients
+            ),
+            5,
+        )
+        await asyncio.sleep(0.2)  # let the poll loops come back round and go quiet
+        return room, clients
+
+    def held_gallery(self, client, player_id):
+        """What this phone currently believes ``player_id`` looks like."""
+        return next((p["gallery"] for p in last_roster(client.messages) or [] if p["id"] == player_id), None)
+
+    async def test_a_scan_reaches_every_phone_without_re_sending_the_whole_room(self):
+        # The fan-out regression guard. A scan changes exactly one player's gallery, so it should
+        # cost the room one copy of that gallery per phone. Re-sending the whole roster to
+        # everyone instead cost N x N copies - 16 here, and ~7.8 MB for six players.
+        room, clients = await self.roster_room("fanout-scan", 4)
+        ids = [c.welcome_id() for c in clients]
+        before = [c.poll_bytes for c in clients]
+        marks = [c.mark() for c in clients]
+
+        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
+        await wait_for(lambda: all(self.held_gallery(c, ids[1]) == RESCAN_GALLERY for c in clients), 5)
+        await asyncio.sleep(0.2)
+
+        # The behaviour: every phone, the scanner included, now holds the new scan, and still
+        # holds everyone else's.
+        for i, client in enumerate(clients):
+            held = last_roster(client.messages)
+            self.assertEqual(len(held), 4, f"phone {i} lost track of the room")
+            self.assertTrue(all(p["gallery"] for p in held), f"phone {i} lost a gallery it had")
+            self.assertEqual(self.held_gallery(client, ids[1]), RESCAN_GALLERY)
+
+        # The cost: one gallery per phone, not one per phone per player.
+        copies = sum(gallery_copies(c.since(m)) for c, m in zip(clients, marks))
+        self.assertEqual(copies, 4, "a scan should put one gallery on each phone's wire, no more")
+        self.assertEqual(gallery_copies(clients[0].since(marks[0])), 1, "the scanner is not sent the room again")
+
+        # And the same claim in bytes, which is what the phones actually wait for.
+        spent = sum(c.poll_bytes - b for c, b in zip(clients, before))
+        self.assertLess(spent, 6 * GALLERY_BYTES, f"a scan cost {spent / GALLERY_BYTES:.1f} galleries, expected ~4")
+        scanner_spent = clients[0].poll_bytes - before[0]
+        self.assertLess(scanner_spent, 2 * GALLERY_BYTES, "the scanning phone waits on its own scan only")
+
+    async def test_an_unchanged_gallery_is_not_re_sent_when_the_room_changes(self):
+        # Joins and leaves broadcast the roster too. They must update membership without
+        # re-shipping scans every phone already has.
+        room, clients = await self.roster_room("fanout-membership", 2)
+        watcher = clients[0]
+        before = watcher.poll_bytes
+        mark = watcher.mark()
+
+        joiner = self.track(await self.polling_client())
+        await joiner.send({"type": "join", "name": "C", "room": room, "gallery": RESCAN_GALLERY})
+        await wait_for(lambda: (last_roster(watcher.messages) or []) and len(last_roster(watcher.messages)) == 3, 5)
+        await asyncio.sleep(0.2)
+        self.assertEqual(gallery_copies(watcher.since(mark)), 1, "only the newcomer's gallery is new")
+        self.assertTrue(all(p["gallery"] for p in last_roster(watcher.messages)))
+
+        mark = watcher.mark()
+        await joiner.disconnect()
+        await wait_for(lambda: (last_roster(watcher.messages) or []) and len(last_roster(watcher.messages)) == 2, 5)
+        await asyncio.sleep(0.2)
+        self.assertEqual(gallery_copies(watcher.since(mark)), 0, "nobody's scan changed, so no gallery travels")
+        self.assertTrue(all(p["gallery"] for p in last_roster(watcher.messages)))
+        self.assertLess(watcher.poll_bytes - before, 3 * GALLERY_BYTES)
+
+    async def test_a_reconnecting_phone_is_sent_the_whole_roster(self):
+        # The convergence guarantee. A phone that drops its connection has no idea which
+        # galleries it missed, so the reconnect has to arrive complete - and it does, because the
+        # delta is remembered per session and a reconnect is a new session.
+        room, clients = await self.roster_room("fanout-resume", 3)
+        ids = [c.welcome_id() for c in clients]
+        lost = clients[2]
+
+        # While it is away, somebody rescans: the gallery it last held goes stale.
+        lost.stop()
+        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
+        await wait_for(lambda: self.held_gallery(clients[0], ids[1]) == RESCAN_GALLERY, 5)
+
+        resumed = self.track(await self.polling_client())
+        await resumed.send({"type": "join", "name": "P2", "room": room, "playerId": ids[2]})
+        await wait_for(lambda: any(m["type"] == "welcome" and m["id"] == ids[2] for m in resumed.messages), 5)
+        await wait_for(lambda: (last_roster(resumed.messages) or []) and len(last_roster(resumed.messages)) == 3, 5)
+
+        held = last_roster(resumed.messages)
+        self.assertTrue(all(p["gallery"] for p in held), "a reconnect must not land on a partial roster")
+        self.assertEqual(self.held_gallery(resumed, ids[1]), RESCAN_GALLERY, "and not on a stale one")
+        # It had nothing to start from, so it was sent all three in full.
+        self.assertEqual(gallery_copies(resumed.messages), 3)
+
+    async def test_a_rescan_replaces_the_gallery_every_phone_holds(self):
+        # Two scans of the same player back to back. Per-connection bookkeeping means the second
+        # cannot be mistaken for "they already have this", and the phones cannot settle on the
+        # first one.
+        room, clients = await self.roster_room("fanout-rescan", 3)
+        ids = [c.welcome_id() for c in clients]
+
+        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": full_gallery(3)})
+        await clients[2].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
+        await wait_for(lambda: all(self.held_gallery(c, ids[1]) == RESCAN_GALLERY for c in clients), 5)
+        for client in clients:
+            self.assertEqual(len(last_roster(client.messages)), 3)
+            self.assertTrue(all(p["gallery"] for p in last_roster(client.messages)))
+
+    async def test_a_rescanned_owner_updates_the_clone_on_every_phone(self):
+        # The debug clone borrows its owner's gallery, so its entry has to change when the
+        # owner's scan does even though nothing was ever stored against the clone itself
+        # (Room.mirrored_gallery_rev). Two devices, so this also covers the remote scanner.
+        room = unique_room("fanout-clone")
+        debug = self.track(await self.polling_client())
+        scanner = self.track(await self.polling_client())
+        await debug.send({"type": "join", "name": "Debug", "room": room, "gallery": FULL_GALLERY, "debug": True})
+        await scanner.send({"type": "join", "name": "Scanner", "room": room, "gallery": FULL_GALLERY})
+        await wait_for(lambda: all((last_roster(c.messages) or []) and len(last_roster(c.messages)) == 3
+                                   for c in (debug, scanner)), 5)
+        debug_id = debug.welcome_id()
+        clone_id = f"{debug_id}:debug-clone"
+        await asyncio.sleep(0.2)
+        marks = {client: client.mark() for client in (debug, scanner)}
+
+        await scanner.send({"type": "scan", "targetId": debug_id, "gallery": RESCAN_GALLERY})
+        await wait_for(lambda: all(self.held_gallery(c, clone_id) == RESCAN_GALLERY for c in (debug, scanner)), 5)
+        for client in (debug, scanner):
+            self.assertEqual(self.held_gallery(client, debug_id), RESCAN_GALLERY)
+            self.assertEqual(self.held_gallery(client, clone_id), RESCAN_GALLERY)
+            self.assertTrue(all(p["gallery"] for p in last_roster(client.messages)))
+        # Owner and clone each need their copy, and the clone has no connection of its own, so
+        # two phones x two changed entries.
+        self.assertEqual(sum(gallery_copies(c.since(marks[c])) for c in (debug, scanner)), 4)
 
     async def test_motion_samples_are_cleaned_and_relayed_to_others_only(self):
         a = self.track(await self.polling_client())

@@ -29,6 +29,30 @@ export function scannedGallery(playerId) {
   return state.roster.find((player) => player.id === playerId)?.gallery ?? [];
 }
 
+// The server sends the roster as a delta. Membership is always complete, so the entries are the
+// room, full stop; what's conditional is the heavy part. A player's `gallery` key is present only
+// when their scan changed since this connection last heard about them, and an entry without one
+// means "keep the gallery you already have". One gallery is ~190 KB, so re-sending all of them to
+// everyone on every scan used to cost the room N x N copies of that (see docs/server/protocol.md).
+//
+// Nothing here has to cope with a missed or out-of-order delta: the server tracks what it put on
+// *this* connection's wire, and any way of losing a message drops the connection, after which the
+// reconnect is sent the roster in full. A player we've never seen and whose gallery was withheld
+// can therefore only be someone nobody has scanned yet, which is what an empty gallery means
+// everywhere else too.
+//
+// That rests on one invariant, and it is the only way to break this: `state.roster` must never be
+// thrown away while the connection that filled it is still open, or the server would go on
+// withholding galleries this phone no longer has. Today the single place that clears it,
+// `leaveLobby()`, closes the connection in the same breath. Anything new that wants to reset the
+// roster must close the connection too (or ask for a fresh one).
+export function mergeRoster(previous, entries) {
+  return entries.map((entry) => {
+    if (entry.gallery !== undefined) return entry;
+    return { ...entry, gallery: previous.find((player) => player.id === entry.id)?.gallery ?? [] };
+  });
+}
+
 export function cloneOwnerId(playerId) {
   const suffix = ':debug-clone';
   return typeof playerId === 'string' && playerId.endsWith(suffix) ? playerId.slice(0, -suffix.length) : null;
