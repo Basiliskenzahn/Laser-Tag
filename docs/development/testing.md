@@ -156,6 +156,22 @@ Covers: interpolation and gap handling; the real player matching their own phone
 
 The thresholds in `motion/matching.js` were chosen against this simulation, so changing them will usually show up here first.
 
+### `test/range-readout.test.js`: the `?debug` range readout
+
+Tests `frontend/public/range-readout.js`, the line that says whether distant players are failing to be *detected* or being detected and *refused* ([debug mode](debug-mode.md#the-range-readout)). The tests that matter are the ones that fail if the line stops distinguishing those two: the box count coming from the detections rather than from coasting tracks; the `*`/`-` marks for which side of the gate and floor a box height falls on, including the case where the printed ratio rounds to `.18` but the box is genuinely under it; a far floor that does not exist being left out rather than invented; and only the screens that actually detect getting a reading at all. Every expectation is a **literal** — never derived from the thresholds passed in, which would make the assertion `x >= x`.
+
+### `test/range-readout-cost.test.js`: the readout costs nothing without `?debug`
+
+A structural test over `screens/game.js`, because that module cannot be imported under Node — `detector.js` imports a browser-absolute vendor URL. It brace-matches the `if (DEBUG) { … }` block of `loop()` (skipping comments, strings and `${}` placeholders) and asserts that every identifier the readout needs is used only inside it, so with `?debug` absent the branch is not taken and no string building, allocation or formatting happens. Also asserts that `identify.js` is read through a **namespace** import rather than named bindings: a named import of an export that module has not got yet is not a degradation, it is a link error that stops the whole app loading.
+
+### `test/synthetic-frame.test.js`: the shared frame fixture
+
+`test/fixtures/synthetic-frame.mjs` is ground truth for both `test/shape-signature.test.js` and `tools/shape-evaluation.mjs`, so a silent change to it moves a regression test and a measurement at once. Covers its opt-in `sensorGrid` — reads snapped to the pixel lattice, with per-pixel noise frozen rather than redrawn, so a small box cannot be given detail or noise-averaging it never had — and, just as importantly, that it is **off by default**, which is what keeps every existing caller byte-for-byte unchanged. Uses a gradient paint rather than `bands`, because `bands` is piecewise flat and two reads inside one band agree whether or not they were quantised.
+
+### `test/shape-evaluation-smoke.test.js`: the instrument still runs
+
+`tools/shape-evaluation.mjs` is deliberately **not** a regression gate (see [`shape` normalisation evaluation](../shape-normalisation-evaluation.md) and [box scale and range](../box-scale-evaluation.md)) — pinning its numbers would turn every legitimate retune into a false failure. But that left it with no test at all, so it could rot and still print an authoritative-looking table. This asserts **shape, never values**: both modes run to completion, the JSON is well-formed, outcome rates sum to 1, the sweep's buckets straddle the thresholds it exists to measure, both fixture modes ran, each threshold reports whether it came from `identify.js` or a stub, the printed caveats are present, and the same seed gives the same output while a different seed does not. It runs with `--sightings 3` so a smoke test does not cost the suite twenty seconds; numbers quoted in `docs/` come from full runs.
+
 ## What isn't covered
 
 - **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.

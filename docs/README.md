@@ -41,3 +41,4 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Detection pipeline audit](detection-pipeline-audit.md): per-signal cost and accuracy across the identification pipeline, and which numbers are measured vs simulated
 - [The `shape` feature was inert](shape-feature-bug.md): one identification guard that scored 0 for the correct person, how it was fixed, and why its thresholds were left alone
 - [`shape` normalisation evaluation](shape-normalisation-evaluation.md): what fixing it measured, on synthetic fixtures through the real matcher (`npm run eval:shape`)
+- [Box scale and range](box-scale-evaluation.md): what admitting smaller detection boxes would cost, why the synthetic answer is flat, and why the `?debug` range readout is what should decide the fix

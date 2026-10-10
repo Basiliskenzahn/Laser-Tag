@@ -22,6 +22,8 @@ A text overlay shows live numbers. A typical game-screen readout:
 GPU+Pose+Embed+ReID · 8 fps · 23 ms
 1280×720 · 2 people · 2/3 live tracks · 1 identified
 Bob:0.78 reid u0.82 l0.77 g0.69 s0.93 e0.61
+Range 2box h .41 .14* ≥.18 · ok14 far5
+Dist Bob .78@.41
 Ranks #4 Bob:0.78/0.21,Alice:0.57/-0.21 | #5 self:0.80/0.22
 motion on · from Bob,Alice
 Motion #4 Bob confirmed [Bob:0.84,Alice:0.11] | #5 - self
@@ -33,12 +35,76 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | 1 | Delegate (`GPU` or `CPU`, plus `+Pose`, `+Embed` and `+ReID` for each optional model that loaded); detection runs per second; time of the last detection in ms |
 | 2 | Video resolution; people in the last detection; tracks seen recently / all tracks; tracks identified as another player |
 | 3 | Each identified track: name, overall score, the marker `reid` if the [re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs) decided the match, then **u**pper-body, **l**ower-body, **g**rid, **s**hape and **e**mbedding similarity |
+| `Range` / `Dist` | The range readout — [its own section below](#the-range-readout) |
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
 | `motion` | Absent by default, since whatever is identifying people only gets a line if it has something to say and the appearance-only provider doesn't. With `?motion=on` or `?motion=strict`: this phone's sensor (`on`, `no data` or `off`), `strict` if set, and which players' phones are sending motion samples |
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
 "fps" here is detections per second, not screen frame rate. In the game, detection runs every 80–120 ms, and less often if a phone can't keep up, so 7–12 is normal; boxes are moved along between detections.
+
+### The range readout
+
+Two lines that answer one question: **for the people on screen right now, are we failing to detect
+them, or detecting them and refusing them?**
+
+Those have opposite fixes. If the detector never returns a box, lowering a threshold buys nothing
+and it needs a second region-of-interest detection pass — up to half the detection cadence on a
+slow phone. If the detector finds them and `boxQuality()` throws the box away for being under 18 %
+of frame height, admitting that band is nearly free. On screen the two are identical: an
+unidentified *"Person"*, or nothing at all. Hence the line.
+
+```
+Range 2box h .41 .14* ≥.18 · ok14 far5
+Dist Bob .78@.41
+```
+
+| Field | Meaning |
+| --- | --- |
+| `2box` | How many boxes the **last detection** returned. From `state.boxes`, not from the tracks, because a track coasts for up to half a second after its box is gone — and "the detector has stopped finding them" is the signal that must never be hidden |
+| `h .41 .14*` | Each live box's height as a fraction of frame height, biggest first, at most four. This is the exact quantity the gate compares, so it sits next to the gate |
+| *(suffix)* | No suffix: at or above the gate, a box the matcher will score. `*`: under the gate — **detected and refused**. `-`: under the far floor, where no gate change can help. The suffix is computed on the exact ratio, so `.18*` is a box that rounds to `.18` in print but is genuinely below it |
+| `≥.18` | The live height gate (`MIN_MATCH_HEIGHT_RATIO`). Appears as `≥.18/.10` once a far floor exists; until then no floor is shown, rather than one being invented |
+| `ok14 far5` | `rangeDiagnostics()` tallies **for the last whole second** — reset on the same window as `fps`, so they read "here, at this distance, now" rather than a session total that never comes back down once you walk closer. `ok` passed the gate; `far` was in the far band and refused; `reid` was in the band and allowed through the re-identification path; `low` was under the far floor; `part` and `clip` are the non-distance refusals (`partial-body`, `edge-clipped`). `ok` always shows — `ok0` is the loudest reading there is — and the rest only when non-zero |
+| `Dist Bob .78@.41` | Per named track: the re-identification score next to that track's box height. Absent when nobody on screen has a name. A score marked `c` (`Bob c.52@.41`) is the colour blend, not an OSNet cosine — they are different scales and must not be read as one series |
+
+Reading it:
+
+- **At 5 m.** `Range 1box h .45 ≥.18 · ok37` — one box, well above the gate, nothing refused. The
+  pipeline is being given everything it needs; if the player is still not named, the problem is
+  appearance matching, not range. Look at `Ranks` and `Rejected`.
+- **At 25 m, detected.** `Range 1box h .09- ≥.18/.10 · ok0 low41`. The detector *is* finding them.
+  The box is nine per cent of frame height and every check is being refused on distance alone, so
+  no feature is ever scored. **A gate change is exactly the fix**, and the `-` says the box is
+  small enough that even a far floor at 0.10 would not admit it.
+- **At 25 m, not detected.** `Range 0box ≥.18/.10 · ok0`. No box at all, so there is nothing for
+  any gate to refuse. **A gate change buys nothing** — this is the case that needs the
+  region-of-interest pass, and the only case that justifies paying for it.
+- **In between, around 15 m.** `Range 1box h .15* ≥.18/.10 · ok0 far9` — in the band, refused.
+  `reid9` instead means the band is already being admitted through re-identification.
+- **Testing whether score degrades with distance.** Walk backwards watching `Dist`. `Bob .78@.41`
+  becoming `Bob .61@.22` and then `Bob .48@.15` is the hypothesis confirmed; a score that holds up
+  while the box shrinks says distance is not what is breaking identification.
+
+The readout appears on the **scan screen as well as in a round**, which is the point — the scan
+screen is where the camera is up and detecting while you walk around measuring. It is suppressed on
+the join and lobby screens, where no detection has run and `state.boxes` would be whatever the last
+scan or round left behind: a stale reading looks exactly like a live one.
+
+> **Why `<pre id="debug">` gets moved.** The element is declared inside `#game-screen`
+> (`index.html`), which stays `hidden` until a round starts — so the whole overlay was invisible on
+> the join, lobby and scan screens even though `join.js` unhides it. Under `?debug` only,
+> `screens/game.js` reparents it to `<body>` once and gives it `position: fixed` and a z-index above
+> the screens. The tidy fix is to declare it in `<body>` in `index.html` and add those two
+> properties to the `#debug` rule in `style.css`; when that happens, the reparenting in
+> `debugOverlay()` becomes a no-op and should be deleted.
+
+The implementation is `frontend/public/range-readout.js` — pure, DOM-free and unit-tested
+(`test/range-readout.test.js`), reached only from inside the `if (DEBUG)` branch of the frame loop.
+`test/range-readout-cost.test.js` holds that last property down, so the readout costs nothing at
+all when `?debug` is absent. For the offline counterpart — what admitting smaller boxes does to
+accuracy, and why the synthetic answer cannot be trusted — see
+[box scale and range](../box-scale-evaluation.md).
 
 ### Startup and scan costs
 
