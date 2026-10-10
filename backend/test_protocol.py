@@ -18,9 +18,12 @@ import json
 import unittest
 import uuid
 
+import aiohttp
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
-from backend.app import create_app
+from backend import transport
+from backend.app import MAX_BODY_BYTES, create_app
+from backend.sanitize import clean_room_code
 
 GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 
@@ -50,6 +53,16 @@ GALLERY_BYTES = len(json.dumps(FULL_GALLERY, separators=(",", ":")))
 
 def unique_room(label):
     return f"{label}-{uuid.uuid4().hex[:8]}"
+
+
+def registry_code(room):
+    """The key a room code is actually filed under.
+
+    ``clean_room_code`` caps a code at 16 characters, and the labels above are
+    longer than that, so a test that looks a room up in ``transport.rooms`` or
+    ``transport.sse_clients`` has to clean it the same way the server did.
+    """
+    return clean_room_code(room)
 
 
 def last_state(messages):
@@ -142,6 +155,17 @@ class PollingClient:
         self.poll_bytes = 0
         self.token = None
         self._task = None
+        #: How the poll loop ended, which is the only way this phone ever learns
+        #: that it has lost its session - the real client reconnects on exactly
+        #: this signal and on nothing else (frontend/public/transport.js treats
+        #: any non-ok response as fatal). ``None`` while the loop is still
+        #: running, so a test can tell "still polling" from "told to go away".
+        self.closed_status = None
+        self.closed_reason = None
+
+    @property
+    def closed(self):
+        return self.closed_status is not None
 
     async def start(self):
         resp = await self.client.post("/api/connect")
@@ -154,6 +178,13 @@ class PollingClient:
             while True:
                 resp = await self.client.get("/api/poll", params={"token": self.token})
                 if resp.status != 200:
+                    body = {}
+                    try:
+                        body = await resp.json()
+                    except (ValueError, aiohttp.ContentTypeError):
+                        pass
+                    self.closed_reason = body.get("reason")
+                    self.closed_status = resp.status
                     return
                 raw = await resp.read()
                 self.poll_bytes += len(raw)
@@ -255,8 +286,108 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: any(m["type"] == "welcome" and m["id"] == player_id for m in second.messages))
         await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 1)
 
+        # The seat count was all this used to check, which is why it passed while
+        # the displaced phone was being frozen solid: whoever lost the seat has to
+        # be *told*, and a 410 is the only thing the client treats as a reason to
+        # reconnect (frontend/public/transport.js). A 200 reads as "nothing has
+        # happened", so answering one here is what left the first phone sitting on
+        # a stale roster forever.
+        await wait_for(lambda: first.closed)
+        self.assertEqual(first.closed_status, 410)
+        self.assertEqual(first.closed_reason, "replaced")
+
         await first.disconnect()
         await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 1)
+        # And the displaced phone's goodbye must not take the seat with it: the
+        # seat is not its to give up any more.
+        self.assertIn(player_id, transport.rooms[registry_code(room)].players)
+
+    async def test_a_second_tab_leaves_the_first_phone_told_rather_than_frozen(self):
+        # The second-tab case end to end, which needs no attacker at all:
+        # app.js calls resumeActiveLobby() on every page load, so a second tab, a
+        # session restore or the home-screen icon adopts the same seat.
+        first = self.track(await self.polling_client())
+        room = unique_room("second-tab")
+        await first.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: any(m["type"] == "welcome" for m in first.messages))
+        player_id = first.welcome_id()
+        await asyncio.sleep(0.2)  # let the first phone's poll park
+        frozen_at = first.mark()
+
+        second = self.track(await self.polling_client())
+        await second.send({"type": "join", "name": "A", "room": room, "playerId": player_id})
+        await wait_for(lambda: any(m["type"] == "welcome" for m in second.messages))
+
+        # The room then changes under both of them.
+        other = self.track(await self.polling_client())
+        await other.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 2)
+
+        # The phone that kept the seat sees the new player; the displaced one is
+        # told to go away instead of being answered 200 with an empty list.
+        self.assertTrue(first.closed, "the displaced phone was never told it lost the seat")
+        self.assertEqual(first.closed_status, 410)
+        self.assertEqual(first.closed_reason, "replaced")
+        self.assertEqual(first.since(frozen_at), [], "nothing more should have been pushed to it")
+
+    async def test_a_poll_parked_when_the_seat_is_taken_is_told_on_that_response(self):
+        # Not merely eventually. A poll can sit parked here for 20 s, and the
+        # handler checks liveness again after the park for two reasons: the phone
+        # learns on this response instead of needing another round trip, and
+        # nothing still queued can be handed to a session that no longer exists.
+        # The entry check alone would answer this woken poll 200 and only 410 the
+        # next one, which is why driving a raw parked poll is the only way to see
+        # the difference - a PollingClient just polls again and cannot tell.
+        room = unique_room("parked-410")
+        token = (await (await self.client.post("/api/connect")).json())["token"]
+        await self.client.post("/api/send", params={"token": token},
+                               json={"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        drained = await (await self.client.get("/api/poll", params={"token": token})).json()
+        player_id = next(msg["id"] for msg in drained if msg["type"] == "welcome")
+
+        parked = asyncio.ensure_future(self.client.get("/api/poll", params={"token": token}))
+        await asyncio.sleep(0.2)  # let it park on an empty mailbox
+
+        second = self.track(await self.polling_client())
+        await second.send({"type": "join", "name": "A", "room": room, "playerId": player_id})
+        await wait_for(lambda: any(msg["type"] == "welcome" for msg in second.messages))
+
+        resp = await asyncio.wait_for(parked, 3)
+        self.assertEqual(resp.status, 410, "the woken poll itself must answer 410, not 200")
+        self.assertEqual((await resp.json())["reason"], "replaced")
+
+    async def test_a_dropped_connection_reconnects_to_the_same_seat_and_hp(self):
+        # The other half of the displacement decision: a phone whose connection
+        # died - no /api/disconnect, just silence - must still get its seat back,
+        # with the hp and wins it had. This is the common real case, and it is why
+        # the adoption is honoured rather than refused.
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("dropped-reconnect")
+        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        a_id, b_id = a.welcome_id(), b.welcome_id()
+
+        await a.send({"type": "start"})
+        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "body"})
+        await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
+
+        b.stop()  # the connection simply stops, the way a phone losing wifi does
+        resumed = self.track(await self.polling_client())
+        await resumed.send({"type": "join", "name": "B", "room": room, "playerId": b_id})
+        await wait_for(lambda: any(m["type"] == "welcome" and m["id"] == b_id for m in resumed.messages), 5)
+        await wait_for(lambda: last_state(resumed.messages), 5)
+
+        state = last_state(resumed.messages)
+        self.assertEqual(len(state["players"]), 2, "a reconnect must not take a second seat")
+        self.assertEqual(next(p for p in state["players"] if p["id"] == b_id)["hp"], 80,
+                         "the reconnecting phone lost the hp it had")
+        self.assertFalse(resumed.closed)
+        # And it lands on a complete roster, never a partial one.
+        await wait_for(lambda: (last_roster(resumed.messages) or []) and len(last_roster(resumed.messages)) == 2, 5)
+        self.assertTrue(all(p["gallery"] for p in last_roster(resumed.messages)))
 
     async def test_disconnect_removes_a_lobby_player_immediately(self):
         a = self.track(await self.polling_client())
@@ -599,6 +730,138 @@ class ProtocolTests(AioHTTPTestCase):
 
         await asyncio.sleep(0.05)
         self.assertFalse(any(m["type"] == "motion" for m in a.messages))
+
+    async def test_posted_hit_with_a_non_object_body_is_a_clean_400(self):
+        # Valid JSON is not necessarily an object. Each of these used to reach
+        # msg.get("shooterId") and answer 500 with an AttributeError traceback;
+        # it is a one-byte request.
+        for body in ("[]", '"x"', "5", "null", "true", '[{"shooterId":"a"}]'):
+            with self.subTest(body=body):
+                resp = await self.client.post("/api/hit", data=body,
+                                              headers={"Content-Type": "application/json"})
+                self.assertEqual(resp.status, 400, f"{body} should be a clean 400")
+                self.assertEqual(resp.content_type, "application/json")
+                self.assertFalse((await resp.json())["ok"])
+
+    async def test_an_oversized_or_malformed_body_is_one_json_shape_either_way(self):
+        # Two things used to disagree about the boundary: the explicit check used
+        # `>` while aiohttp's client_max_size rejects at `>=`, so a body of
+        # exactly MAX_BODY_BYTES fell through to aiohttp and got a plain-text 413
+        # while one byte more got a JSON one. A chunked body has no
+        # Content-Length at all and only aiohttp ever saw it.
+        a = self.track(await self.polling_client())
+
+        def padded(size):
+            body = b'{"type":"x","pad":"' + b"a" * (size - 21) + b'"}'
+            assert len(body) == size
+            return body
+
+        for size in (MAX_BODY_BYTES, MAX_BODY_BYTES + 1):
+            with self.subTest(declared=size):
+                resp = await self.client.post("/api/send", params={"token": a.token},
+                                              data=padded(size),
+                                              headers={"Content-Type": "application/json"})
+                self.assertEqual(resp.status, 413)
+                self.assertEqual(resp.content_type, "application/json")
+                self.assertEqual((await resp.json())["error"], "Body too large")
+
+        async def chunked():
+            yield padded(MAX_BODY_BYTES + 100)
+
+        resp = await self.client.post("/api/send", params={"token": a.token}, data=chunked(),
+                                      headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status, 413, "a chunked oversized body is still a 413")
+        self.assertEqual(resp.content_type, "application/json", "and the same shape as a declared one")
+
+        # A body one byte under the limit is a perfectly ordinary message.
+        resp = await self.client.post("/api/send", params={"token": a.token},
+                                      data=padded(MAX_BODY_BYTES - 1),
+                                      headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status, 204)
+
+        # Malformed JSON is the only thing left that is a 400.
+        resp = await self.client.post("/api/send", params={"token": a.token}, data=b"{nope",
+                                      headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status, 400)
+        self.assertEqual((await resp.json())["error"], "Invalid JSON body")
+
+    async def test_an_sse_listener_is_forgotten_when_it_disconnects(self):
+        # Room codes are client-chosen, so a {room_code: set()} entry that outlives
+        # its listeners grows for the lifetime of the process, one request per key.
+        room = unique_room("sse-leak")
+        key = registry_code(room)
+        self.assertNotIn(key, transport.sse_clients)
+
+        resp = await self.client.get(f"/events/{room}")
+        await resp.content.read(len(b": connected\n\n"))
+        self.assertEqual(len(transport.sse_clients[key]), 1)
+
+        resp.close()
+        await wait_for(lambda: key not in transport.sse_clients, 5)
+
+    async def test_the_server_never_withholds_a_gallery_it_has_not_sent(self):
+        # The roster delta's one load-bearing assumption, checked against an
+        # independent oracle: sent_gallery_revs is the server's belief about what
+        # each phone holds, and client.messages is what that phone actually
+        # received. Every id the server has stopped sending a gallery for must be
+        # one the phone really has a gallery for.
+        room, clients = await self.roster_room("delta-oracle", 3)
+        ids = [c.welcome_id() for c in clients]
+
+        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
+        await clients[2].send({"type": "scan", "targetId": ids[2], "gallery": full_gallery(4)})
+        await wait_for(lambda: all(self.held_gallery(c, ids[1]) == RESCAN_GALLERY for c in clients), 5)
+        await asyncio.sleep(0.3)
+
+        for i, (client, player_id) in enumerate(zip(clients, ids)):
+            believed = transport.connections[player_id].sent_gallery_revs
+            held = {entry["id"]: entry["gallery"] for entry in last_roster(client.messages)}
+            self.assertTrue(believed, f"phone {i}: the server should be withholding something by now")
+            for claimed_id in believed:
+                self.assertTrue(
+                    held.get(claimed_id),
+                    f"phone {i} holds no gallery for {claimed_id}, but the server believes it sent one",
+                )
+
+    async def test_a_phone_whose_mailbox_overflows_reconnects_complete(self):
+        # The queue cap's overflow policy, and the half of it that matters: a
+        # phone that has had messages dropped must end up *correct*, not subtly
+        # stale. Overflow ends the conversation and clears the delivery record, so
+        # the reconnect is sent every gallery again rather than being told to keep
+        # what it never got.
+        room, clients = await self.roster_room("overflow-resync", 3)
+        ids = [c.welcome_id() for c in clients]
+        victim, player_id = clients[2], ids[2]
+        poller = transport.pollers[victim.token]
+        session = transport.connections[player_id]
+        self.assertTrue(session.sent_gallery_revs, "the delta should be active before we start")
+
+        victim.stop()  # stop draining, the way a locked screen does
+        await asyncio.sleep(0.1)
+        for _ in range(transport.MAX_QUEUED_MESSAGES + 5):
+            await poller.push({"type": "roster", "players": []})
+
+        self.assertEqual(poller.evicted, "overflow")
+        self.assertEqual(poller.queue, [], "an evicted mailbox is never drained, so it holds nothing")
+        self.assertEqual(session.sent_gallery_revs, {},
+                         "dropping queued rosters must invalidate what the server believes it sent")
+
+        # The phone finds out by being told 410, and comes back to a full roster.
+        resp = await self.client.get("/api/poll", params={"token": victim.token})
+        self.assertEqual(resp.status, 410)
+        self.assertEqual((await resp.json())["reason"], "overflow")
+        # Nothing it sends is accepted either, so it cannot keep acting on a
+        # conversation the server has stopped having.
+        resp = await self.client.post("/api/send", params={"token": victim.token},
+                                      json={"type": "start"})
+        self.assertEqual(resp.status, 410)
+
+        resumed = self.track(await self.polling_client())
+        await resumed.send({"type": "join", "name": "P2", "room": room, "playerId": player_id})
+        await wait_for(lambda: (last_roster(resumed.messages) or []) and len(last_roster(resumed.messages)) == 3, 5)
+        self.assertTrue(all(p["gallery"] for p in last_roster(resumed.messages)),
+                        "a phone that missed messages must not land on a partial roster")
+        self.assertEqual(gallery_copies(resumed.messages), 3)
 
 
 if __name__ == "__main__":

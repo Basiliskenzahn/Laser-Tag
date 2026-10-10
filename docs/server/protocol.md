@@ -20,17 +20,28 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
-`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one replaces the first poll's waiter, which never resolves on its own.
+`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. The client is expected to hold only one poll open per session, but two are handled: each parked poll gets its own future and all of them are woken, so neither can orphan the other.
 
 A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
+
+A mailbox can also be *evicted* before that, which makes its next poll — and any poll already parked on it — a `410` rather than leaving the phone to be answered `200` with nothing in it. A `200` is the one thing the client reads as "nothing has happened", so a dead session has to fail a poll or the phone never finds out. Evictions happen when another session adopts the player's seat (`replaced`), when the reaper drops it for going quiet (`expired`), and when the mailbox overflows (`overflow`).
 
 Errors:
 
 | Status | When | Client should |
 | --- | --- | --- |
-| `410 {"error": "Unknown session"}` | Unknown or expired token | Reconnect with a new `/api/connect` |
-| `400` | Body isn't valid JSON | Fix the request |
-| `413` | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
+| `410 {"error": "Unknown session", "reason": "replaced"}` | Another session took over this player's seat | **Not** come back as the same player — the seat is in use. See [Seat handover](#seat-handover) |
+| `410 {"error": "Unknown session", "reason": …}` | `expired`, `overflow`, or `unknown` for a token already forgotten | Reconnect with a new `/api/connect` |
+| `400 {"error": …}` | Body isn't valid JSON, or isn't a JSON object where one is required | Fix the request |
+| `413 {"error": "Body too large"}` | Body at or over `MAX_BODY_BYTES` (1 MB) | Send less |
+
+`reason` is advisory: it is only known while the server still holds the mailbox, so a token the reaper has already forgotten reports `unknown`. Any `410` without `reason: "replaced"` means reconnecting is right.
+
+### Seat handover
+
+A phone that reloads or whose connection dropped comes back with the `playerId` it remembers and adopts its old seat, keeping its hp and wins (see [`join`](#join)). Whoever held that seat is displaced: their mailbox is evicted with `reason: "replaced"`, so their poll fails and they stop being the push target.
+
+The server cannot tell a genuine reconnect from a second tab — both are "a phone claiming a seat whose previous holder still looks live" — and it resolves that in favour of the reconnect, because a phone that lost its connection mid-round must be able to get its seat back. The consequence is that two tabs on one seat will take it from each other in turn rather than one of them silently freezing. A client that honours `reason: "replaced"` by *not* re-adopting ends that exchange after one round trip; one that re-adopts unconditionally will keep swapping.
 
 ### `POST /api/hit`
 
@@ -144,7 +155,16 @@ So `roster` is a per-connection delta:
 
 Alice's scan is unchanged; Bob was just scanned.
 
-The server tracks what it has sent per *session* (`Session.sent_gallery_revs`, keyed by the `gallery_rev` counter on each `Player`), not per player. That is what makes this safe without any version negotiation or client acknowledgement: a session is one conversation with one phone, and every way of losing a message — a dropped poll, a `410`, a reload, a reconnect — ends that conversation. The phone then opens a new session, which has an empty record and is therefore sent **the whole roster in full**. There is no state a phone can reach where it believes it holds a gallery the server never delivered, and deltas cannot arrive out of order because the server only ever withholds what it has already put on that same wire.
+The server tracks what it has sent per *session* (`Session.sent_gallery_revs`, keyed by the `gallery_rev` counter on each `Player`), not per player. That is what makes this safe without any version negotiation or client acknowledgement: a session is one conversation with one phone, and every way of losing a message — a dropped poll, a `410`, a reload, a reconnect, an evicted mailbox — ends that conversation. The phone then opens a new session, which has an empty record and is therefore sent **the whole roster in full**. There is no state a phone can reach where it believes it holds a gallery the server never delivered, and deltas cannot arrive out of order because the server only ever withholds what it has already put on that same wire.
+
+That last clause is the load-bearing one, and four things hold it up:
+
+- A revision is recorded only *after* the mailbox has accepted the message carrying it (`broadcast_roster` keys off what `Session.send` returns), never before building it.
+- An over-full mailbox never drops a `roster`. It sheds superseded `state` snapshots and the oldest `motion` relays, both of which the client can lose without being misinformed, and is evicted outright once only undroppable messages are left (`Poller._shed`).
+- Eviction clears `sent_gallery_revs` along with the queue, so a mailbox that *did* have messages thrown away cannot also claim it delivered them.
+- `Room.join` refuses to reseat an id that is already in the room, because that would reset `gallery_rev` to `0` and make "same revision" mean two different galleries.
+
+What remains outside the server's knowledge is a poll response that is built and then fails to reach the phone: the mailbox has already handed it over. The client covers that by treating any failed poll as fatal and discarding its token, which ends the session. **A client that retried a poll instead of reconnecting would reintroduce the stale-gallery bug** — on a failed poll it must reconnect.
 
 A clone's entry follows the owner it borrows its gallery from (`Room.mirrored_gallery_rev`), so rescanning the owner re-sends the clone's entry too.
 

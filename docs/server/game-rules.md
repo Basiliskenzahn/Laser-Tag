@@ -42,7 +42,9 @@ There's no timer that moves `countdown` to `playing`. Instead `update()` checks 
 
 ### `join(id, name, gallery)`
 
-Adds a player with full HP, 0 wins and the given gallery (possibly empty). Fails if a round is running or the room is full.
+Adds a player with full HP, 0 wins and the given gallery (possibly empty). Fails if a round is running, the room is full, or the id is **already seated** (*"Already in this room"*).
+
+That last one never happens in play: a reconnecting phone is routed to the seat-adoption path in `transport.Session._join` and a new one brings an id of its own. It is refused anyway because reseating would replace the `Player` and take `gallery_rev` back to `0`, which would tell every phone holding revision 0 to keep what it had about a different gallery — see [the roster delta](protocol.md#the-roster-delta).
 
 ### `setGallery(id, gallery)`
 

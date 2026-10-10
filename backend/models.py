@@ -96,8 +96,22 @@ class Room:
         return self.players.get(player_id)
 
     def join(self, player_id, name, gallery=None):
+        """Seat a new player. Never reseats an id that is already in the room.
+
+        That last part is a structural guarantee the roster delta depends on, not
+        a convenience: reseating would hand the id a brand new :class:`Player`
+        with ``gallery_rev`` back at ``0``, and every phone that had been told
+        "revision 0" for that player would then be told to keep what it held about
+        a completely different gallery (see
+        :func:`backend.transport.roster_for`). A reconnecting phone is routed to
+        the adoption path in ``transport.Session._join`` and a fresh one always
+        brings an id of its own, so nothing reaches this today - which is exactly
+        why it is refused outright rather than left resting on that.
+        """
         if self.status in ("countdown", "playing"):
             return {"ok": False, "error": "Lobby is already running."}
+        if player_id in self.players:
+            return {"ok": False, "error": "Already in this room"}
         if len(self.players) >= MAX_PLAYERS:
             return {"ok": False, "error": "Room is full"}
         self.players[player_id] = Player(player_id, name, gallery or [])
