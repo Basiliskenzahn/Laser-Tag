@@ -690,6 +690,8 @@ function renderHud() {
   startBtn.textContent = game?.status === 'over' ? 'Play again' : 'Start game';
 
   const text = $('banner-text');
+  const me = game?.players.find((p) => p.id === state.myId);
+  const winner = game?.players.find((p) => p.id === game.winner);
   text.classList.remove('big');
   if (state.bannerOverride) text.textContent = state.bannerOverride;
   else if (!game) text.textContent = 'Connecting…';
@@ -699,7 +701,9 @@ function renderHud() {
         ? `Waiting for more players… Room code: ${game.code} (${game.players.length}/${game.minPlayers})`
         : `Ready - room code: ${game.code}`;
   } else if (game.status === 'over') {
-    text.textContent = game.winner === state.myId ? 'You win!' : 'You got tagged!';
+    text.textContent = game.winner === state.myId ? 'You win!' : `${winner?.name ?? 'Someone'} wins!`;
+  } else if (game.status === 'playing' && me && !me.alive) {
+    text.textContent = 'You are down';
   } else {
     text.textContent = ''; // countdown is drawn every frame in loop()
   }

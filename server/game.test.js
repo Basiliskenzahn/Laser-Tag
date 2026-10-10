@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Room, MAX_HP, DAMAGE, COUNTDOWN_MS, SHOT_COOLDOWN_MS } from './game.js';
+import { Room, MAX_HP, MAX_PLAYERS, DAMAGE, COUNTDOWN_MS, SHOT_COOLDOWN_MS } from './game.js';
 
 function makeRoom() {
   let t = 0;
@@ -28,8 +28,13 @@ test('a round needs at least two players, and starts on request', () => {
 });
 
 test('a room caps out, and rejects joins once a round is running', () => {
-  const { room } = startedRoom();
-  assert.equal(room.join('c', 'Carol', []).ok, false);
+  const { room } = makeRoom();
+  for (let i = 0; i < MAX_PLAYERS; i++) assert.equal(room.join(`p${i}`, `P${i}`, []).ok, true);
+  assert.equal(room.players.size, MAX_PLAYERS);
+  assert.equal(room.join('extra', 'Extra', []).ok, false);
+
+  room.start();
+  assert.equal(room.join('late', 'Late', []).ok, false);
 });
 
 test('shots are ignored during the countdown', () => {
@@ -93,12 +98,28 @@ test('free-for-all: the last player standing wins, eliminated players can no lon
   assert.equal(room.winner, 'a');
 });
 
-test('leaving resets the round for the remaining players', () => {
-  const { room } = startedRoom();
+test('leaving a free-for-all removes that player without resetting the round', () => {
+  const { room } = startedRoom(['a', 'b', 'c']);
   room.shoot('a', 'b', 'body');
   room.leave('b');
-  assert.equal(room.status, 'waiting');
+  assert.equal(room.status, 'playing');
+  assert.equal(room.players.has('b'), false);
   assert.equal(room.players.get('a').hp, MAX_HP);
+  assert.equal(room.players.get('c').hp, MAX_HP);
+});
+
+test('leaving can decide a free-for-all when only one player remains alive', () => {
+  const { room, clock } = startedRoom(['a', 'b', 'c']);
+  let result;
+  do {
+    result = room.shoot('a', 'b', 'head');
+    clock.advance(SHOT_COOLDOWN_MS);
+  } while (!result.ko);
+
+  room.leave('c');
+  assert.equal(room.status, 'over');
+  assert.equal(room.winner, 'a');
+  assert.equal(room.players.get('a').wins, 1);
 });
 
 test('roster carries each player\'s appearance gallery; state does not', () => {
