@@ -279,8 +279,24 @@ const VELOCITY_SMOOTHING_TAU_MS = 180;
 // wrong one. TRACK_TIMEOUT_MS lets a track coast more than twice this long.
 const VELOCITY_MAX_GAP_MS = 400;
 const MIN_FRAME_DT_S = 0.016; // never divide a displacement by less than about one frame
-const PREDICT_MAX_AHEAD_S = 0.5; // how far association may extrapolate a track along its velocity
-const COAST_VELOCITY_DECAY = 0.82; // velocity damping while a track is briefly unseen
+// How far association may extrapolate a track along its velocity. Kept at 0.5 s, and the reason
+// is the coast decay below rather than this number: the projection is a decaying velocity times a
+// growing elapsed time, so it peaks and then falls, and with COAST_VELOCITY_TAU_MS the peak sits
+// at 87 px (v = 400 px/s) around 500-600 ms of coasting whatever the detection rate is. The clamp
+// caps the worst case right at that peak. Note this feeds associationScore only - game.js's
+// liveBox(), which is what the overlay and the shot actually use, caps its own projection at
+// 0.25 s and never reads this.
+const PREDICT_MAX_AHEAD_S = 0.5;
+// Velocity damping while a track is briefly unseen, as a time constant for the same reason the
+// two filters above are: it used to be 0.82 applied once per update, and a per-update factor is a
+// different thing at every detection rate. At the 120 ms interval it was tuned at, 0.82/update is
+// a 419 ms half-life; at the 50 ms searching tier - which is exactly the tier a coasting track
+// forces, since missedFrames > 0 picks it - the same 0.82 is a 175 ms half-life. A person who
+// stepped behind a pillar used to come out the far side with 61% of their velocity after 300 ms
+// and now has 30%, so predictedBox under-shoots and the track is likelier to be dropped and
+// re-created as a stranger. -120 / ln(0.82) = 605 ms; 600 reproduces 0.8187 per 120 ms, within
+// 0.2% of the tuned factor, and now means the same thing at 50, 71 or 100 ms.
+const COAST_VELOCITY_TAU_MS = 600;
 
 // -- identity hysteresis: how reluctant a track is to take or change a name --
 // Both of these are counts of checks standing in for a duration, and both were calibrated at the
@@ -1266,6 +1282,10 @@ export class Tracker {
   constructor() {
     this.tracks = [];
     this.nextId = 1;
+    // When update() last ran, so the coast damping below can be measured in seconds instead of
+    // counted in updates. One field on the tracker rather than one per track: every track coasts
+    // in the same call, so the gap is the same for all of them.
+    this.lastUpdateAt = null;
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
@@ -1300,16 +1320,22 @@ export class Tracker {
     }
 
     // Tracks the detector missed this frame coast on their last velocity for a moment: a person
-    // the detector drops for two frames should not become a new, unidentified person.
+    // the detector drops for two frames should not become a new, unidentified person. The damping
+    // is per second, not per update (COAST_VELOCITY_TAU_MS), so it is measured over the gap since
+    // the previous update rather than counted in updates. The first update has no previous one to
+    // measure from, so nothing has coasted yet and the factor is 1.
+    const coastStep = Math.max(0, now - (this.lastUpdateAt ?? now)) / 1000;
+    const coastFactor = 1 - smoothingAlpha(coastStep, COAST_VELOCITY_TAU_MS);
     for (const track of this.tracks) {
       if (track.seenThisFrame) continue;
       const age = now - track.lastSeen;
       if (age < TRACK_TIMEOUT_MS) {
-        track.vx = (track.vx ?? 0) * COAST_VELOCITY_DECAY;
-        track.vy = (track.vy ?? 0) * COAST_VELOCITY_DECAY;
+        track.vx = (track.vx ?? 0) * coastFactor;
+        track.vy = (track.vy ?? 0) * coastFactor;
         track.missedFrames = (track.missedFrames ?? 0) + 1;
       }
     }
+    this.lastUpdateAt = now;
 
     for (let i = 0; i < boxes.length; i++) {
       if (matchedBoxes.has(i)) continue;
