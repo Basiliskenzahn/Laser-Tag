@@ -14,8 +14,6 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 
 Enter a name (up to 20 characters) and a room code (up to 16 letters, digits or `-`; it's case-insensitive). Tap **Continue** and allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
 
-An iPhone will also ask for **Motion & Orientation access**. Allowing it is worth it: your phone then shares how much it's being moved, which helps the other phones confirm that the person they're aiming at really is you. Declining only makes recognition fall back to appearance alone — everything still works.
-
 - A room holds **2 to 8 players**.
 - You can't join a room while a round is running. You'll see *"Lobby is already running."* Wait for the round to finish and try again.
 - Your phone remembers your name and room. If you reload the page or briefly lose connection, it rejoins you automatically as the same player.
@@ -101,5 +99,4 @@ Everyone starts with **100 HP**. At 0 HP you're down for the rest of the round. 
 - **Scan where you'll play.** Lighting changes how people look on camera.
 - **Keep your whole body visible** to opponents. The phone needs a decent view of a person to recognise them.
 - **Give it a moment.** A newly visible player needs a moment of steady recognition — around a third of a second, longer if they've only just come into frame — before they become targetable.
-- **Keep moving.** Movement is a second, independent clue: when you walk or dodge, your phone's own motion tells the other phones that the person they see is you. Standing perfectly still doesn't break anything, it just leaves recognition to appearance alone.
 - **Keep the screen on.** The game asks the phone to stay awake, but switching apps can pause the camera.
