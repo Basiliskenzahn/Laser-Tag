@@ -14,7 +14,7 @@ import { localSelfId, scannedGallery } from './roster.js';
 import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
-import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
+import { enterGame, popup, renderHud, restartAnimation, showHitBar } from './screens/game.js';
 import { showResultsSoon, updateResults } from './screens/results.js';
 import { forgetScanCache } from './screens/scan.js';
 
@@ -141,6 +141,7 @@ function handleMessage(msg) {
       sound.hitConfirmed(msg.zone === 'head');
       restartAnimation($('crosshair'), 'hit');
       popup(msg.zone === 'head' ? `HEADSHOT −${msg.damage}` : `−${msg.damage}`, msg.zone === 'head');
+      showHitBar(msg.targetId, msg.hp, msg.damage);
       break;
     case 'gotHit':
       sound.hurt();

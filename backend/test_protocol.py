@@ -319,6 +319,8 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(hit_resp.status, 200)
 
         await wait_for(lambda: any(m["type"] == "hitConfirmed" for m in a.messages))
+        confirmed = next(m for m in a.messages if m["type"] == "hitConfirmed")
+        self.assertEqual((confirmed["targetId"], confirmed["hp"]), (b_id, 80))
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
 

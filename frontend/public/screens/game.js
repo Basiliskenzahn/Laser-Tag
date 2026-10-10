@@ -33,6 +33,8 @@ export function enterGame() {
   $('damage').classList.remove('flash');
   $('crosshair').classList.remove('firing', 'hit');
   $('popups').replaceChildren();
+  clearHitBars();
+  for (const bar of $('hud').querySelectorAll('.hurt')) bar.classList.remove('hurt');
   $('game-screen').hidden = false;
   video.hidden = false;
   canvas.hidden = false;
@@ -133,18 +135,53 @@ export function clearGameCountdown() {
   hideGameCountdown();
 }
 
+// A health bar: the fill, with a white chip behind it for HP just lost.
+function createHealthBar(hp, maxHp) {
+  const bar = document.createElement('div');
+  bar.className = 'hp';
+  bar.innerHTML = '<div class="hp-chip"></div><div class="hp-fill"></div>';
+  bar.addEventListener('animationend', (event) => {
+    if (event.target === bar) bar.classList.remove('hurt');
+  });
+  setHealth(bar, hp, maxHp);
+  return bar;
+}
+
+// A drop snaps the fill down and gives the bar a small shake; the chip stays at the old HP for a
+// moment and then drains to the new one (its delayed width transition is in style.css).
+function setHealth(bar, hp, maxHp) {
+  const previous = Number(bar.dataset.hp);
+  const fraction = Math.max(0, hp / maxHp);
+  bar.dataset.hp = hp;
+  bar.querySelector('.hp-fill').style.width = `${fraction * 100}%`;
+  bar.querySelector('.hp-fill').classList.toggle('low', fraction <= 0.3);
+  bar.querySelector('.hp-chip').style.width = `${fraction * 100}%`;
+  if (hp < previous) restartAnimation(bar, 'hurt');
+}
+
 export function renderHud() {
   const game = state.game;
   const hud = $('hud');
-  hud.innerHTML = '';
-  for (const p of game?.players ?? []) {
-    const row = document.createElement('div');
+  // Rows are kept per player rather than rebuilt, so a bar's shake and drain survive the next
+  // update, and only moved when the order changes: a node taken out of the page drops both.
+  const rows = new Map([...hud.children].map((row) => [row.dataset.id, row]));
+  // Yours always comes first, beside the Leave button; everyone else follows in join order.
+  const players = [...(game?.players ?? [])].sort((a, b) => (b.id === state.myId) - (a.id === state.myId));
+  players.forEach((p, i) => {
+    let row = rows.get(String(p.id));
+    rows.delete(String(p.id));
+    if (!row) {
+      row = document.createElement('div');
+      row.dataset.id = p.id;
+      row.append(document.createElement('div'), createHealthBar(p.hp, game.maxHp));
+      row.firstChild.className = 'label';
+    }
     row.className = `player${p.id === state.myId ? ' me' : ''}${!p.alive ? ' down' : ''}`;
-    row.innerHTML = `
-      <div class="label"><span>${escapeHtml(p.name)}${p.id === state.myId ? ' (you)' : ''}${p.forfeited ? ' (left)' : ''}</span>${p.wins ? `<span class="wins">★${p.wins}</span>` : ''}</div>
-      <div class="hp"><div class="hp-fill${p.hp / game.maxHp <= 0.3 ? ' low' : ''}" style="width:${(p.hp / game.maxHp) * 100}%"></div></div>`;
-    hud.append(row);
-  }
+    row.firstChild.innerHTML = `<span>${escapeHtml(p.name)}${p.id === state.myId ? ' (you)' : ''}${p.forfeited ? ' (left)' : ''}</span>${p.wins ? `<span class="wins">★${p.wins}</span>` : ''}`;
+    setHealth(row.lastChild, p.hp, game.maxHp);
+    if (hud.children[i] !== row) hud.insertBefore(row, hud.children[i] ?? null);
+  });
+  for (const row of rows.values()) row.remove();
 
   const startBtn = $('start-btn');
   const canStart = game && (game.status === 'waiting' || game.status === 'over') && game.players.length >= game.minPlayers;
@@ -213,6 +250,37 @@ export function popup(text, headshot) {
   el.textContent = text;
   $('popups').append(el);
   el.addEventListener('animationend', () => el.remove());
+}
+
+// A hit shows the target's health bar above their head for a moment. drawGame() keeps it over
+// them as they move, and it stays where it was last seen if their track drops out.
+const hitBars = new Map(); // player id -> the bar's element
+
+export function showHitBar(targetId, hp, damage) {
+  const maxHp = state.game?.maxHp;
+  if (targetId == null || hp == null || !maxHp) return;
+  let el = hitBars.get(targetId);
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'hit-bar';
+    // Starts at the HP before this hit, so the bar has something to drain from.
+    el.append(createHealthBar(hp + damage, maxHp));
+    el.addEventListener('animationend', (event) => {
+      if (event.target !== el) return;
+      el.remove();
+      hitBars.delete(targetId);
+    });
+    $('hit-bars').append(el);
+    hitBars.set(targetId, el);
+    void el.offsetWidth; // style the old HP first, so the drop below transitions from it
+  }
+  setHealth(el.firstChild, hp, maxHp);
+  restartAnimation(el, 'show');
+}
+
+export function clearHitBars() {
+  hitBars.clear();
+  $('hit-bars').replaceChildren();
 }
 
 export function restartAnimation(el, className) {
@@ -398,6 +466,7 @@ function drawGame({ vw, vh, toScreen }) {
   ctx.lineWidth = 3;
   ctx.font = '600 13px system-ui, sans-serif';
   const now = performance.now();
+  const seen = new Map(); // player id -> their box on screen, for the hit bars
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
     // Who this is, from every signal that has an opinion: a rejected guess shows as a person.
@@ -420,7 +489,8 @@ function drawGame({ vw, vh, toScreen }) {
       ctx.strokeRect(...toScreen(headBox(track.box)));
     }
 
-    const [x, y] = toScreen(track.box);
+    const [x, y, w] = toScreen(track.box);
+    if (known) seen.set(id.playerId, { x: x + w / 2, y });
     ctx.fillStyle = color;
     ctx.setLineDash([]);
     const label = known
@@ -431,5 +501,14 @@ function drawGame({ vw, vh, toScreen }) {
           ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
           : 'Person';
     ctx.fillText(label, x + 4, y + 16);
+  }
+
+  // Kept on screen, below the scoreboard, when their head is above the top of the frame.
+  const minTop = hitBars.size ? $('hud').offsetHeight + 16 : 0;
+  for (const [playerId, el] of hitBars) {
+    const at = seen.get(playerId);
+    if (!at) continue;
+    el.style.left = `${at.x}px`;
+    el.style.top = `${Math.max(at.y, minTop)}px`;
   }
 }

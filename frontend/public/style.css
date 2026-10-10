@@ -516,22 +516,22 @@ input {
   }
 }
 
+/* The scoreboard: your own bar first, on the Leave button's line, then everyone else in a tight
+   grid underneath - two short rows for a full room of 8 on a phone, one row on a wider screen. */
 #hud {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  /* The left padding keeps the scoreboard clear of #leave-game-btn. */
-  padding: max(12px, env(safe-area-inset-top)) 16px 12px 120px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+  gap: 6px 10px;
+  padding: max(12px, env(safe-area-inset-top)) 12px 10px;
   background: linear-gradient(var(--panel), transparent);
   pointer-events: none;
 }
 
 .player {
-  flex: 1 1 120px;
   min-width: 0;
 }
 
@@ -541,17 +541,43 @@ input {
 
 .label {
   display: flex;
-  gap: 8px;
+  gap: 4px;
+  font-size: 11px;
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   text-shadow: 0 1px 2px #000;
 }
 
+.label span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player .hp {
+  height: 5px;
+  border-radius: 3px;
+}
+
+/* Yours spans the row and sits level with #leave-game-btn (40px tall), clear of it on the left. */
+.player.me {
+  grid-column: 1 / -1;
+  min-height: 40px;
+  margin-left: 108px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .player.me .label {
+  font-size: 14px;
   color: var(--target);
+}
+
+.player.me .hp {
+  height: 10px;
+  border-radius: 5px;
 }
 
 .wins {
@@ -559,21 +585,93 @@ input {
 }
 
 .hp {
+  position: relative;
   height: 10px;
   border-radius: 5px;
   background: rgba(255, 255, 255, 0.15);
   overflow: hidden;
 }
 
-.hp-fill {
-  height: 100%;
+/* The fill snaps to the new HP; the white chip behind it holds the HP just lost for a beat and
+   then drains away. */
+.hp-fill,
+.hp-chip {
+  position: absolute;
+  inset: 0 auto 0 0;
   width: 100%;
+}
+
+.hp-fill {
   background: var(--hp);
-  transition: width 0.2s ease-out;
 }
 
 .hp-fill.low {
   background: var(--hp-low);
+}
+
+.hp-chip {
+  background: #fff;
+  transition: width 0.35s ease-in 0.18s;
+}
+
+/* Taking damage: a barely-there shake. `translate`, so it leaves any transform alone. */
+.hp.hurt {
+  animation: hp-shake 0.3s linear;
+}
+
+@keyframes hp-shake {
+  20% {
+    translate: -1px 0.5px;
+  }
+  40% {
+    translate: 1px -0.5px;
+  }
+  60% {
+    translate: -0.5px 0;
+  }
+  80% {
+    translate: 0.5px 0;
+  }
+}
+
+/* The target's health over their head after your hit. game.js moves it with them each frame;
+   until it has found them it sits above the crosshair. */
+#hit-bars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hit-bar {
+  position: absolute;
+  left: 50%;
+  top: calc(50% - 80px);
+  width: 72px;
+  translate: -50% calc(-100% - 8px);
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.8));
+}
+
+.hit-bar .hp {
+  height: 7px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.hit-bar.show {
+  animation: hit-bar 1.6s ease-out forwards;
+}
+
+@keyframes hit-bar {
+  from {
+    opacity: 0;
+  }
+  6%,
+  75% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
 }
 
 #banner {
@@ -786,7 +884,7 @@ input {
    a dark wash over the still-running camera. Then the rank lands, the stats come in line by line
    and the buttons last; results.js sets each element's animation-delay. */
 
-#game-screen.show-results :is(#hud, #banner, #crosshair, #popups, #leave-game-btn) {
+#game-screen.show-results :is(#hud, #banner, #crosshair, #popups, #hit-bars, #leave-game-btn) {
   display: none;
 }
 

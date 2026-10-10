@@ -6,7 +6,8 @@ What players see and hear, and where it's implemented.
 
 `renderHud()` in `app.js` rebuilds the top bar from each `state` message:
 
-- One row per player: name (with "(you)"), a ★ win counter once they've won a round, and an HP bar. The bar turns to its "low" style at 30% HP or below. Knocked-out players are styled as down.
+- One entry per player: name (with "(you)"), a ★ win counter once they've won a round, and an HP bar. Yours always comes first, full width beside the Leave button; everyone else follows in join order in a compact grid (two rows of four for a full room of 8 on a phone, one row on a wider screen). The bar turns to its "low" style at 30% HP or below. Knocked-out players are styled as down.
+- Rows are kept per player rather than rebuilt, so when a player's HP drops their bar can react: the fill snaps down, the lost HP stays as a white chip for a moment and then drains away, and the bar gives a very small shake (`setHealth()`).
 - A banner below shows status text: connection problems, *"Waiting for more players…"*, *"You are down"*, or the winner.
 - The **FIRE** button only appears while the round is playing and you're alive.
 
@@ -51,6 +52,7 @@ All of them go through one helper, `tone({type, from, to, duration, volume, dela
 | Event | Effect | Code |
 | --- | --- | --- |
 | Your hit landed | Crosshair `hit` animation and a floating popup: `−20` or `HEADSHOT −50` | `popup()`, `restartAnimation()` |
+| Your hit landed | The target's health bar appears over their head, follows them, shows the drop the same way the HUD does, and fades after about 1.5 s | `showHitBar()`, placed each frame by `drawGame()` |
 | You got hit | Full-screen red `flash`, and vibration: 120 ms for a body hit, a pattern for a headshot | `navigator.vibrate` (not supported on iOS) |
 | You fired (tap anywhere but a button) | Crosshair `firing` recoil: kicks up 10px and settles back | `restartAnimation()` |
 

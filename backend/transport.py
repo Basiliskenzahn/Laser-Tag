@@ -163,8 +163,10 @@ async def process_hit(room, shooter_id, target_id, zone):
         return result
     await send_to(shooter_id, {
         "type": "hitConfirmed",
+        "targetId": result["victimId"],
         "zone": result["zone"],
         "damage": result["damage"],
+        "hp": result["hp"],
         "ko": result["ko"],
     })
     await send_to(result["victimId"], {

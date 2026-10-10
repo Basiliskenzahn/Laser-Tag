@@ -135,7 +135,7 @@ Delivered through `/api/poll`.
 | `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
 | `scanCleared` | `targetId` | Everyone in the room | A scan was deleted. Arrives before the `roster` without it, and each phone drops its locally cached copy so it isn't resent on the next join. |
-| `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
+| `hitConfirmed` | `targetId`, `zone`, `damage`, `hp` (the target's, after the hit), `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
 
 ### State snapshot
