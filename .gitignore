@@ -28,3 +28,6 @@ npm-debug.log*
 !.vscode/extensions.json
 .idea/
 .certs/
+
+# Python
+__pycache__/
