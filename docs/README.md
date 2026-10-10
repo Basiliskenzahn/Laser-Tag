@@ -12,10 +12,10 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 ## Client (`public/`)
 
 - [App flow and screens](client/app-flow.md): join → lobby → scan → game, and what `app.js` does on each
-- [Networking](client/networking.md): long polling, hit posts, SSE, reconnect and resume
+- [Networking](client/networking.md): long polling, hit posts, motion sharing, SSE, reconnect and resume
 - [Person detection and hitboxes](client/detection.md): MediaPipe models and `detector.js`
 - [Scanning (enrolment)](client/scanning.md): how a player's appearance is recorded
-- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`
+- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`, the re-identification model in `reid.js`, and motion confirmation in `motion/`
 - [HUD, sound and feedback](client/feedback.md): what players see and hear
 
 ## Server

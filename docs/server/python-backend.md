@@ -27,14 +27,14 @@ Everything is in one file, top to bottom:
 
 | Part | What it is |
 | --- | --- |
-| Constants | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `MAX_BODY_BYTES` |
+| Constants | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
 | `Player` (dataclass) | id, name, gallery, hp, wins, alive, last shot time |
 | `Room` | The game rules: a line-by-line port of `server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | One polling session: message queue, last-seen time, the pending poll's future, and its `Session` |
 | Global dicts | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
-| `clean_*` helpers | Input sanitising for room codes, names, player ids and galleries |
+| `clean_*` helpers | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
 | `broadcast_*`, `process_hit` | Fan-out of `state`, `roster`, SSE events and hit messages |
-| `Session` | One connected phone: handles `join`, `shoot`, `scan`, `start`, and cleans up on `close()` |
+| `Session` | One connected phone: handles `join`, `shoot`, `scan`, `motion`, `start`, and cleans up on `close()` |
 | `api_*`, `events`, `health` | HTTP handlers |
 | `sweep_pollers` | Background task: every 5 s, closes sessions not seen for 30 s |
 | `create_app()` | Routes and startup/cleanup hooks |
@@ -62,10 +62,11 @@ The two are meant to be equivalent; these are the known differences:
 
 | | Python | Node |
 | --- | --- | --- |
+| `COUNTDOWN_MS` | 5000 | 3000 — an unintended divergence; see [Game rules](game-rules.md#constants) |
 | Session sweep interval | 5 s | 10 s |
 | Oversized body | `413` (checked from `Content-Length`) | `400` (counted while reading) |
 | Second poll on same session | Replaces the waiter | Answers the first with `[]` |
-| `/api/hit` body size limit | aiohttp's default (1 MB) | 256 KB |
+| Body size limit | `MAX_BODY_BYTES` (1 MB), enforced by aiohttp's `client_max_size` | `MAX_BODY_BYTES` (1 MB), counted while reading |
 | Health check at `/` | Yes | No (`/` serves the client) |
 
 The automated tests run against the Node server only. When changing behaviour here, mirror it in `server/` and check the Node tests still describe it. See [Contributing](../development/contributing.md#keep-both-backends-in-sync).

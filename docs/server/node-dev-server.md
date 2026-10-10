@@ -36,10 +36,12 @@ The LAN addresses are printed on startup.
 | `server/game.test.js` | Unit tests for `game.js` |
 | `server/realtime.test.js` | Protocol tests that drive `realtime.js` over real HTTP |
 
+Client-side logic that can run without a browser is tested from `test/` instead; see [Testing](../development/testing.md).
+
 ### `index.js`
 
 - Every request goes to `handleHttp()` from `realtime.js` first. Anything it doesn't handle is served as a static file.
-- Static mapping: `/vendor/tasks-vision/` → `node_modules/@mediapipe/tasks-vision/`, everything else → `public/`. Paths that escape those folders are refused.
+- Static mapping: `/vendor/tasks-vision/` → `node_modules/@mediapipe/tasks-vision/`, `/vendor/ort/` → `node_modules/onnxruntime-web/dist/` (for the [re-identification model](../client/identification.md#the-re-identification-embedding-reidjs)), everything else → `public/`. Paths that escape those folders are refused.
 - Files are sent with `Cache-Control: no-cache` and a MIME type from a small table (including `.mjs` and `.wasm`, which MediaPipe needs).
 - On first run it generates a self-signed certificate for `laser-tag.local`, valid for one year, using the `selfsigned` package, and stores it in `.certs/` (git-ignored). Delete that folder to get a new one.
 
@@ -53,6 +55,7 @@ Internally:
 - `pollers` maps tokens to `{queue, waiting, waitTimer, lastSeen, session}`. `flush()` answers the waiting poll with everything queued.
 - `sweepPollers()` runs every 10 s and closes sessions that haven't been seen for 30 s and have no open poll.
 - `eventStreams` maps room codes to open SSE responses.
+- `motion` messages are the only ones that don't touch the `Room`: they're sanitised (`cleanMotionSamples`) and forwarded straight to the other players' connections.
 - When a poll is aborted by the phone, the session is marked as seen at that moment, so it gets the full 30 s to come back.
 
 The protocol itself is documented in [API and protocol reference](protocol.md); the rules in [Game rules](game-rules.md).

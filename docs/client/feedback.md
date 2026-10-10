@@ -10,23 +10,25 @@ What players see and hear, and where it's implemented.
 - A banner below shows status text: connection problems, *"Waiting for more players…"*, *"You are down"*, or the winner.
 - The **FIRE** button only appears while the round is playing and you're alive.
 
-The countdown is drawn every frame by `updateCountdown()`: **5, 4, 3, 2, 1, GO!**, with *"GO!"* staying up briefly after play starts.
+The countdown is drawn every frame by `updateCountdown()`: **3, 2, 1, GO!** (the countdown is `GAME_LAUNCH_COUNTDOWN_MS`, 3 s, and then whatever `startsInMs` the server reports), with *"GO!"* staying up briefly after play starts. Each new number plays a beep; *"GO!"* gets a longer, higher one.
 
 ## Track outlines
 
-`drawGame()` draws every track seen in the last 520 ms:
+`drawGame()` draws every track seen in the last 520 ms. The label and colour come from the **fused** identity — the appearance classifier after [motion confirmation](identification.md#fusing-it-with-the-classifier-fusemotion) — so a guess that motion contradicts is drawn as an unidentified person:
 
 | Look | Meaning |
 | --- | --- |
 | Solid green outline, name label | Identified player, alive |
+| Solid green, "*name* (moves)" | Identified **and** confirmed by that player's own phone motion |
 | Red | The targetable player under the crosshair |
 | Grey, sparse dashes, "*name* down" | Identified player who is knocked out |
-| Grey, dashed, "Person" | Not identified |
+| Grey, dashed, "Person" | Not identified — including a name that motion vetoed |
+| Grey, dashed, "not *name* (motion)" | Debug mode only: appearance said *name*, that player's phone motion disagreed |
 | Yellow, long dashes, "*name*? 0.51" | Debug mode only: the best rejected match and its score |
 
 Alive and unidentified tracks also show the **body** hitbox (solid) and **head** hitbox (dashed). The crosshair element gets the `on-target` class whenever a targetable player is under it.
 
-On the scan screen, `drawScan()` outlines every detected person, with the one that would be captured in green.
+On the scan screen, `drawScan()` outlines every detected person, with the one the scan would use in green.
 
 ## Sound
 

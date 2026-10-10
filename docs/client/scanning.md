@@ -1,6 +1,6 @@
 # Scanning (enrolment)
 
-Before a round, every player is scanned so the other phones can recognise them. A scan produces a **gallery**: 12 to 24 appearance [signatures](identification.md#signatures), each from a different viewing angle. The gallery is uploaded to the server and shared with every phone in the room.
+Before a round, every player is scanned so the other phones can recognise them. A scan produces a **gallery**: 12 to 24 appearance [signatures](identification.md#signatures), each from a different viewing angle, each carrying the colour features and — when the model loaded — a [re-identification embedding](identification.md#the-re-identification-embedding-reidjs). The gallery is uploaded to the server and shared with every phone in the room.
 
 The code lives in the *Scan screen* section of `public/app.js`. Signature extraction itself is in [`identify.js`](identification.md).
 
@@ -15,7 +15,7 @@ flowchart TD
   A[Tap Scan] --> B[5 s countdown<br/>player faces camera]
   B --> C[Record 12 s<br/>~60 frames, max 1024 px wide]
   C --> D[For each frame:<br/>detect people, pick best candidate,<br/>quality checks]
-  D --> E[Extract signature<br/>for each usable frame]
+  D --> E[Extract signature + await<br/>re-identification embedding]
   E --> F[Remove outliers<br/>and near-duplicates]
   F --> G{More than 24?}
   G -- yes --> H[Pick 24 diverse seeds,<br/>average each with similar neighbours]
@@ -41,6 +41,7 @@ flowchart TD
 1. `detectScanPeople()` finds candidate boxes (object detector + pose; see [Detection](detection.md#detection-functions)).
 2. `bestUsableScanCandidate()` scores each box and keeps the best one that passes every check below. If none pass, it records the problem of the best-looking box.
 3. For the chosen box, `extractSignature()` builds a signature and a 48×64 thumbnail is cropped.
+4. If the [re-identification model](identification.md#the-re-identification-embedding-reidjs) loaded, its embedding for the same box is **awaited** and attached as the sample's `reid` field. Enrolment is the one place that waits for it: there's no frame deadline here, and every gallery sample needs one, so that live matching can use the strong signal. (During the game the same model is used fire-and-forget instead.)
 
 | Check | Problem code | Rule |
 | --- | --- | --- |
@@ -56,7 +57,7 @@ Candidate quality favours boxes that are large, tall, near the centre, confident
 
 ### 4. Sample selection
 
-`selectRotationSamples()` turns maybe 40–60 usable frames into a compact, varied gallery. "Similarity" here is the mean cosine similarity of the upper-body, lower-body and grid features.
+`selectRotationSamples()` turns maybe 40–60 usable frames into a compact, varied gallery. "Similarity" here is the mean cosine similarity of the upper-body, lower-body and grid features (`signatureSimilarity` in `app.js`) — deliberately the colour features, not the re-identification embedding: this step is about spotting *different views of the same person* and a model trained to be view-invariant would rate every angle alike and defeat the diversity selection.
 
 1. **Remove outliers** (if more than 12 candidates): drop frames whose 4 most similar neighbours average below 0.36 similarity. These are usually a different person or a bad detection.
 2. **Remove near-duplicates**: drop frames at least 0.992 similar to a better-quality frame already kept.
@@ -68,13 +69,19 @@ Candidate quality favours boxes that are large, tall, near the centre, confident
 - **12 or more samples:** the gallery is cached in `localStorage`, sent to the server, and the phone returns to the lobby with *"Saved scan for <name> with N angles."*
 - **Fewer than 12:** the phone returns to the lobby with *"Only got N/12 usable angles from U/T frames: <hint>. Try again slower."* The hint comes from the most frequent problem code. The player-facing list of hints is in [How to play](../how-to-play.md#scanning-a-player).
 
+## Cancelling
+
+The **✕** button on the scan screen cancels at any point — during the countdown, the recording or the processing pass. It clears `state.autoScanning`, which every one of those loops checks each iteration, and returns to the lobby with *"Scan cancelled."*. A cancelled scan sends nothing to the server, so the player keeps whatever gallery they already had.
+
 ## Local cache
 
-Every scan is cached under `laser-tag:scan:<room>:<lower-cased name>`. When you join, your own cached scan for that room and name is sent with the `join` message, so you're already scanned. The cache is ignored if `SCAN_CACHE_VERSION` changed or the sample count is outside 12–24.
+Every scan is cached under `laser-tag:scan:<room>:<lower-cased name>`. When you join, your own cached scan for that room and name is sent with the `join` message, so you're already scanned. `validScanCache()` rejects a cache unless `SCAN_CACHE_VERSION` matches, the name and room match, the sample count is 12–24, and every sample has `hist`, `lower`, `grid` and `shape` arrays. The current version is **11**, which is the version whose samples carry a `reid` embedding — so bumping to 11 is what discarded the pre-re-identification caches.
+
+Note that the required-field check doesn't include `reid`: a cache saved on a phone where the model failed to load is still valid, it just produces weaker matching for that player.
 
 ## Server-side limits
 
-The server keeps at most 24 samples per gallery and truncates each feature vector to a fixed length. See [Protocol → Gallery format](../server/protocol.md#gallery-format).
+The server keeps at most 24 samples per gallery and truncates each feature vector to a fixed length, including `reid` at 512. See [Protocol → Gallery format](../server/protocol.md#gallery-format).
 
 ## Tuning
 

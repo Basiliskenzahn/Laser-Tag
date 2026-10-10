@@ -12,7 +12,9 @@ flowchart LR
   subgraph Phone["Phone browser"]
     CAM[Camera] --> DET["detector.js<br/>MediaPipe models"]
     DET --> ID["identify.js<br/>signatures + tracker"]
+    REID["reid.js<br/>OSNet re-identification"] --> ID
     ID --> APP["app.js<br/>screens, HUD, aiming"]
+    MOT["motion/<br/>accelerometer match"] --> APP
     APP <--> TR["transport.js<br/>long polling"]
   end
 
@@ -36,8 +38,10 @@ flowchart LR
 | Transport | `public/transport.js` | Long-polling connection to the server | [Networking](client/networking.md) |
 | Detection | `public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
 | Identification | `public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
+| Re-identification | `public/reid.js` | OSNet person re-identification embeddings in ONNX Runtime Web; the strongest identification signal when it loads | [Identification](client/identification.md#the-re-identification-embedding-reidjs) |
+| Motion matching | `public/motion/sensor.js`, `public/motion/matching.js` | Each phone shares its accelerometer activity; a tracked person's on-screen motion confirms or vetoes who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
 | Sound | `public/sound.js` | Synthesised sound effects | [Feedback](client/feedback.md) |
-| Models | `public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder | [Detection](client/detection.md#models) |
+| Models | `public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder, OSNet x0.25 | [Detection](client/detection.md#models) |
 | Python backend | `backend/app.py` | Production game server | [Python backend](server/python-backend.md) |
 | Node dev server | `server/` | Local dev server and test target | [Node dev server](server/node-dev-server.md) |
 | nginx frontend | `frontend/` | Static files, TLS, reverse proxy | [Docker setup](operations/docker.md) |
@@ -96,4 +100,5 @@ They're meant to behave identically. **Any change to rules or the protocol has t
 | Rooms, players, HP, wins, status, countdown | Server, in memory | Lost on restart. No database. |
 | Player galleries (scans) | Server, in memory | Sent to every phone in the room as the roster. |
 | Camera frames, detections, tracks | Each phone | Never leave the device. |
+| Motion activity | Each phone, relayed by the server | One number per 100 ms per phone. The server only forwards it to the other players in the room and keeps no history. |
 | Name, room, own scan, active lobby | Phone `localStorage` | Lets a phone rejoin after a reload. |

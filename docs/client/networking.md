@@ -4,7 +4,7 @@ The client talks to the server over three plain-HTTP channels. There are no WebS
 
 | Channel | Code | Used for |
 | --- | --- | --- |
-| Long polling | `public/transport.js` | Joining, scans, starting rounds; receiving `state`, `roster`, `hitConfirmed`, `gotHit`, `error` |
+| Long polling | `public/transport.js` | Joining, scans, starting rounds, sharing motion; receiving `state`, `roster`, `motion`, `hitConfirmed`, `gotHit`, `error` |
 | `POST /api/hit` | `postHit()` in `app.js` | Reporting a shot |
 | Server-Sent Events | `openGameEvents()` in `app.js` | Room-wide `health` and `death` events during a round |
 
@@ -49,6 +49,18 @@ POST /api/hit
 ```
 
 The response isn't used for feedback. Confirmation arrives as `hitConfirmed` on the shooter's poll and `gotHit` on the victim's. Rejected shots are only logged in [debug mode](../development/debug-mode.md).
+
+## Motion samples
+
+The polling session is also how phones share motion for [identity confirmation](identification.md#motion-confirmation-motion). Every 500 ms `flushMotion()` takes whatever new 100 ms bins the sensor has produced and sends them as one message:
+
+```js
+{ "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
+```
+
+The server relays each phone's samples to **every other player in the room** as `{type: 'motion', from: <player id>, s: [...]}`; it never echoes them back to the sender and keeps no history of its own. `onRemoteMotion()` merges arriving samples into a per-player series sorted by time and trims it to the last 12 s.
+
+Samples are capped at 32 per message (`MAX_MOTION_SAMPLES`, about 3 s at 10 Hz) and sanitised to finite, non-negative numbers on both servers, since they come straight from a client. A phone that never got motion permission simply sends nothing.
 
 ## Server-Sent Events
 
