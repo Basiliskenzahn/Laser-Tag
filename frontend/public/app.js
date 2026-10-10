@@ -7,7 +7,7 @@
 
 import { $ } from './env.js';
 import { keepScreenOn } from './camera.js';
-import { startMotion } from './motion-identity.js';
+import { identity } from './identity.js';
 import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';
@@ -31,7 +31,7 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
-  startMotion(); // no-op unless ?motion=on or ?motion=strict is set
+  identity.start(); // inside the tap: the only place iOS will prompt for a sensor
   enterLobbyFromForm();
 });
 
@@ -55,7 +55,7 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
-  startMotion(); // in case motion is enabled but wasn't granted at join
+  identity.start(); // in case a sensor was never granted at join, or there was no join tap
   fire();
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));

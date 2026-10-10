@@ -35,7 +35,7 @@ flowchart LR
 | Component | Location | Responsibility | Docs |
 | --- | --- | --- | --- |
 | UI and game loop | `frontend/public/app.js` (entrypoint), `frontend/public/state.js`, `frontend/public/env.js`, `frontend/public/roster.js`, `frontend/public/camera.js`, `frontend/public/net.js`, `frontend/public/screens/*.js`, `index.html`, `style.css` | Screens, camera, render loop, scanning, shooting, HUD | [App flow](client/app-flow.md) |
-| Motion-aware identity | `frontend/public/motion-identity.js` | Fuses the appearance classifier's answer with phone-motion confirmation into a final "who is this" verdict (`resolveIdentity()`) | [App flow](client/app-flow.md#who-counts-as-a-target) |
+| Who is that person? | `frontend/public/identity.js` (the seam), `frontend/public/appearance-identity.js` (default), `frontend/public/motion-identity.js` (`?motion=on`/`?motion=strict`) | One identity provider is installed at load and answers every "who is this" question; nothing else in the app knows which signals decide | [App flow](client/app-flow.md#who-counts-as-a-target) |
 | Transport | `frontend/public/transport.js` | Long-polling connection to the server | [Networking](client/networking.md) |
 | Detection | `frontend/public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
 | Identification | `frontend/public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
