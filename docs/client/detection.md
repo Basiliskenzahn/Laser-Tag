@@ -25,8 +25,8 @@ The two paths that run models — scanning and gameplay — differ in **which** 
 
 | Model | Scan path (`screens/scan.js`) | Gameplay path (`screens/game.js`, `identify.js`) |
 | --- | --- | --- |
-| **EfficientDet-Lite0** (object detector) | Two separate jobs. **Preview:** the green box on the idle scan screen, at most every **150 ms** (`SCAN_PREVIEW_DETECT_INTERVAL_MS`), on a 512 px copy, and not at all during the recording — ~20 inferences, all during the countdown. **Processing:** every recorded frame, on a copy at most **512 px** wide. ~60 inferences per scan. | Every detection pass, on a copy at most **512 px** wide (`GAME_DETECT_MAX_WIDTH`). Every **120 ms** while a visible person is unidentified, **180 ms** once everyone is identified, plus on any shot needing a fresh detection. |
-| **Pose Landmarker Lite** | **Rescue only.** Runs on a recorded frame solely when the object detector found nobody in it, so ~0 inferences on a well-framed scan. Never in the preview. | Every **520 ms** at most, and only once the room has at least two scanned players (`rosterCandidateCount() >= 2`), plus on a shot that forces it. Same 512 px copy. |
+| **EfficientDet-Lite0** (object detector) | Two separate jobs. **Preview:** the green box on the idle scan screen, at most every **150 ms** (`SCAN_PREVIEW_DETECT_INTERVAL_MS`), on a 512 px copy, and not at all during the recording — ~20 inferences, all during the countdown. **Processing:** every recorded frame, on a copy at most **512 px** wide. ~60 inferences per scan. | Every detection pass, on a copy at most **512 px** wide (`GAME_DETECT_MAX_WIDTH`). Every **120 ms** while a visible person is unidentified, **180 ms** once everyone is identified. |
+| **Pose Landmarker Lite** | **Rescue only.** Runs on a recorded frame solely when the object detector found nobody in it, so ~0 inferences on a well-framed scan. Never in the preview. | Every **520 ms** at most, and only once the room has at least two scanned players (`rosterCandidateCount() >= 2`). Same 512 px copy. |
 | **MobileNetV3 Small** (embedder) | Every *usable* frame during processing, reading the **full-resolution** (up to 1024 px) frame. Up to ~60 inferences per scan. | Inside `extractSignature()` on each due identity check, reading the **full-resolution** video. Per track: every detection for its first 6 checks (`SETTLE_CHECKS`), then every **250 ms** (`RECHECK_MS`). |
 | **OSNet x0.25** (re-identification) | Once per frame backing a chosen gallery sample, **after** selection, reading the full-resolution frame. ~30 inferences per scan, dispatched **four at a time** into reid.js's worker ([`scan-reid.js`](scanning.md#5-deferred-work-and-what-it-saves)). | Fire-and-forget: each due identity check calls `reid.request(track, …)` and uses whatever `reid.latest(track)` already has (max age 800 ms). One inference at a time; a repeat request for a pending track is dropped. |
 
@@ -75,7 +75,7 @@ The object detector sometimes merges two people standing close together into one
 - **Splitting:** if an object box contains two or more pose boxes whose centres are offset from it, the object box is dropped in favour of the pose boxes.
 - **Filling in:** a pose box that doesn't overlap any object box is added as an extra person.
 
-The pose model is slower, so in the game it only runs when the room has at least two scanned players (counting yourself), and then at most every 520 ms, plus on any shot that triggers a fresh detection.
+The pose model is slower, so in the game it only runs when the room has at least two scanned players (counting yourself), and then at most every 520 ms. A shot no longer triggers one of its own: it is resolved against the projected boxes the crosshair was drawn from, which is why the pose model is off the shot path entirely (see [why the shot doesn't force a detection](app-flow.md#why-the-shot-doesnt-force-a-detection)).
 
 ### Pose boxes
 

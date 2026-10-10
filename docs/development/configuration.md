@@ -92,7 +92,7 @@ Model options that aren't separate constants but are worth knowing about, in `de
 | `GAME_ACQUIRE_DETECT_INTERVAL_MS` | 120 | Detection interval while someone is unidentified |
 | `GAME_TRACK_DETECT_INTERVAL_MS` | 180 | Detection interval once everyone visible is identified |
 | `GAME_POSE_DETECT_INTERVAL_MS` | 520 | Minimum interval for the slower pose model |
-| `SHOT_REFRESH_MAX_AGE_MS` | 90 | A shot triggers a fresh detection if the last one is older than this |
+| `DETECT_INPUT_DEFER_MAX_MS` | 140 | How long a due detection may be held back while the browser has input waiting, before it runs regardless. See [Not detecting while input is pending](../client/app-flow.md#not-detecting-while-input-is-pending). |
 | `SCAN_PREVIEW_DETECT_INTERVAL_MS` | 150 | Minimum interval for the scan screen's green highlight box — object detector only, on the `GAME_DETECT_MAX_WIDTH` copy, and skipped entirely while the rotation is recording. Purely cosmetic: nothing but `drawScan` reads it, so it cannot affect a gallery. Lower is a smoother-looking box and a hotter phone. |
 
 `frontend/public/camera.js` — the first-inference warm-up (see [App flow → Join](../client/app-flow.md#join-join-screen)):

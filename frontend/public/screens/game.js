@@ -2,9 +2,10 @@
 //
 // One requestAnimationFrame loop drives every screen that shows the camera. It runs detection
 // only as often as the situation needs - slower once everyone on screen is already identified,
-// and on a shrunken copy of the frame - then draws the overlay for whichever screen is up. A
-// shot is simply "whose hitbox is in the middle of the screen right now", with a fresh detection
-// forced first if the last one is too old to trust, and the server is the judge of the damage.
+// and on a shrunken copy of the frame, and not at all on a frame where the browser already has a
+// tap waiting - then draws the overlay for whichever screen is up. A shot is simply "whose hitbox
+// is in the middle of the screen right now", resolved against the same projected boxes the
+// crosshair was drawn from and with no inference of its own, and the server judges the damage.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
@@ -16,6 +17,7 @@ import { getReidThreshold } from '../identify.js';
 // namespace and a missing one is just `undefined`, which the readout handles.
 import * as matcher from '../identify.js';
 import { rangeReadout } from '../range-readout.js';
+import { emptyInputStats, inputLatencyLine, recordBlock, recordShot } from '../input-latency.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { startupTimingLine } from '../startup.js';
@@ -31,8 +33,16 @@ const GAME_TRACK_DETECT_INTERVAL_MS = 180;
 // instead of starving the drawing and the shot.
 const DETECT_MAX_BUSY_SHARE = 0.7;
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
-const SHOT_REFRESH_MAX_AGE_MS = 90;
 const GAME_DETECT_MAX_WIDTH = 512;
+// A detection that has come due may be held back this long while the browser has input waiting,
+// so a tap is not queued behind an inference that had not started yet. Bounded, because the
+// alternative starves detection: a finger resting on the FIRE button produces input events
+// indefinitely, and with no bound the boxes would stop updating for as long as it rested there.
+// Past this much lateness the detection runs regardless of what is pending.
+//
+// Sized just over one acquire interval, so at worst this halves the detection rate for as long as
+// input keeps arriving - the boxes get staler, and liveBox() projects further, but neither stops.
+const DETECT_INPUT_DEFER_MAX_MS = 140;
 // The scan screen's preview detection - the green box round whoever a scan would use. It used to
 // run on every new video frame, through detectScanPeople (object detector *plus* pose landmarker)
 // and on the full-resolution video, which made the idle scan screen by far the most expensive
@@ -115,6 +125,52 @@ function refreshScanPreview() {
   frames++;
 }
 
+// Is there a tap (or key, or scroll) the browser has taken off the platform queue but not yet
+// dispatched to us? If so, starting a detection now would make it wait for the whole inference -
+// which is the reported bug: "there is some kind of lag if i press the button since other stuff
+// needs to be processed as well". Returning from the frame instead lets the browser dispatch it
+// first, and the detection runs on the next frame about 16 ms later.
+//
+// Chromium-only (`navigator.scheduling.isInputPending`), so it is feature-detected rather than
+// assumed: on any browser without it - every iPhone - this reads false and the loop behaves
+// exactly as it did before. The try/catch is a second line of defence for a build where the
+// method exists but refuses to run (it is documented as restricted in some contexts).
+//
+// Those two guards overlap: the try/catch alone would also turn a missing method into `false`,
+// via a TypeError. The feature check stays because catching an exception on every frame of a
+// 60 Hz loop is not a way to answer a question you can answer with a typeof - but it does mean
+// removing either one on its own leaves the suite green, which is recorded deliberately in
+// test/helpers/mutate-input-latency.py rather than left for someone to discover.
+function inputPending() {
+  const scheduling = globalThis.navigator?.scheduling;
+  if (typeof scheduling?.isInputPending !== 'function') return false;
+  try {
+    return scheduling.isInputPending() === true;
+  } catch {
+    return false;
+  }
+}
+
+// When the detection now due first became due, or 0 when it is not being held back. Only ever
+// set while input is pending, and cleared the moment the detection runs, so it cannot accumulate.
+let detectDueSince = 0;
+
+// Whether to skip this frame's detection because input is waiting. Bounded by
+// DETECT_INPUT_DEFER_MAX_MS from when the detection first came due, so sustained input delays
+// detection but cannot stop it.
+export function deferDetectionForInput(now, { pending = inputPending } = {}) {
+  if (!pending()) {
+    detectDueSince = 0;
+    return false;
+  }
+  if (!detectDueSince) detectDueSince = now;
+  if (now - detectDueSince >= DETECT_INPUT_DEFER_MAX_MS) {
+    detectDueSince = 0;
+    return false;
+  }
+  return true;
+}
+
 function gameDetectInterval(now) {
   const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
   const base =
@@ -122,26 +178,25 @@ function gameDetectInterval(now) {
   return Math.max(base, inferenceMs / DETECT_MAX_BUSY_SHARE);
 }
 
-function shouldUsePoseFallback(now, forcePose = false) {
+function shouldUsePoseFallback(now) {
   if (!state.poseDetector) return false;
-  if (forcePose) return true;
   if (rosterCandidateCount() < 2) return false;
   return now - state.lastGamePoseDetectAt >= GAME_POSE_DETECT_INTERVAL_MS;
 }
 
-function detectGameplayPeople(source, timestamp, { forcePose = false } = {}) {
-  if (shouldUsePoseFallback(timestamp, forcePose)) {
+function detectGameplayPeople(source, timestamp) {
+  if (shouldUsePoseFallback(timestamp)) {
     state.lastGamePoseDetectAt = timestamp;
     return detectTrackedPeople(state.detector, state.poseDetector, source, timestamp);
   }
   return detectTrackedPeopleFast(state.detector, source, timestamp);
 }
 
-function refreshGameDetection({ forcePose = false } = {}) {
+function refreshGameDetection() {
   if (state.mode !== 'game' || video.readyState < 2) return false;
   const t0 = performance.now();
   const { source, scaleX, scaleY } = gameplayInferenceSource();
-  state.boxes = scaleBoxes(detectGameplayPeople(source, t0, { forcePose }), scaleX, scaleY);
+  state.boxes = scaleBoxes(detectGameplayPeople(source, t0), scaleX, scaleY);
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
     identifyOnce: false,
@@ -291,7 +346,10 @@ function targetUnderCrosshair(px, py) {
   return bodyHit;
 }
 
-export function fire() {
+// `firedAt` is the originating event's `timeStamp` (app.js), used only by the ?debug input
+// readout: it is when the browser created the tap, so the gap to here is how long the tap waited
+// for the main thread. Optional - the keyboard path and tests may omit it.
+export function fire(firedAt = null) {
   if (!canLocalPlayerFire()) return;
   const now = performance.now();
   if (now - state.lastShotAt < FIRE_COOLDOWN_MS) return;
@@ -301,10 +359,20 @@ export function fire() {
 
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.
-  if (performance.now() - state.lastGameDetectAt > SHOT_REFRESH_MAX_AGE_MS) {
-    refreshGameDetection({ forcePose: rosterCandidateCount() > 1 });
-  }
+  //
+  // No detection is forced here, deliberately, and the reason is correctness before it is speed.
+  // The shot must agree with the crosshair, and the crosshair is set by drawGame() from exactly
+  // this call on the *previous* frame - from liveBox(), which projects each track along its
+  // velocity. Forcing a fresh detection inside the shot would resolve it against data the player
+  // never saw: they tapped because the crosshair went red, and a detection that runs afterwards
+  // can move or lose that box. "What you see is what you hit" (liveBox) is the guarantee, and a
+  // refresh here breaks it rather than protecting it. It also cost the shot a full synchronous
+  // object detection - plus the pose model once two players were enrolled - on the one path in
+  // the app where the player is waiting.
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
+  if (DEBUG) {
+    recordShot(inputStats, { eventTimeStamp: firedAt, entryAt: now, resolvedAt: performance.now() });
+  }
   if (hit) postHit(hit.identity.playerId, hit.zone);
 }
 
@@ -330,6 +398,13 @@ let fpsWindowStart = performance.now();
 let inferenceMs = 0;
 // The last complete second's range diagnostics, snapshotted on the same window as `fps`.
 let rangeWindow = null;
+// Input-latency samples for the ?debug readout. `null` without ?debug, so the object is never
+// even allocated on a normal load, and every recorder below is a no-op on null even if
+// one somehow escaped its `if (DEBUG)` branch.
+const inputStats = DEBUG ? emptyInputStats() : null;
+// Previous frame's timestamp, for the longest-blocking-chunk figure. Read and written only inside
+// the DEBUG branch of loop().
+let lastDebugFrameAt = performance.now();
 
 // `<pre id="debug">` lives inside `#game-screen` (index.html:80), which is `hidden` until a round
 // starts - so the overlay cannot be read on the join, lobby or scan screens even though join.js
@@ -378,7 +453,7 @@ export function loop() {
       refreshScanPreview();
     } else if (state.mode === 'game') {
       const now = performance.now();
-      if (now - state.lastGameDetectAt >= gameDetectInterval(now)) {
+      if (now - state.lastGameDetectAt >= gameDetectInterval(now) && !deferDetectionForInput(now)) {
         refreshGameDetection();
       }
     }
@@ -389,6 +464,11 @@ export function loop() {
 
   if (DEBUG) {
     const now = performance.now();
+    // Frame-to-frame gap: how long the main thread was unavailable to anything, a tap included.
+    // Measured here, at the end of the frame, so the gap spans the previous frame's detection and
+    // draw rather than splitting them.
+    recordBlock(inputStats, now - lastDebugFrameAt, now);
+    lastDebugFrameAt = now;
     if (now - fpsWindowStart >= 1000) {
       fps = (frames * 1000) / (now - fpsWindowStart);
       frames = 0;
@@ -410,6 +490,8 @@ export function loop() {
     const identityLine = identity.debugLine(now, visibleTracks);
     // Detected-but-refused vs never-detected, and the box heights the gate is judging.
     const rangeLine = rangeReadoutLine(visibleTracks);
+    // Why the FIRE button feels laggy: the tap's queueing delay against what fire() itself costs.
+    const inputLine = inputLatencyLine(inputStats);
     debugOverlay().textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
@@ -425,6 +507,7 @@ export function loop() {
             : '')
         : '') +
       (rangeLine ? `\n${rangeLine}` : '') +
+      (inputLine ? `\n${inputLine}` : '') +
       (ranked.length
         ? `\nRanks ${ranked
             .map(

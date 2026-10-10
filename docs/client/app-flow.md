@@ -111,7 +111,7 @@ A round that starts **during** a scan cancels it and takes the phone into the ga
 
 1. If there's a new video frame and no scan is being post-processed:
    - **scan mode:** call `refreshScanPreview()`, which runs the cheap object-only pass on a 512-wide copy at most every 150 ms (`SCAN_PREVIEW_DETECT_INTERVAL_MS`) — and nothing at all while the rotation is being recorded (`state.recordingScan`). This is only the green highlight on the scan screen; the gallery is built afterwards from the recorded canvases. It used to run `detectScanPeople` — object detector *plus* pose landmarker — on the full-resolution video every single frame, which cost more than the entire processing pass that followed it;
-   - **game mode:** call `refreshGameDetection()` if the detection interval has elapsed: 120 ms while acquiring people, 180 ms once every live track is identified, and never more often than the last detection's own time ÷ 0.7 (`DETECT_MAX_BUSY_SHARE`), so a phone that can't keep up stretches its own interval instead of spending more than ~70% of its time detecting.
+   - **game mode:** call `refreshGameDetection()` if the detection interval has elapsed: 120 ms while acquiring people, 180 ms once every live track is identified, and never more often than the last detection's own time ÷ 0.7 (`DETECT_MAX_BUSY_SHARE`), so a phone that can't keep up stretches its own interval instead of spending more than ~70% of its time detecting — and not on a frame where the browser already has input waiting, see [Not detecting while input is pending](#not-detecting-while-input-is-pending).
 2. `draw()` maps video coordinates to screen coordinates (the same maths as CSS `object-fit: cover`) and draws the overlay.
 3. In game mode, update the countdown display.
 4. In debug mode, update the debug overlay.
@@ -120,15 +120,65 @@ A round that starts **during** a scan cancels it and takes the phone into the ga
 
 When enabled, motion itself runs on its own timers rather than in the loop: this phone's new samples are sent every 500 ms (`MOTION_SEND_INTERVAL_MS`), and a track's motion checks are recomputed at most every 300 ms (`MOTION_CHECK_MS`), lazily, the first time something asks for that track's identity.
 
+### Not detecting while input is pending
+
+The complaint was "there is some kind of lag if i press the button since other stuff needs to be processed as well", and the diagnosis is that the tap is not slow to *handle*, it is slow to be *delivered*. Browsers do not preempt running JavaScript, so a `pointerdown` that arrives while the main thread is inside an inference waits for that inference to return before any listener of ours sees it. The vision pipeline is almost entirely main-thread and synchronous — `detectForVideo()` for both the object detector and the pose landmarker in [`detector.js`](detection.md), `embedForVideo()` and the colour signature's `getImageData()` readback in [`identify.js`](identification.md) — and `DETECT_MAX_BUSY_SHARE` explicitly permits all that to occupy up to 70% of the main thread. A tap has good odds of landing inside it.
+
+So before starting a detection, `loop()` asks whether the browser is already holding input for us:
+
+```js
+if (now - state.lastGameDetectAt >= gameDetectInterval(now) && !deferDetectionForInput(now)) {
+  refreshGameDetection();
+}
+```
+
+`deferDetectionForInput()` reads `navigator.scheduling.isInputPending()`. If input is waiting, the frame returns without detecting, the browser dispatches the tap, and the detection runs on the next frame about 16 ms later. That targets the symptom directly: the tap no longer waits behind an inference **that had not started yet**. It does nothing for a tap that arrives mid-inference — by then the queue is the browser's problem and ours is already running.
+
+Three things about it are deliberate:
+
+- **It is Chromium-only, and that is fine.** `navigator.scheduling.isInputPending` exists on Android Chrome and not on iOS Safari. It is feature-detected in two steps (`navigator.scheduling` exists without the method on some builds) and the call is wrapped in `try/catch`, so a browser without it reads `false` and the loop behaves exactly as it did before the change. Nothing downstream can tell the difference.
+- **The deferral is bounded, at 140 ms (`DETECT_INPUT_DEFER_MAX_MS`), measured from when the detection came due** — not from the current frame. A finger resting on the FIRE button produces input indefinitely, and unbounded deferral would freeze the boxes for as long as it rested there: a laggy button traded for a blind one. Past 140 ms of lateness the detection runs regardless of what is pending. The bound sits just over one acquire interval, so the worst case while input keeps arriving is roughly half the detection rate — the boxes get staler and `liveBox()` projects further, but neither stops.
+- **`DETECT_MAX_BUSY_SHARE` stays at 0.7.** Lowering it is the obvious-looking alternative and it is the wrong one: it reduces the *probability* of a tap landing inside an inference but not the *maximum* wait, which is one inference's duration either way. And since the shot now resolves entirely against projected boxes ([below](#why-the-shot-doesnt-force-a-detection)), a lower detection rate degrades aim directly. `isInputPending()` attacks the same probability without paying that.
+
+Measure it with `?debug`, which prints the tap's queueing delay next to what `fire()` itself costs and the longest blocking chunk seen recently: [the input readout](../development/debug-mode.md#the-input-readout).
+
+#### What this doesn't fix, and what would
+
+Deferring dodges the blocking chunk; it does not remove it. The real fix is **moving model inference off the main thread into a Web Worker**, which is scoped but deliberately not done, because it is a large and risky change rather than a tuning one.
+
+What would move: the MediaPipe object detector, the pose landmarker and the MobileNet embedder (`detector.js`), `identify.js`'s `embedForVideo` call, and the colour-signature `getImageData()` readback. What makes it big:
+
+- MediaPipe's tasks-vision bundle would have to be loaded inside the worker and fed `VideoFrame`s or an `OffscreenCanvas` transfer instead of the `<video>` element it reads today.
+- `identify.js`'s tracker and gallery matching read `state` synchronously, so they would have to become asynchronous or be split in two.
+- Every call site that treats detection as "returns boxes now" becomes a message round-trip, which changes the structure of the frame loop rather than one line in it.
+- `?debug`'s timing lines would need the worker to report its own.
+
+[`reid.js`](identification.md#the-re-identification-embedding-reidjs) is already off-thread (`ort.env.wasm.proxy = true`), so there is a precedent — but not a reusable one: it is ONNX Runtime's own proxying, not something MediaPipe offers. Expect a substantial change across `detector.js`, `identify.js`, `screens/game.js` and `screens/scan.js`, plus a new worker module and a new message protocol.
+
 ## Shooting
 
 `fire()`:
 
 1. Returns early unless the round is `playing`, the local player is alive, and 350 ms have passed since the last shot.
 2. Plays the shot sound and button animation.
-3. If the last detection is older than 90 ms, runs a fresh one (including the pose model when there are at least two candidates), so the shot uses an up-to-date frame.
-4. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
-5. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
+3. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
+4. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
+
+No detection runs anywhere in there. `fire()` takes one optional argument, the originating event's `timeStamp`, which `app.js` hands on from the `pointerdown`; it is read only by the `?debug` [input readout](../development/debug-mode.md#the-input-readout) and ignored otherwise.
+
+### Why the shot doesn't force a detection
+
+Step 3 used to be step 4. Before hit-testing, `fire()` checked whether the last detection was older than `SHOT_REFRESH_MAX_AGE_MS` (90 ms) and, if so, ran a full synchronous `refreshGameDetection({ forcePose: rosterCandidateCount() > 1 })` — the object detector, plus the pose landmarker once two or more players were enrolled — on the one path in the app where the player is actually waiting. That constant and the whole forced pass are gone.
+
+Removing it was safe, and the reason is worth stating properly, because it is a correctness argument before it is a performance one.
+
+**The shot already resolves against fresh data.** `targetUnderCrosshair()` hit-tests `liveBox()`, which projects each track's box along its smoothed velocity up to 0.25 s ahead. 90 ms sits comfortably inside that window, so the projected box already *is* where the person is now — computed from work that has already been paid for. A detection at 90 ms of age is not a stale box; it is a box plus 90 ms of extrapolation.
+
+**And the refresh was breaking the guarantee it looked like it was protecting.** `drawGame()` calls the *same* `targetUnderCrosshair()` on every frame, to decide whether the crosshair gets its `on-target` class. So the player taps *because the crosshair went red* — and a detection that runs **after** the tap can move that box or lose it entirely, resolving the shot against data the player never saw. "What you see is what you hit" is the guarantee, and a forced refresh inside `fire()` violates it: the frame the player aimed on is discarded and replaced, between the decision to shoot and the shot.
+
+Nor did it retire departed targets, which is the other thing it is tempting to credit it with. A track the detector misses on a pass keeps its `lastSeen` and coasts; what retires it is liveness (`LIVE_TRACK_MS`, 520 ms), not the absence of a fresh detection. A forced pass could only ever have moved the box, never removed the track.
+
+It was also not an edge case. The detection interval is 120 ms at its fastest and 180 ms once everyone is identified, longer again on a phone whose own inference time has stretched it — so against a 90 ms threshold the forced pass fired on roughly a quarter of all shots while acquiring (30 ms of a 120 ms window), half of them once identified (90 ms of 180 ms), and more than that on a slow phone. It was close to unconditional, on the one path where latency is felt.
 
 ### Who counts as a target
 

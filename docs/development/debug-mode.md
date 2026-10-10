@@ -24,6 +24,7 @@ GPU+Pose+Embed+ReID · 8 fps · 23 ms
 Bob:0.78 reid u0.82 l0.77 g0.69 s0.93 e0.61
 Range 2box h .41 .14* ≥.18 · ok14 far5
 Dist Bob .78@.41
+Input tap 12/104 shot 2/3 n4 · block 96
 Ranks #4 Bob:0.78/0.21,Alice:0.57/-0.21 | #5 self:0.80/0.22
 motion on · from Bob,Alice
 Motion #4 Bob confirmed [Bob:0.84,Alice:0.11] | #5 - self
@@ -36,6 +37,7 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | 2 | Video resolution; people in the last detection; tracks seen recently / all tracks; tracks identified as another player |
 | 3 | Each identified track: name, overall score, the marker `reid` if the [re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs) decided the match, then **u**pper-body, **l**ower-body, **g**rid, **s**hape and **e**mbedding similarity |
 | `Range` / `Dist` | The range readout — [its own section below](#the-range-readout) |
+| `Input` | The input readout: why the FIRE button feels laggy — [its own section below](#the-input-readout) |
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
 | `motion` | Absent by default, since whatever is identifying people only gets a line if it has something to say and the appearance-only provider doesn't. With `?motion=on` or `?motion=strict`: this phone's sensor (`on`, `no data` or `off`), `strict` if set, and which players' phones are sending motion samples |
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
@@ -105,6 +107,79 @@ The implementation is `frontend/public/range-readout.js` — pure, DOM-free and 
 all when `?debug` is absent. For the offline counterpart — what admitting smaller boxes does to
 accuracy, and why the synthetic answer cannot be trusted — see
 [box scale and range](../box-scale-evaluation.md).
+
+### The input readout
+
+One line for one complaint: **the FIRE button feels laggy.** The field report was "there is some
+kind of lag if i press the button since other stuff needs to be processed as well", and that
+feeling is two separate delays added together.
+
+The first is the **delivery wait**: the tap sat in the browser's input queue while the main thread
+was inside a detection. Browsers do not preempt running JavaScript, so a `pointerdown` that arrives
+mid-inference waits for that inference to return. Nothing inside `fire()` can shorten it — it is
+already over by the time `fire()` is entered — so the fix is always upstream of the shot. The
+second is the **shot resolve**: what `fire()` itself spends between being entered and handing the
+shot to the server. The shot sound and the button flash are already out before that point, so this
+one delays the *hit confirmation*, not the trigger feel.
+
+From the sofa both read as "the button is laggy", and they have opposite fixes, so guessing which
+one dominates is how you spend an afternoon optimising the half that was already fast. Hence the
+line. It also prints the longest blocking chunk seen recently, because the delivery wait is bounded
+above by one blocking chunk, and a mean hides the one shot that made the player complain.
+
+```
+Input tap 12/104 shot 2/3 n4 · block 96
+```
+
+| Field | Meaning |
+| --- | --- |
+| `tap 12/104` | Mean and worst **delivery wait** in ms: the gap between the originating `pointerdown`'s `event.timeStamp` and `fire()` being entered. `event.timeStamp` on a trusted pointer event is a `DOMHighResTimeStamp` on this document's own time origin — the same origin `performance.now()` counts from — and it is stamped when the browser *created* the event from the platform input, not when a listener ran. So the difference is precisely the queueing delay. This is the number the player actually feels |
+| `tap -/-` | No usable timestamp on that shot — a stamp of exactly 0, one on a different time origin (legacy Unix-epoch milliseconds), or `fire()` called with none at all. A wrong figure here is worse than none, because the whole point of the line is to size one delay against the other, so the guards in `deliveryWait()` print a dash instead. `shot` is still reported for those shots |
+| `shot 2/3` | Mean and worst **shot resolve** in ms: `fire()` entry to the `postHit()` call |
+| `n4` | How many shots those means cover. At most 8 (`SHOT_SAMPLES`), and firing is cooldown-limited to under three a second, so this is roughly the last few seconds of shooting — recent enough to describe where you are standing now, long enough that the numbers don't vanish the moment you stop |
+| `block 96` | The longest single frame-to-frame gap in the last 2–4 seconds (`BLOCK_WINDOW_MS`, kept over two half-windows so the worst chunk isn't dropped the instant a window rolls over): how long the main thread was unavailable to *anything*, a tap included. This is the **ceiling** on delivery wait. A gap over 1000 ms (`MAX_PLAUSIBLE_BLOCK_MS`) is a hidden tab or a sleeping phone rather than a blocking chunk, and is discarded — otherwise one backgrounded moment makes the worst case unreadable for the rest of the session |
+
+Two things `tap` deliberately includes, because it is meant to read as what the player waits and not
+as what one queue cost. Chromium stamps a hardware pointer event with the **operating system's** input
+time, before the browser's main thread has the event at all, so there is a floor of a few
+milliseconds here even on a completely idle thread. And the listener's own preamble counts: `app.js`
+calls `identity.start()` before `fire()`, so whatever that costs lands in `tap` rather than in
+`shot` — it is a no-op on the appearance provider and a cheap early return on the motion one, but it
+is why this is measured to *`fire()` entry* and not to listener entry. Both are far below the delay
+being investigated; neither is a bug.
+
+Reading it:
+
+- **`tap` large, and about the same as `block`.** `Input tap 88/141 shot 2/3 n5 · block 148` — the
+  reported bug, exactly. The tap is sitting behind one inference: its wait is the whole blocking
+  chunk, not a slice of it. **Nothing in `fire()` is at fault** and nothing in `fire()` can help;
+  see [not detecting while input is pending](../client/app-flow.md#not-detecting-while-input-is-pending).
+- **`tap` small, `shot` large.** `Input tap 6/14 shot 61/88 n6 · block 96` — a different bug
+  entirely, in what `fire()` does between being entered and sending. The trigger feels fine and the
+  *hit* lands late. Look at `targetUnderCrosshair()` and anything that was added in front of
+  `postHit()`.
+- **`tap` mean small, worst much larger.** `Input tap 12/104 shot 2/3 n4` — intermittent, which is
+  exactly how it gets reported ("*some kind* of lag"): most taps miss the inference and one lands
+  inside it. This is why the worst is printed next to the mean; on the mean alone there is nothing
+  here to fix.
+- **`block` much larger than any single inference.** Line 1 says `23 ms` and the readout says
+  `block 210` — then the ceiling is not one model, it is several things in a row on the same frame.
+  Chasing the object detector's own time will not move it.
+
+The line is **absent entirely** until something has been measured — no shots fired and no frame gap
+recorded — rather than printed as a row of dashes, which reads like a measurement of zero. With a
+block figure but no shots yet it is just `Input block 96`, which is what the scan screen shows: the
+frame gap is recorded on every frame the overlay updates, while shots only exist in a round.
+
+The implementation is `frontend/public/input-latency.js`: pure, DOM-free, with no module-level
+mutable state (the samples object belongs to `screens/game.js`, next to `fps` and `inferenceMs`),
+and unit-tested without a browser. It costs nothing at all without `?debug` — the samples object is
+not even allocated (`const inputStats = DEBUG ? emptyInputStats() : null`) and every recorder sits
+inside an `if (DEBUG)` branch, no-op on `null` even if one escaped. Four test files hold that down
+from different sides: `test/input-latency.test.js` (the formatting and the timestamp guards),
+`test/input-latency-debug.test.js` (the real overlay with `?debug` on), `test/input-latency-cost.test.js`
+(structurally zero-cost when it is off) and `test/shot-latency.test.js` (the shot path, including
+that nothing is written without `?debug`).
 
 ### Startup and scan costs
 
