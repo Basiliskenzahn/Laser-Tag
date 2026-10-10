@@ -11,7 +11,6 @@ import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
 import { localSelfId, mergeRoster, scannedGallery } from './roster.js';
-import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
@@ -38,14 +37,12 @@ function cancelReconnect() {
 }
 
 // Leaving a room for good, as opposed to riding out a blip: call off any pending retry first so
-// nothing dials back in behind the player, drop the connection, and stop the per-room identity
-// signals (the motion provider's sensor and the activity it has collected per player id).
+// nothing dials back in behind the player, then drop the connection.
 export function leaveRoom({ notify = false } = {}) {
   cancelReconnect();
   state.conn?.close({ notify });
   state.conn = null;
   state.connected = false;
-  identity.stop();
 }
 
 // Game control/state messages use HTTP polling. Health/death notifications use SSE once the
@@ -203,9 +200,12 @@ function handleMessage(msg) {
       restartAnimation($('damage'), 'flash');
       break;
     default:
-      // Nothing on screen wants it, so it is a signal for whatever is identifying people
-      // (identity.js); messages nobody claims are ignored there.
-      identity.onServerMessage(msg);
+      // Nothing on screen wants it, so it is ignored. This has to stay a silent no-op rather
+      // than a throw or a console error: a phone still running an older build can relay a
+      // `motion` message into a room (that subsystem was deleted, but a stale tab has not
+      // heard), and an unknown message must never be able to break the one handler every
+      // server message passes through.
+      break;
   }
 }
 

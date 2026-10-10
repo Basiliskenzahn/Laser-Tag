@@ -9,7 +9,6 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { identity } from '../identity.js';
 import { getReidThreshold } from '../identify.js';
 // A namespace import alongside the named one above, deliberately. The range diagnostics are being
 // added to identify.js on a sibling branch, and a named import of an export that is not there yet
@@ -18,10 +17,11 @@ import { getReidThreshold } from '../identify.js';
 import * as matcher from '../identify.js';
 import { rangeReadout } from '../range-readout.js';
 import { emptyInputStats, inputLatencyLine, recordBlock, recordShot } from '../input-latency.js';
-import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
+import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
+import { targetPlayerId } from '../target.js';
 import * as sound from '../sound.js';
 import { drawScan, scanCostLine } from './scan.js';
 
@@ -203,9 +203,7 @@ function refreshGameDetection() {
     embedder: state.embedder,
     reid: state.reid,
     closedSet: true,
-    scoreAdjust: identity.scoreAdjust ?? null,
   });
-  identity.observe(state.tracks, t0);
   state.lastGameDetectAt = t0;
   inferenceMs = performance.now() - t0;
   frames++;
@@ -337,11 +335,11 @@ function targetUnderCrosshair(px, py) {
   const now = performance.now();
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
-    const id = identity.resolve(t, now);
-    if (!id.playerId || !isAlivePlayer(id.playerId)) continue;
+    const playerId = targetPlayerId(t, now);
+    if (!playerId || !isAlivePlayer(playerId)) continue;
     const box = liveBox(t, now);
-    if (contains(headBox(box), px, py)) return { track: t, zone: 'head', identity: id };
-    if (contains(bodyBox(box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
+    if (contains(headBox(box), px, py)) return { track: t, zone: 'head', playerId };
+    if (contains(bodyBox(box), px, py)) bodyHit = { track: t, zone: 'body', playerId };
   }
   return bodyHit;
 }
@@ -373,7 +371,7 @@ export function fire(firedAt = null) {
   if (DEBUG) {
     recordShot(inputStats, { eventTimeStamp: firedAt, entryAt: now, resolvedAt: performance.now() });
   }
-  if (hit) postHit(hit.identity.playerId, hit.zone);
+  if (hit) postHit(hit.playerId, hit.zone);
 }
 
 async function postHit(targetId, zone) {
@@ -486,8 +484,6 @@ export function loop() {
     const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
-    // Whatever is identifying people gets a line of its own, if it has anything to say.
-    const identityLine = identity.debugLine(now, visibleTracks);
     // Detected-but-refused vs never-detected, and the box heights the gate is judging.
     const rangeLine = rangeReadoutLine(visibleTracks);
     // Why the FIRE button feels laggy: the tap's queueing delay against what fire() itself costs.
@@ -519,7 +515,6 @@ export function loop() {
             )
             .join(' | ')}`
         : '') +
-      (identityLine ? `\n${identityLine}` : '') +
       (rejected.length
         ? `\nRejected ${rejected
             .map(
@@ -578,10 +573,10 @@ function drawGame({ vw, vh, toScreen }) {
   const now = performance.now();
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
-    // Who this is, from every signal that has an opinion: a rejected guess shows as a person.
-    const id = identity.resolve(track, now);
-    const known = Boolean(id.playerId);
-    const dead = known && isDeadPlayer(id.playerId);
+    // Who this is, if the appearance gate is confident: a rejected guess shows as a person.
+    const playerId = targetPlayerId(track, now);
+    const known = playerId !== null;
+    const dead = known && isDeadPlayer(playerId);
     const alive = known && !dead;
     const targeted = !dead && hit?.track === track;
     const debugMatch = DEBUG && !known && !track.selfRejected ? track.debugMatch : null;
@@ -604,18 +599,14 @@ function drawGame({ vw, vh, toScreen }) {
     ctx.setLineDash([]);
     // In debug mode every box also shows its best match and score, for tuning ?reid= in the field.
     const best = DEBUG ? (track.rankings ?? []).find((r) => r.id !== localSelfId()) : null;
-    // Typical (median) score including motion, this check's in brackets when it differs, and the
-    // motion part when there is one.
+    // The typical (median) score, with this check's own in brackets when it differs.
     const latestNote = best?.rawScore != null && Math.abs(best.rawScore - best.score) >= 0.005 ? ` (now ${best.rawScore.toFixed(2)})` : '';
-    const motionNote = best?.motionAdjust ? ` motion${best.motionAdjust > 0 ? '+' : ''}${best.motionAdjust.toFixed(2)}` : '';
-    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${latestNote}${motionNote}${best.hasReid ? '' : ' colour'}]` : '';
+    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${latestNote}${best.hasReid ? '' : ' colour'}]` : '';
     const label = (known
-      ? `${id.name}${dead ? ' down' : id.confirmedBy ? ` (${id.confirmedBy})` : ''}`
-      : id.reason === 'vetoed' && DEBUG
-        ? `not ${gamePlayer(id.vetoed)?.name ?? 'them'} (${id.vetoedBy})`
-        : debugMatch
-          ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
-          : 'Person') + scoreNote;
+      ? `${track.name}${dead ? ' down' : ''}`
+      : debugMatch
+        ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
+        : 'Person') + scoreNote;
     ctx.fillText(label, x + 4, y + 16);
   }
 }

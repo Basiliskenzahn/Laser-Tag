@@ -8,7 +8,6 @@
 import { $, REID_THRESHOLD } from './env.js';
 import { setReidThreshold } from './identify.js';
 import { keepScreenOn } from './camera.js';
-import { identity } from './identity.js';
 import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';
@@ -34,7 +33,6 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
-  identity.start(); // inside the tap: the only place iOS will prompt for a sensor
   enterLobbyFromForm();
 });
 
@@ -63,7 +61,6 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 // frontend/public/input-latency.js.
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
-  identity.start(); // in case a sensor was never granted at join, or there was no join tap
   fire(event.timeStamp);
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));

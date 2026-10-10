@@ -330,13 +330,6 @@ test('a throw while starting the lobby does not latch the join button', async ()
   }
 });
 
-test('leaving a room stops the installed identity provider', () => {
-  // The seam has to stay symmetric: with ?motion=off the appearance provider is installed, and
-  // leaveRoom calls stop() on whichever one it is.
-  assert.equal(typeof net.leaveRoom, 'function');
-  net.leaveRoom(); // would throw if the installed provider had no stop()
-});
-
 test('a connection that never opens counts up to the unreachable message', async () => {
   // The counter still has to work: it is what tells "Reconnecting…" apart from "check your
   // internet connection", and a handler throw must never be able to reach it (see
