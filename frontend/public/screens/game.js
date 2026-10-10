@@ -14,6 +14,7 @@ import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
 import * as sound from '../sound.js';
 import { drawScan } from './scan.js';
+import { hideResults } from './results.js';
 
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
@@ -26,6 +27,7 @@ const GAME_DETECT_MAX_WIDTH = 512;
 export function enterGame() {
   $('scan-screen').hidden = true;
   $('lobby-screen').hidden = true;
+  hideResults();
   $('game-screen').hidden = false;
   video.hidden = false;
   canvas.hidden = false;

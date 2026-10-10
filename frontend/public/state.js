@@ -21,7 +21,7 @@ export const state = {
   embedder: null,
   reid: null, // person re-identification (reid.js); null if it couldn't load
   delegate: '',
-  mode: 'join', // 'join' | 'lobby' | 'scan' | 'game'
+  mode: 'join', // 'join' | 'lobby' | 'scan' | 'game' | 'results' (round over for us, camera still up)
   boxes: [], // people in the latest camera frame, in video pixels
   tracker: new Tracker(),
   tracks: [],

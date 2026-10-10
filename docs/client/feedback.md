@@ -41,7 +41,8 @@ On the scan screen, `drawScan()` outlines every detected person, with the one th
 | `hitConfirmed(headshot)` | Your hit landed | Short sine ping, a second higher ping for headshots |
 | `hurt()` | You got hit | Low sawtooth buzz |
 | `countdownBeep(final)` | Each countdown number | Short beep, longer higher beep on GO |
-| `win()` / `lose()` | Round over | Rising four-note / falling three-note jingle |
+| `win()` / `lose()` | Results screen opens (you won / you were knocked out or lost) | Rising four-note / falling three-note jingle |
+| `statTicks(count, start, step)` | Results screen, one per stat line as it appears | Short, quiet sine ticks rising in pitch |
 
 All of them go through one helper, `tone({type, from, to, duration, volume, delay})`.
 

@@ -13,6 +13,7 @@ import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '..
 import { send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
 import { setJoinStatus } from './join.js';
+import { hideResults } from './results.js';
 import { beginPlayerScan, hideScanCountdown } from './scan.js';
 
 const GAME_LAUNCH_COUNTDOWN_MS = 3_000; // mirrors server/game.js's COUNTDOWN_MS
@@ -70,6 +71,7 @@ export function showLobby(message = '') {
   hideScanCountdown();
   clearGameCountdown();
   closeLeaveDialog();
+  hideResults();
   $('game-screen').hidden = true;
   $('lobby-screen').hidden = false;
   video.hidden = true;

@@ -16,6 +16,7 @@
 | `screens/lobby.js` | Lobby list, launch, leave |
 | `screens/scan.js` | The rotation scan: recording, scoring, outlier/duplicate removal, the cache |
 | `screens/game.js` | The frame loop, overlay, HUD/countdown and shooting |
+| `screens/results.js` | The end-of-round overlay: your placing, stats, Done and Rematch |
 | [`detector.js`](detection.md) | Creating the MediaPipe models and finding people in frames |
 | [`identify.js`](identification.md) | Signatures, matching and the `Tracker` |
 | [`reid.js`](identification.md#the-re-identification-embedding-reidjs) | The OSNet person re-identification embedding, the strongest identification signal when it loads |
@@ -34,12 +35,14 @@ stateDiagram-v2
   lobby --> scan: Scan / Rescan
   scan --> lobby: scan saved or failed
   lobby --> game: Launch, or server state = countdown
-  game --> lobby: server state = over
+  game --> results: knocked out, or server state = over
+  results --> lobby: Done
+  results --> game: Rematch, or server state = countdown
   lobby --> join: Leave
   lobby --> join: "Lobby is already running."
 ```
 
-`state.mode` tracks the current screen: `'join' | 'lobby' | 'scan' | 'game'`.
+`state.mode` tracks the current screen: `'join' | 'lobby' | 'scan' | 'game' | 'results'`.
 
 ### Join (`#join-screen`)
 
@@ -68,7 +71,17 @@ A **✕** button in the corner calls `cancelScan()`, which just sets `state.auto
 - `enterGame()` shows the camera, opens the SSE stream for the room and renders the HUD.
 - Every frame, `loop()` runs detection when due, then `drawGame()` draws each live track with its hitboxes and label (see [Feedback](feedback.md#track-outlines)).
 - **FIRE** (pointer down) or **Space** calls `fire()`. See [Shooting](#shooting).
-- When a `state` message says `over`, every phone returns to the lobby showing *"You win!"* or *"<name> wins!"*.
+- As soon as the round is over for this phone — a `state` message shows it knocked out, or says `over` — it switches to [Results](#results-results).
+
+### Results (`#results`)
+
+An overlay inside the game screen, opened by `showResults()`. It switches `state.mode` to `'results'`, which stops detection and overlay drawing while the camera keeps running behind it, and hides the HUD, crosshair, banner and Leave button.
+
+- **The reveal** is all CSS: a flash (red when knocked out, white when you win) fades into a dark wash, then the rank lands, the stat lines come in one every 110 ms with a soft tick each, and the buttons appear last. `results.js` only sets each element's `animation-delay`.
+- **The rank** is `#1` for the winner, otherwise one more than the number of other players still standing when you went down. `#1`–`#3` are gold, silver and bronze; the rest are white.
+- **The stats** are placeholders (`PLACEHOLDER_STATS`) until the server tracks per-player stats.
+- **Rematch** stays disabled, with *"Waiting for the round to end…"*, while anyone is still playing. It goes through the lobby (`showLobby()` then `launchGame()`), so a missing scan or a refused start lands on a screen that can show it. **Done** returns to the lobby.
+- A `countdown` (someone else started the next round) takes every phone on this screen straight back into the game.
 
 ## The render loop
 

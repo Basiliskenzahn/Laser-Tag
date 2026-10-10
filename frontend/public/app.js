@@ -12,9 +12,10 @@ import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';
 import { enterLobbyFromForm, initJoinForm, resumeActiveLobby, setJoinStatus } from './screens/join.js';
-import { launchGame, leaveLobby } from './screens/lobby.js';
+import { launchGame, leaveLobby, showLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
 import { closeLeaveDialog, fire, openLeaveDialog } from './screens/game.js';
+import { rematch } from './screens/results.js';
 
 // ---- Join screen ----
 
@@ -77,5 +78,10 @@ $('leave-confirm-btn').addEventListener('click', leaveLobby);
 $('leave-dialog').addEventListener('click', (event) => {
   if (event.target === event.currentTarget) closeLeaveDialog(); // the backdrop, not the box
 });
+
+// ---- Results ----
+
+$('results-done-btn').addEventListener('click', () => showLobby());
+$('results-rematch-btn').addEventListener('click', rematch);
 
 resumeActiveLobby();

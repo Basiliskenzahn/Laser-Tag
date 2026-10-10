@@ -47,3 +47,8 @@ export function lose() {
 export function countdownBeep(final) {
   tone({ type: 'sine', from: final ? 1320 : 660, duration: final ? 0.3 : 0.12 });
 }
+
+// One short tick per results line, timed to match the lines appearing.
+export function statTicks(count, start, step) {
+  for (let i = 0; i < count; i++) tone({ type: 'sine', from: 900 + i * 60, duration: 0.04, volume: 0.08, delay: start + i * step });
+}

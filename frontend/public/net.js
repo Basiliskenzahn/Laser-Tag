@@ -15,6 +15,7 @@ import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
+import { showResults, updateResults } from './screens/results.js';
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 const LOBBY_RUNNING_MESSAGE = 'Lobby is already running.';
@@ -151,6 +152,22 @@ function onState(game) {
   if (game.status === 'countdown') state.countdownEndsAt = performance.now() + game.startsInMs;
   else if (game.status !== 'playing') state.countdownEndsAt = null;
   if (game.status === 'countdown' || game.status === 'playing') state.launchingFromLobby = false;
+  // Our own start (Launch, Rematch) is on its way: an "over" from before it must not end the new round.
+  if (game.status === 'over' && state.launchingFromLobby) return;
+  const me = game.players.find((player) => player.id === state.myId);
+  if (state.mode === 'results') {
+    // Only a new round takes us off the results screen; anything else just updates it.
+    if (game.status !== 'countdown' && !(game.status === 'playing' && me?.alive)) {
+      updateResults(game);
+      return;
+    }
+    enterGame();
+  }
+  // The round is over for us: knocked out, or the last one standing.
+  if (state.mode === 'game' && (game.status === 'over' || (game.status === 'playing' && me && !me.alive))) {
+    showResults(game);
+    return;
+  }
   if (game.status === 'over') {
     const winner = game.players.find((player) => player.id === game.winner);
     const message = game.winner === state.myId ? 'You win!' : `${winner?.name ?? 'Someone'} wins!`;

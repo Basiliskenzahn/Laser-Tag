@@ -93,7 +93,7 @@ Everyone starts with **100 HP**. At 0 HP you're down for the rest of the round. 
 
 - **You hit someone:** a short "ping" (a double ping for a headshot), and a popup like `−20` or `HEADSHOT −50`.
 - **You got hit:** a buzz sound, a red flash, and a vibration on Android. iPhones don't support vibration in the browser.
-- **Round over:** a jingle for the winner, a sadder one for everyone else, and everyone returns to the lobby.
+- **Round over for you:** the moment you're knocked out (or win), the screen flashes and dims over the camera, then shows your placing — gold **#1**, silver **#2**, bronze **#3** — and your stats line by line, with a jingle. **Rematch** starts the next round once everyone's round has ended; **Done** takes you back to the lobby.
 
 ## Tips for a good game
 

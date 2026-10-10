@@ -706,6 +706,154 @@ input {
   color: #fff;
 }
 
+/* ---- Results: the end of your round ----
+   The overlay opens as a flash (red when you're knocked out, white when you win) that fades into
+   a dark wash over the still-running camera. Then the rank lands, the stats come in line by line
+   and the buttons last; results.js sets each element's animation-delay. */
+
+#game-screen.show-results :is(#hud, #banner, #crosshair, #popups, #leave-game-btn) {
+  display: none;
+}
+
+#results {
+  --flash: rgba(255, 46, 77, 0.92);
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom));
+  background: rgba(5, 7, 10, 0.82);
+  animation: results-flash 0.8s ease-out both;
+}
+
+#results.win {
+  --flash: rgba(255, 250, 235, 0.95);
+}
+
+@keyframes results-flash {
+  from {
+    background-color: var(--flash);
+  }
+  to {
+    background-color: rgba(5, 7, 10, 0.82);
+  }
+}
+
+#results > *,
+#results-stats > div {
+  animation: results-line 0.28s ease-out both;
+}
+
+@keyframes results-line {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
+
+#results-rank {
+  font-size: 104px;
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--text);
+  animation-name: results-rank;
+  animation-duration: 0.42s;
+  animation-timing-function: cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+@keyframes results-rank {
+  from {
+    opacity: 0;
+    scale: 1.8;
+  }
+}
+
+/* Gold, silver and bronze are metal gradients clipped to the text; everyone else gets plain white. */
+#results-rank:is(.rank-1, .rank-2, .rank-3) {
+  background: var(--metal);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 22px var(--glow));
+}
+
+#results-rank.rank-1 {
+  --metal: linear-gradient(#fff6c2, #ffd84d 45%, #d39b12);
+  --glow: rgba(255, 216, 77, 0.45);
+}
+
+#results-rank.rank-2 {
+  --metal: linear-gradient(#ffffff, #cfd8e2 45%, #8e9aa8);
+  --glow: rgba(207, 216, 226, 0.35);
+}
+
+#results-rank.rank-3 {
+  --metal: linear-gradient(#ffd2a8, #d98a4e 45%, #9a5626);
+  --glow: rgba(217, 138, 78, 0.4);
+}
+
+#results-title {
+  margin: 6px 0 28px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+#results-stats {
+  display: grid;
+  width: min(320px, 100%);
+  margin: 0;
+}
+
+#results-stats > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 2px;
+  border-bottom: 1px solid rgba(232, 238, 245, 0.12);
+  font-size: 18px;
+}
+
+#results-stats dt {
+  color: var(--text);
+}
+
+#results-stats dd {
+  margin: 0;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+#results-status {
+  min-height: 1.4em;
+  margin: 18px 0 10px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+#results-actions {
+  width: min(320px, 100%);
+}
+
+#results-done-btn {
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
+}
+
+#results-rematch-btn {
+  background: var(--target);
+  color: #06210f;
+}
+
+#results-rematch-btn:disabled {
+  opacity: 0.45;
+}
+
 #debug {
   position: absolute;
   left: 8px;

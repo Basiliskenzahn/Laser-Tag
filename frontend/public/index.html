@@ -91,6 +91,18 @@
         <span>Leave</span>
       </button>
 
+      <!-- The end of your round: a flash, then your placing and stats over the still-running camera. -->
+      <section id="results" aria-labelledby="results-rank" hidden>
+        <div id="results-rank"></div>
+        <p id="results-title"></p>
+        <dl id="results-stats"></dl>
+        <p id="results-status" role="status"></p>
+        <div id="results-actions" class="dialog-actions">
+          <button id="results-done-btn" type="button">Done</button>
+          <button id="results-rematch-btn" type="button">Rematch</button>
+        </div>
+      </section>
+
       <dialog id="leave-dialog" aria-labelledby="leave-title">
         <div class="dialog-body">
           <div class="dialog-icon"><svg aria-hidden="true"><use href="#icon-leave" /></svg></div>
