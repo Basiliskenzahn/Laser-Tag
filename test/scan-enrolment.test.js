@@ -236,8 +236,10 @@ test('only the frames behind the chosen samples are still alive during the embed
   // much is still resident *then*. Selection has to keep the frames behind the chosen samples
   // (that is the whole point of deferring OSNet) and nothing else.
   let liveDuringEmbed = 0;
+  let embedded = 0;
   const reid = {
     embed: async () => {
+      embedded++;
       liveDuringEmbed = Math.max(liveDuringEmbed, dom.canvases.reduce((bytes, canvas) => bytes + canvas.byteLength, 0));
       return [1, 0, 0, 0, 0, 0, 0, 0];
     },
@@ -247,15 +249,25 @@ test('only the frames behind the chosen samples are still alive during the embed
   assert.ok(sent.find((msg) => msg.type === 'scan'), 'the scan has to have succeeded for this to mean anything');
 
   const fullFrameBytes = 640 * 360 * 4;
-  const recordedBytes = dom.canvases.filter((canvas) => canvas.peakBytes === fullFrameBytes).length * fullFrameBytes;
-  assert.ok(recordedBytes >= 12 * fullFrameBytes, 'expected a real recording');
-  assert.ok(liveDuringEmbed > 0, 'the embedding pass never ran, so this measured nothing');
-  // A quarter is a deliberately loose ceiling - the point is an order of magnitude, not a
-  // tuning. Holding every recorded frame to the end of the pass, which is what this used to do,
-  // puts the ratio at 1.0.
+  const recorded = dom.canvases.filter((canvas) => canvas.peakBytes === fullFrameBytes).length;
+  // The box this test's detector reports, which is what a crop of it costs.
+  const cropBytes = Math.round(640 * 0.3) * Math.round(360 * 0.8) * 4;
+  assert.ok(recorded >= 12, 'expected a real recording');
+  assert.ok(embedded > 0, 'the embedding pass never ran, so this measured nothing');
   assert.ok(
-    liveDuringEmbed < recordedBytes / 4,
-    `${(liveDuringEmbed / 1e6).toFixed(2)} MB still live during the embedding pass, out of ${(recordedBytes / 1e6).toFixed(1)} MB recorded`,
+    recorded > embedded * 2,
+    `the pass embeds ${embedded} of ${recorded} frames, which is not enough of a difference for this to test anything`,
+  );
+
+  // The ceiling is the frames the pass actually reads, plus a couple of reused scratch canvases
+  // (the 512-wide detection copy and the 32x48 stats canvas) - and emphatically *not* one per
+  // usable frame. Expressed against `embedded` rather than as a fraction of the recording,
+  // because a fraction was loose enough to pass with every candidate's crop still alive.
+  const ceiling = (embedded + 4) * cropBytes;
+  assert.ok(
+    liveDuringEmbed < ceiling,
+    `${(liveDuringEmbed / 1e6).toFixed(2)} MB live while embedding ${embedded} frames (ceiling ${(ceiling / 1e6).toFixed(2)} MB); ` +
+      `${recorded} frames were recorded, ${((recorded * fullFrameBytes) / 1e6).toFixed(1)} MB`,
   );
 });
 
