@@ -117,9 +117,9 @@ export function whenScanModelsReady() {
 // code path the round will use and keeps the warm-up from touching anything the real pipeline
 // owns. Kept in step with GAME_DETECT_MAX_WIDTH there.
 const WARMUP_MAX_WIDTH = 512;
-// Shape of the blank frame used when the camera has no frame to copy yet: the same width, and the
-// 16:9 the camera is asked for, so the shaders are compiled for the size the round will use.
-const WARMUP_FALLBACK_WIDTH = WARMUP_MAX_WIDTH;
+// Height of the blank frame used when the camera has no frame to copy yet. Paired with
+// WARMUP_MAX_WIDTH above it is the 16:9 the camera is asked for, so the shaders are compiled for
+// the size the round will use.
 const WARMUP_FALLBACK_HEIGHT = 288;
 // Low enough to be below every timestamp the game can pass. MediaPipe's VIDEO mode rejects a
 // timestamp that does not strictly increase per task, and every real call derives one from
@@ -133,7 +133,7 @@ const WARMUP_REGION = { left: 0.3, top: 0.08, right: 0.7, bottom: 0.95 };
 
 function warmUpFrame() {
   const frame = document.createElement('canvas');
-  frame.width = WARMUP_FALLBACK_WIDTH;
+  frame.width = WARMUP_MAX_WIDTH;
   frame.height = WARMUP_FALLBACK_HEIGHT;
   // Nothing to copy if the stream was stopped again, or the tab was hidden before it produced a
   // frame. The blank canvas above compiles the same shaders; it just has nothing to find in them.
