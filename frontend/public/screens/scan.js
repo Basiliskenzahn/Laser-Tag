@@ -28,7 +28,6 @@ import { detectPeople, detectScanPeople } from '../detector.js';
 import { extractSignature, scanBoxProblem } from '../identify.js';
 import { keepScreenOn, pendingScanModels, whenScanModelsReady } from '../camera.js';
 import {
-  cacheableScan,
   degenerateSignature,
   scanCacheKey,
   staleScanCacheKeys,
@@ -142,11 +141,11 @@ export function loadScanCache() {
 }
 
 // Caches the scan that has just finished, if it is this phone owner's own - see scan-cache.js for
-// why a scan of anybody else is not cached at all, and why the slot is not addressed by name.
+// why a scan of anybody else is not cached at all, and why the slot is not addressed by name. The
+// id is the only thing consulted, and that is the whole fix: a name is not an identity.
 function saveScanCache(targetId) {
   const key = scanCacheKey(state.room);
-  if (!key || !cacheableScan({ targetId, selfId: localSelfId() })) return;
-  if (state.gallery.length < SCAN_MIN_SAMPLES) return;
+  if (!key || !targetId || targetId !== localSelfId()) return;
   const cache = {
     version: SCAN_CACHE_VERSION,
     room: state.room,
@@ -163,10 +162,6 @@ function saveScanCache(targetId) {
   } catch {
     // Remembering a scan across a reload is a convenience; the live scan still works without it.
   }
-}
-
-function setScanGallery(gallery) {
-  state.gallery = gallery;
 }
 
 function afterNextPaint(callback) {
@@ -285,14 +280,13 @@ function assessScanCandidate(source, box) {
   if ((box.score ?? 1) < SCAN_MIN_DETECTION_SCORE) return { problem: 'low-confidence', quality: 0 };
 
   const stats = scanImageStats(source, box);
-  if (stats.brightness < SCAN_MIN_BRIGHTNESS) return { problem: 'low-light', quality: 0, stats };
-  if (stats.brightness > SCAN_MAX_BRIGHTNESS) return { problem: 'overexposed', quality: 0, stats };
-  if (stats.contrast < SCAN_MIN_CONTRAST) return { problem: 'low-contrast', quality: 0, stats };
-  if (stats.sharpness < SCAN_MIN_SHARPNESS) return { problem: 'motion-blur', quality: 0, stats };
+  if (stats.brightness < SCAN_MIN_BRIGHTNESS) return { problem: 'low-light', quality: 0 };
+  if (stats.brightness > SCAN_MAX_BRIGHTNESS) return { problem: 'overexposed', quality: 0 };
+  if (stats.contrast < SCAN_MIN_CONTRAST) return { problem: 'low-contrast', quality: 0 };
+  if (stats.sharpness < SCAN_MIN_SHARPNESS) return { problem: 'motion-blur', quality: 0 };
 
   return {
     problem: 'ok',
-    stats,
     quality:
       boxScanQuality(box, source) +
       Math.min(box.score ?? 0.5, 1) * 0.25 +
@@ -336,13 +330,13 @@ function recordedFrameSize() {
   return { w: Math.max(1, Math.round(vw * scale)), h: Math.max(1, Math.round(vh * scale)) };
 }
 
-function captureRecordedFrame(time) {
+function captureRecordedFrame() {
   const { w, h } = recordedFrameSize();
   const image = document.createElement('canvas');
   image.width = w;
   image.height = h;
   image.getContext('2d').drawImage(video, 0, 0, w, h);
-  return { image, time };
+  return image;
 }
 
 // ---- The frames, and how much of them is alive at once ----
@@ -434,7 +428,7 @@ async function recordRotationVideo(live) {
       await nextFrame();
       const now = performance.now();
       const remaining = Math.max(0, Math.ceil((endsAt - now) / 1000));
-      frames.push(captureRecordedFrame(now - startedAt));
+      frames.push(captureRecordedFrame());
       $('scan-instruction').textContent = `Recording rotation... ${remaining}s left, ${frames.length} frames`;
       await wait(ROTATION_RECORD_FRAME_MS);
     }
@@ -443,7 +437,7 @@ async function recordRotationVideo(live) {
   }
 
   if (live()) return frames;
-  for (const frame of frames) releaseRecordedImage(frame.image);
+  for (const image of frames) releaseRecordedImage(image);
   return null;
 }
 
@@ -507,14 +501,16 @@ async function attachRotationSampleReid(samples, live) {
   return attachSampleReid(samples, {
     // The last window in which a frame can be taken away, and the longest: these crops have been
     // alive since the processing loop and OSNet is the slowest thing in the app. A frame whose
-    // pixels have gone embeds as a black rectangle - OSNet answers with a perfectly ordinary
-    // unit vector for it, identical for every blank frame, which no later check could tell from a
-    // real appearance. attachSampleReid turns a throw here into a failed scan with nothing written,
-    // which is the only honest outcome.
-    embed: (image, box) => {
-      if (frameLost(image)) throw new Error('the browser discarded a recorded frame (out of memory)');
-      return state.reid.embed(image, box);
-    },
+    // pixels have gone embeds as a black rectangle, and OSNet answers one with a perfectly
+    // ordinary unit vector - identical for every blank frame, and indistinguishable from a real
+    // appearance by any later check - so a blank `reid` is worse than none at all, because `reid`
+    // overrides every other field at match time.
+    //
+    // So a lost frame contributes no vector rather than failing the scan. attachSampleReid drops
+    // empty ones, and a sample left with nothing simply has no `reid` - the same degradation a
+    // phone whose OSNet never loaded already gets. This used to throw, which meant one false
+    // positive anywhere in the probe cost the player the whole fifteen-second rotation.
+    embed: (image, box) => (frameLost(image) ? [] : state.reid.embed(image, box)),
     yieldTo: nextFrame,
     cancelled: () => !live(),
     onProgress: (done, total) => {
@@ -529,54 +525,47 @@ async function processRotationVideo(frames, live) {
   let lastProblem = 'no-person';
   state.postProcessingScan = true;
   scanCost.frames = frames.length;
-  scanCost.framePeakMb = frames.reduce((bytes, frame) => bytes + frameBytes(frame.image), 0) / 1e6;
+  scanCost.framePeakMb = frames.reduce((bytes, image) => bytes + frameBytes(image), 0) / 1e6;
   const processStartedAt = performance.now();
 
   try {
     for (let i = 0; live() && i < frames.length; i++) {
       if (i % ROTATION_PROCESS_BATCH === 0) await nextFrame();
       if (!live()) break;
-      const frame = frames[i];
-      const boxes = detectRotationFrameBoxes(frame.image);
+      const image = frames[i];
+      const boxes = detectRotationFrameBoxes(image);
       // `problem === 'ok'` *is* usableScanBox: assessScanCandidate got it from scanBoxProblem,
       // which is the same boxQuality(..., MIN_SCAN_HEIGHT_RATIO, {scan: true}) call. Re-asking
       // used to repeat that per frame, and left the `?? scanBoxProblem(...)` fallback below dead.
-      const candidate = bestUsableScanCandidate(boxes, frame.image);
+      const candidate = bestUsableScanCandidate(boxes, image);
       const box = candidate.box;
-
-      if (box && candidate.problem === 'ok') {
-        const signature = extractSignature(frame.image, box, state.embedder, performance.now());
+      let problem = candidate.problem;
+      if (box && problem === 'ok') {
+        const signature = extractSignature(image, box, state.embedder, performance.now());
         // Not `if (state.embedder)`: personEmbedding returns [] without inferring when there is
         // no embedder, no usable region, or the inference threw.
         if (signature.embed.length) scanCost.embedInferences++;
         // The frame passed the brightness gate a moment ago, so it had pixels then. An all-zero
-        // vector now means they went away in between - the frame cannot be described, and a scan
-        // that enrols it is worse than one that fails, because an all-zero vector scores 0
-        // against everybody and the player simply stops matching.
-        const blank = degenerateSignature(signature);
-        if (blank) {
-          throw new Error(
-            `recorded frame ${i + 1}/${frames.length} came back blank (empty ${blank} vector) - the browser is out of memory`,
-          );
+        // vector now means they went away in between: the frame cannot be described, and enrolling
+        // it would be worse than dropping it, because such a vector scores 0 against everybody and
+        // the player simply stops matching. So it is one unusable frame, reported as the
+        // 'low-light' the gate itself calls a frame with nothing in it - not, as it used to be, a
+        // throw that cost the player the other fifty-nine.
+        if (degenerateSignature(signature)) {
+          problem = 'low-light';
+        } else {
+          const crop = cropFrameToBox(image, box);
+          candidates.push({ signature, box: crop.box, image: crop.image, frameIndex: i, quality: candidate.quality });
         }
-        const crop = cropFrameToBox(frame.image, box);
-        candidates.push({
-          signature,
-          box: crop.box,
-          image: crop.image,
-          frameIndex: i,
-          quality: candidate.quality,
-          stats: candidate.stats,
-          time: frame.time,
-        });
-      } else {
-        lastProblem = candidate.problem;
+      }
+      if (problem !== 'ok') {
+        lastProblem = problem;
         problemCounts.set(lastProblem, (problemCounts.get(lastProblem) ?? 0) + 1);
       }
 
       // Described, and now the only thing kept from it is its crop (or nothing).
-      releaseRecordedImage(frame.image);
-      frames[i] = { ...frame, image: null };
+      releaseRecordedImage(image);
+      frames[i] = null;
 
       $('scan-instruction').textContent =
         `Processing recorded rotation... ${i + 1}/${frames.length}, ${candidates.length} usable frames`;
@@ -619,7 +608,7 @@ async function processRotationVideo(frames, live) {
     // Every path out of here is past the last thing that reads pixels: the embedding pass is
     // awaited above, and only `signature` leaves this function. So nothing is left alive for the
     // garbage collector to get round to in its own time - on a cancel or a throw either.
-    for (const frame of frames) releaseRecordedImage(frame.image);
+    for (const image of frames) releaseRecordedImage(image);
     for (const candidate of candidates) releaseRecordedImage(candidate.image);
   }
 }
@@ -680,16 +669,7 @@ async function runAutoScan() {
     const result = await processRotationVideo(frames, live);
     if (!live() || !result) return;
 
-    const signatures = result.samples.map((sample) => sample.signature);
-    if (signatures.length >= SCAN_MIN_SAMPLES) {
-      // The last gate before a gallery becomes this player's appearance for the rest of the round,
-      // checked before `state.gallery` is touched. Nothing should be able to reach it - the
-      // processing loop refuses a blank frame, and no average of describable frames is blank -
-      // which is exactly why it throws rather than filters: if it ever fires, a scan that fails
-      // loudly is the outcome worth having.
-      assertEnrollableGallery(signatures);
-    }
-    setScanGallery(signatures);
+    state.gallery = result.samples.map((sample) => sample.signature);
 
     if (result.samples.length < SCAN_MIN_SAMPLES) {
       finalMessage =
@@ -726,7 +706,7 @@ export function beginPlayerScan(player) {
   state.savedScan = null;
   state.autoScanning = false;
   state.postProcessingScan = false;
-  setScanGallery([]);
+  state.gallery = [];
   // Before the screen appears, not when the next run starts: a scan cancelled during the countdown
   // never reaches runAutoScan's reset, and the ?debug overlay would then describe the scan before.
   resetScanCost();
@@ -764,39 +744,28 @@ export function cancelScan() {
   showLobby('Scan cancelled.');
 }
 
-// The first required vector that is blank in any sample, as an exception. An all-zero vector is
-// not a weak sample: cosine() scores it 0 against everything, so the player it was enrolled for
-// stops matching entirely - and every check downstream accepts it, from validScanCache to the
-// server's sanitiser. See scan-cache.js rule 2.
-function assertEnrollableGallery(gallery) {
-  for (const [i, signature] of gallery.entries()) {
-    const blank = degenerateSignature(signature);
-    if (blank) {
-      throw new Error(`sample ${i + 1}/${gallery.length} has an empty or all-zero ${blank} vector`);
-    }
-  }
-}
-
-function saveCurrentScan(targetId, message = `Saved scan for ${scanPersonName()}.`) {
-  if (!targetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
+// Only ever reached with a finished gallery of at least SCAN_MIN_SAMPLES, from the one place in
+// runAutoScan that has one. It used to re-check that here; a `return` on a condition runAutoScan
+// has already decided would have been invisible, because runAutoScan's `finally` then shows the
+// "Saved scan for <name>" it had already composed.
+function saveCurrentScan(targetId, message) {
   const gallery = state.gallery;
   const name = scanPersonName();
   if (targetId === localSelfId()) state.localGallery = gallery;
+  // "Saved scan for <name>" is the lobby's last word on a scan, and it used to be said whether or
+  // not the gallery ever left the phone: a scan sent down a connection that had gone away was a
+  // rotation the player was told had worked and that no other phone ever saw. `send` resolves true
+  // once the server has the message and false if it could not be delivered - it retries a
+  // transient failure itself and never rejects (transport.js) - so correct the lobby if the
+  // gallery turns out not to have arrived, while the player is still reading the line that
+  // claimed it. Rescanning really is the only recovery: a reconnect adopts this phone's existing
+  // seat and the server ignores the gallery on that path, so nothing re-sends it.
   const delivery = send({ type: 'scan', targetId, gallery });
   saveScanCache(targetId);
   showLobby(message);
-  // "Saved scan for <name>" is the lobby's last word on a scan, and it used to be said whether or
-  // not the gallery ever left the phone: a scan sent down a connection that had gone away was a
-  // rotation the player was told had worked and that no other phone ever saw. `send` is
-  // fire-and-forget here and returns a delivery promise on the branch that reworked the
-  // connection, so take whichever it is and correct the lobby if it turns out not to have
-  // arrived - only while the player is still looking at the lobby line that claimed it.
-  Promise.resolve(delivery).then(
-    (delivered) => {
-      if (delivered === false) replaceLobbyMessage(`${name}'s scan could not be sent. Check the connection and rescan.`);
-    },
-    (err) => replaceLobbyMessage(`${name}'s scan could not be sent: ${err?.message || err}. Rescan to try again.`),
-  );
+  delivery.then((delivered) => {
+    if (!delivered) replaceLobbyMessage(`${name}'s scan could not be sent. Check the connection and rescan.`);
+  });
 }
 
 // Corrects the lobby status line after the fact, and only if the player is still reading it.

@@ -47,7 +47,15 @@ function detectionFor(source) {
  * camera on every animation frame so the twelve seconds of recording produce frames that differ
  * from each other, as a real rotation does.
  */
-function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null, detector = detectionFor, paint = {} } = {}) {
+function arrangeScan({
+  myId = SELF_ID,
+  name = 'Sam',
+  room = 'demo',
+  reid = null,
+  detector = detectionFor,
+  paint = {},
+  delivered = true,
+} = {}) {
   const sent = [];
   dom.store.clear();
   dom.canvases.length = 0;
@@ -56,7 +64,11 @@ function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null,
     name,
     room,
     myId,
-    conn: { send: (msg) => sent.push(msg) },
+    // transport.js's contract, which is what scan.js is written against: `send` resolves true
+    // once the server has the message and false if it could not be delivered, and never rejects.
+    // This used to be `(msg) => sent.push(msg)`, which resolves to an array length - so every
+    // test here passed without the delivery reporting ever being exercised.
+    conn: { send: (msg) => (sent.push(msg), Promise.resolve(delivered)) },
     roster: [
       { id: SELF_ID, name: 'Sam', gallery: [] },
       { id: OTHER_ID, name: 'Sam', gallery: [] },
@@ -207,18 +219,22 @@ test('a scan whose recorded frames the browser discarded enrols nothing', async 
   assert.match(dom.element('lobby-status').textContent, /usable angles|could not/i);
 });
 
-test('a frame lost between selection and the embedding pass fails the scan loudly', async () => {
-  // The window the audit missed, and the one that actually matters: the crops behind the chosen
-  // samples live from the processing loop until the end of the OSNet pass, which is the longest
-  // and most memory-pressured phase of the scan. OSNet answers a blank crop with a perfectly
-  // ordinary unit vector - identical for every blank crop, indistinguishable from a real
-  // appearance by any later check - so the gallery would have been cached and matched against for
-  // the rest of the round. Nothing but looking at the pixels catches it.
+test('a frame lost during the embedding pass is skipped, not turned into a failed scan', async () => {
+  // The crops behind the chosen samples live from the processing loop until the end of the OSNet
+  // pass, the longest and most memory-pressured phase of the scan. OSNet answers a blank crop with
+  // a perfectly ordinary unit vector - identical for every blank crop, indistinguishable from a
+  // real appearance by any later check - and `reid` overrides every other field at match time, so
+  // a blank one is worse than none.
+  //
+  // This used to throw, which failed the whole fifteen-second rotation on one bad probe. The
+  // bargain now is: the lost frame contributes no vector, the colour gallery - which is what the
+  // frames were already described into, before anything could be taken away - still enrols, and
+  // no sample carries a `reid` built from pixels that were gone.
   let embeds = 0;
   const reid = {
-    embed: async (image) => {
+    embed: async () => {
       embeds++;
-      // The second embedding arrives to find the rest of the frames gone.
+      // The first embedding arrives and takes the rest of the frames away with it.
       if (embeds === 1) for (const canvas of dom.canvases) canvas.discard();
       return Array.from({ length: 8 }, (_, i) => (i === 0 ? 1 : 0));
     },
@@ -226,11 +242,23 @@ test('a frame lost between selection and the embedding pass fails the scan loudl
   const { sent } = arrangeScan({ reid });
   await runScan(selfPlayer);
 
-  assert.ok(embeds > 0, 'the embedding pass never ran, so this test proved nothing');
-  assert.equal(sent.find((msg) => msg.type === 'scan'), undefined, 'a scan with a lost frame must not enrol');
-  assert.deepEqual([...dom.store.keys()].filter((key) => key.includes('scan')), [], 'and must not be cached');
-  assert.match(dom.element('lobby-status').textContent, /could not process the rotation video/i);
-  assert.match(dom.element('lobby-status').textContent, /discarded a recorded frame/i);
+  const scanMessage = sent.find((msg) => msg.type === 'scan');
+  assert.ok(
+    scanMessage,
+    `a lost frame must cost its own embedding, not the scan; lobby said "${dom.element('lobby-status').textContent}"`,
+  );
+  assert.ok(scanMessage.gallery.length >= 12, `expected a full colour gallery, got ${scanMessage.gallery.length}`);
+
+  // The quality bar, and the whole point of keeping the probe: OSNet is asked about the one frame
+  // that still had pixels and about no other. Without the check every remaining crop would be
+  // embedded as a black rectangle and the vectors would look perfectly ordinary.
+  assert.equal(embeds, 1, `OSNet was asked to embed ${embeds} frames, ${embeds - 1} of them discarded`);
+  const withReid = scanMessage.gallery.filter((sample) => sample.reid?.length);
+  assert.ok(withReid.length >= 1, 'the frame that was still intact should have produced a reid vector');
+  assert.ok(
+    withReid.length < scanMessage.gallery.length,
+    `${withReid.length}/${scanMessage.gallery.length} samples carry a reid, so no frame was actually lost`,
+  );
 });
 
 test('a frame with no red in it is not mistaken for a lost one', async () => {
