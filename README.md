@@ -26,7 +26,7 @@ This publishes:
   Phones:  https://<your-lan-ip>:3443
 ```
 
-**Playing on phones (same Wi-Fi):** open the `https://` address on every phone. They'll warn that the certificate isn't trusted, because the server makes its own. Continue anyway: on iPhone, tap *Show Details → visit this website*; on Android, tap *Advanced → Proceed*. Enter a name and the same room code, then allow camera access.
+**Playing on phones (same Wi-Fi):** open the `https://` address on every phone. They'll warn that the certificate isn't trusted, because the server makes its own. Continue anyway: on iPhone, tap *Show Details → visit this website*; on Android, tap *Advanced → Proceed*. Enter a name, then one player taps **Create Room** and the others **Join Room** with the code it shows. Allow camera access.
 
 **If the Wi-Fi blocks phones from reaching each other:** run an HTTPS tunnel and open its URL on every phone instead:
 

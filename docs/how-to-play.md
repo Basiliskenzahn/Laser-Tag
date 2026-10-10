@@ -4,7 +4,7 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 
 ## The short version
 
-1. Everyone opens the game and enters the **same room code**.
+1. One player taps **Create Room** and shares the 6-character code shown in the lobby. Everyone else taps **Join Room** and enters it.
 2. In the lobby, **scan** every player: someone holds a phone on them while they turn slowly in a circle.
 3. Anyone taps **Launch**. After a short countdown, the round starts.
 4. Point the crosshair at another player and tap anywhere on the screen to fire.
@@ -12,7 +12,7 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 
 ## Joining
 
-Enter a name (up to 20 characters) and a room code (up to 16 letters, digits or `-`; it's case-insensitive). Tap **Continue** and allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
+Enter a name (up to 20 characters). Then either tap **Create Room**, which makes a new room with a random 6-character code, or tap **Join Room** and type or paste the code someone else shared (letters and digits; case doesn't matter). Allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
 
 An iPhone will also ask for **Motion & Orientation access**. Allowing it is worth it: your phone then shares how much it's being moved, which helps the other phones confirm that the person they're aiming at really is you. Declining only makes recognition fall back to appearance alone — everything still works.
 

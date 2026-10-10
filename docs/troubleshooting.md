@@ -15,7 +15,7 @@ The browser couldn't find any camera. On a laptop, check that no other app is ho
 With Docker, the certificate lives in the `certs` volume and survives restarts. It's only regenerated if the volume is deleted (e.g. `docker compose down -v`). It's valid for 365 days. Using a [tunnel](getting-started.md#if-phones-cant-reach-the-host) avoids the warning altogether.
 
 **"Lobby is already running."**
-A round is in progress in that room, and new players can't join mid-round. Wait until it ends, or use a different room code.
+A round is in progress in that room, and new players can't join mid-round. Wait until it ends, or create a new room.
 
 **"Room is full"**
 A room holds at most 8 players. In debug mode, your debug clone takes one of those slots.
@@ -71,7 +71,7 @@ Open the game with `?debug` and look at the first overlay line. If it starts wit
 Safari doesn't support the vibration API. iPhones get the red flash and sound only.
 
 **No sound.**
-Browsers only allow audio after you've tapped something. Sound is enabled when you tap **Continue** on the join screen. Check the phone's mute switch and volume.
+Browsers only allow audio after you've tapped something. Sound is enabled when you tap **Create Room** or **Join** on the title screen. Check the phone's mute switch and volume.
 
 ## Hosting
 

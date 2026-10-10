@@ -33,7 +33,7 @@ Lifecycle:
 - On close, it shows *"Connection lost. Reconnecting…"* and opens a new connection after 1.5 s.
 - After two failed attempts in a row that never opened, the message changes to *"Can't connect to the game server…"*.
 - Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round.
-- If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the join screen.
+- If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the title screen.
 
 ## Resuming after a reload
 

@@ -12,7 +12,7 @@
 | `appearance-identity.js` | The provider installed by default: `isStableTarget()` and an appearance-only `resolve()` |
 | `motion-identity.js` | The provider installed by `?motion=on`/`?motion=strict`: all phone-motion plumbing, sealed behind the provider it exports |
 | `net.js` | Reconnect/resume and what each server message does to the screens, built on `transport.js`'s long-polling connection |
-| `screens/join.js` | The join form and camera/model startup |
+| `screens/join.js` | The title screen (name, Create Room, Join Room, How to Play), room codes, and camera/model startup |
 | `screens/lobby.js` | Lobby list, launch, leave |
 | `screens/scan.js` | The rotation scan: recording, scoring, outlier/duplicate removal, the cache |
 | `screens/game.js` | The frame loop, overlay, HUD/countdown and shooting |
@@ -31,7 +31,7 @@
 ```mermaid
 stateDiagram-v2
   [*] --> join
-  join --> lobby: Continue (camera + models ready)
+  join --> lobby: Create Room / Join Room (camera + models ready)
   lobby --> scan: Scan / Rescan
   scan --> lobby: scan saved or failed
   lobby --> game: Launch, or server state = countdown
@@ -44,10 +44,14 @@ stateDiagram-v2
 
 `state.mode` tracks the current screen: `'join' | 'lobby' | 'scan' | 'game' | 'results'`.
 
-### Join (`#join-screen`)
+### Title (`#join-screen`)
 
-- Pre-fills name and room from `localStorage`, or the room from a `?room=` URL parameter. The default room is `demo`.
-- On **Continue**: unlocks audio, calls `identity.start()` — a no-op unless `?motion=on` or `?motion=strict` installed the motion provider, and inside the tap because that's the only place iOS will show a sensor prompt — starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the models in parallel (`prepareCameraAndDetector`): the MediaPipe detector/pose/embedder plus the [re-identification model](identification.md#the-re-identification-embedding-reidjs). A re-identification failure is caught and logged — the game continues on the colour signature, and the delegate label loses its `+ReID` suffix.
+- A name field, then three buttons. The name is pre-filled from `localStorage`. **Create Room** and **Join Room** both need it first: an empty name shows *"Enter your name first."* and focuses the field.
+- **Create Room** makes a random 6-character code from `A–Z` and `0–9` (`generateRoomCode`, using `crypto.getRandomValues` without modulo bias) and enters it straight away. The creator shares the code from the lobby.
+- **Join Room** opens a pop-up (`#join-dialog`) with a code field, **Cancel** and **Join**. Typed or pasted text is normalised to uppercase letters and digits, at most 6 (`normalizeRoomCode`), so `abc-123` from a message becomes `ABC123`. **Join** is enabled only at exactly 6 characters. A `?room=` URL parameter pre-fills the field.
+- **How to Play** opens a pop-up (`#rules-dialog`) with four one-line rules.
+- Room codes are case-insensitive on the server (`clean_room_code` lowercases them), so the client stores and sends them lowercase and shows them uppercase.
+- On **Create Room** or **Join**: unlocks audio, calls `identity.start()` — a no-op unless `?motion=on` or `?motion=strict` installed the motion provider, and inside the tap because that's the only place iOS will show a sensor prompt — starts the rear camera (`facingMode: environment`, ideally 1280×720) and loads the models in parallel (`prepareCameraAndDetector`): the MediaPipe detector/pose/embedder plus the [re-identification model](identification.md#the-re-identification-embedding-reidjs). A re-identification failure is caught and logged — the game continues on the colour signature, and the delegate label loses its `+ReID` suffix.
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error.
 - On success: switches to the lobby, requests a screen wake lock, starts the render loop and opens the connection.
 - **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So `prepareCameraAndDetector()` now fires one throwaway inference per freshly loaded model (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, on the lobby, which is the one screen with nothing else to do. A warm-up that fails is only logged — the models still work cold, which is where this started.
@@ -139,7 +143,7 @@ All keys are prefixed with `laser-tag:`. Reads and writes are wrapped in `try/ca
 
 | Key | Contents |
 | --- | --- |
-| `name`, `room` | Last-used name and room code |
+| `name` | Last-used name |
 | `activeLobby` | `{version: 1, name, room, playerId, debug}`. Used on page load to rejoin automatically as the same player. Cleared on Leave or rejection. |
 | `scan:<room>:<name>` | Cached scan `{version, name, room, savedAt, gallery, thumbs}`. Your own cached scan is sent with your `join` message, so rejoining doesn't need a rescan. |
 

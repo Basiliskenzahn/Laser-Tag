@@ -11,30 +11,64 @@ import { identity } from './identity.js';
 import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';
-import { enterLobbyFromForm, initJoinForm, resumeActiveLobby, setJoinStatus } from './screens/join.js';
+import {
+  enterLobby,
+  generateRoomCode,
+  initJoinForm,
+  normalizeRoomCode,
+  requireName,
+  resumeActiveLobby,
+  setJoinStatus,
+  updateJoinButton,
+} from './screens/join.js';
 import { launchGame, leaveLobby, showLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
 import { closeLeaveDialog, fire, openLeaveDialog } from './screens/game.js';
 import { rematch } from './screens/results.js';
 
-// ---- Join screen ----
+// ---- Title screen ----
 
 initJoinForm();
 
-for (const input of [$('name'), $('room')]) {
-  input.addEventListener('input', () => {
-    if (!$('join-btn').hidden) return;
-    $('join-btn').hidden = false;
-    setJoinStatus('');
-  });
+$('name').addEventListener('input', () => setJoinStatus(''));
+
+// Both ways in start from a tap, which is the only place iOS will prompt for a sensor.
+function enterRoom(room) {
+  sound.unlock();
+  identity.start();
+  enterLobby({ room });
 }
 
-$('join-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  sound.unlock();
-  identity.start(); // inside the tap: the only place iOS will prompt for a sensor
-  enterLobbyFromForm();
+$('create-room-btn').addEventListener('click', () => {
+  if (requireName()) enterRoom(generateRoomCode());
 });
+
+$('join-room-btn').addEventListener('click', () => {
+  if (!requireName()) return;
+  $('join-dialog').showModal();
+  $('room-code').focus();
+});
+$('room-code').addEventListener('input', () => {
+  $('room-code').value = normalizeRoomCode($('room-code').value);
+  updateJoinButton();
+});
+$('join-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  if ($('join-btn').disabled) return;
+  $('join-dialog').close();
+  enterRoom($('room-code').value);
+});
+$('join-cancel-btn').addEventListener('click', () => $('join-dialog').close());
+
+$('how-to-play-btn').addEventListener('click', () => $('rules-dialog').showModal());
+$('rules-close-btn').addEventListener('click', () => $('rules-dialog').close());
+
+// A tap on the backdrop (the dialog element itself, outside its box) closes any pop-up.
+for (const id of ['join-dialog', 'rules-dialog']) {
+  $(id).addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) $(id).close();
+  });
+}
 
 // Every later tap unlocks too: a resumed lobby never sees the join tap, and iOS suspends audio
 // when the camera starts. touchend, not pointerdown, because that is what counts as a gesture.

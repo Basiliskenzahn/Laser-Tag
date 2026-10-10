@@ -36,7 +36,7 @@ button {
   cursor: pointer;
 }
 
-/* ---- Join / lobby screens ---- */
+/* ---- Title / lobby screens ---- */
 
 #join-screen,
 #lobby-screen {
@@ -74,11 +74,6 @@ h1 {
   color: var(--muted);
 }
 
-#join-form {
-  display: grid;
-  gap: 16px;
-}
-
 label {
   display: grid;
   gap: 6px;
@@ -96,19 +91,76 @@ input {
   color: var(--text);
 }
 
-#join-btn {
-  margin-top: 8px;
+#title-actions {
+  display: grid;
+  gap: 12px;
+  margin-top: 24px;
+}
+
+#title-actions button {
   padding: 14px;
   border: 0;
   border-radius: 10px;
-  background: var(--accent);
-  color: #fff;
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
   font-size: 18px;
   font-weight: 700;
 }
 
+#title-actions #create-room-btn {
+  background: var(--accent);
+  color: #fff;
+}
+
+#title-actions button:disabled,
 #join-btn:disabled {
   opacity: 0.6;
+}
+
+#room-code {
+  width: 100%;
+  margin-bottom: 20px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+#room-code::placeholder {
+  color: #3a4654;
+}
+
+#rules-list {
+  margin: 0 0 20px;
+  padding-left: 22px;
+  text-align: left;
+  line-height: 1.45;
+}
+
+#rules-list li + li {
+  margin-top: 8px;
+}
+
+#rules-close-btn {
+  width: 100%;
+  padding: 14px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+#lobby-room {
+  display: block;
+  margin-top: 2px;
+  color: var(--text);
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
 }
 
 #lobby-heading {
@@ -664,7 +716,7 @@ input {
   color: var(--accent);
 }
 
-#leave-dialog {
+.modal {
   width: min(340px, calc(100% - 32px));
   padding: 0;
   border: 0;
@@ -674,7 +726,7 @@ input {
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
 }
 
-#leave-dialog::backdrop {
+.modal::backdrop {
   background: rgba(5, 7, 10, 0.7);
 }
 
@@ -699,7 +751,7 @@ input {
   height: 30px;
 }
 
-#leave-dialog h2 {
+.modal h2 {
   margin: 0 0 20px;
   font-size: 22px;
 }
@@ -717,12 +769,14 @@ input {
   font-weight: 800;
 }
 
-#leave-cancel-btn {
+#leave-cancel-btn,
+#join-cancel-btn {
   background: #fff;
   color: #000;
 }
 
-#leave-confirm-btn {
+#leave-confirm-btn,
+#join-btn {
   background: var(--accent);
   color: #fff;
 }

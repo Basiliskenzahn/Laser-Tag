@@ -12,14 +12,14 @@ import { clearActiveLobby, state } from '../state.js';
 import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '../roster.js';
 import { send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
-import { setJoinStatus } from './join.js';
+import { setJoinStatus, setTitleBusy } from './join.js';
 import { hideResults } from './results.js';
 import { beginPlayerScan, exportPlayerScan, hideScanCountdown, importPlayerScan } from './scan.js';
 
 const GAME_LAUNCH_COUNTDOWN_MS = 3_000; // mirrors server/game.js's COUNTDOWN_MS
 
 export function renderLobby() {
-  $('lobby-room').textContent = `Room ${state.game?.code ?? state.room}`;
+  $('lobby-room').textContent = (state.game?.code ?? state.room).toUpperCase();
   const list = $('lobby-list');
   list.innerHTML = '';
   const players = state.game?.players ?? state.roster;
@@ -159,8 +159,7 @@ export function leaveLobby() {
   $('game-screen').hidden = true;
   video.hidden = true;
   canvas.hidden = true;
-  $('join-btn').hidden = false;
-  $('join-btn').disabled = false;
+  setTitleBusy(false);
   setJoinStatus('');
   showConnectionProblem(null);
 }
