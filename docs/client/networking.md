@@ -14,7 +14,7 @@ Message formats are in the [protocol reference](../server/protocol.md).
 
 ```js
 const conn = openPolling({ onOpen, onMessage, onClose });
-conn.send(msg);               // queue a JSON message to the server
+await conn.send(msg);         // queue a JSON message; true once the server has it, false if not
 conn.close({ notify: true }); // stop; notify = tell the server right away
 ```
 
@@ -23,8 +23,13 @@ Lifecycle:
 1. `POST /api/connect` returns a session `token`. `onOpen()` is called.
 2. A loop calls `GET /api/poll?token=…`. The server holds each request open for up to 20 s until it has messages, then returns them as a JSON array. Each message goes to `onMessage()`.
 3. `send()` POSTs to `/api/send?token=…`. Sends are chained on a promise, so they go out **one at a time, in order**.
-4. Any failure (network error, non-2xx status, or a redirect such as an expired SSO login) closes the connection and calls `onClose()`. A `410` means the server has forgotten the session.
-5. `close({notify: true})` sends `/api/disconnect` with `navigator.sendBeacon` (falling back to `fetch` with `keepalive`), so leaving works even while the page unloads.
+4. A failure in the poll loop (network error, non-2xx status, or a redirect such as an expired SSO login) closes the connection and calls `onClose()`. A `410` means the server has forgotten the session.
+5. `close({notify: true})` sends `/api/disconnect` with `navigator.sendBeacon` (falling back to `fetch` with `keepalive`), so leaving works even while the page unloads. Repeated calls say goodbye only once.
+
+**Only the poll loop decides the connection is gone.** Two other things used to be able to, and both now stop at the transport:
+
+- **A send that fails** is retried twice, 250 ms apart — a single transient error on the ~190 KB scan gallery POST is the case that matters. If it still cannot get the message out, `send()` resolves `false` and the connection is left alone. It never rejects, so the many fire-and-forget callers can keep ignoring the result. A caller that has told the player something worked must not: `saveCurrentScan()` reports a scan that never left the phone instead of saying *"Saved scan for …"* about it.
+- **A message handler that throws** is caught around the `onMessage()` call and logged. Letting it reach the poll loop's `catch` closed the connection, which reconnected, which re-joined, which was sent the same message again — and since the connection had opened, nothing counted the failures, so one bad message hammered the server for as long as the page was open under a banner that only said *"Reconnecting…"*.
 
 ## The roster
 
@@ -40,12 +45,28 @@ Nothing on the client has to detect a gap or ask for a resend. The server tracks
 
 ## Reconnecting
 
-`connect()` in `app.js` handles drops:
+`connect()` in `net.js` handles drops:
 
 - On close, it shows *"Connection lost. Reconnecting…"* and opens a new connection after 1.5 s.
 - After two failed attempts in a row that never opened, the message changes to *"Can't connect to the game server…"*.
 - Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round. The takeover is a new session, so the roster it receives is the complete one — a reconnect cannot land on a stale or partial set of galleries.
 - If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the join screen.
+- The last `state` snapshot is **kept**, not cleared. Everything that gates on it — the HUD, whether this phone may fire, what is under the crosshair — would otherwise blank out for the whole 1.5 s on every blip, and on a phone network that is often. `state.connected` is what says the snapshot is no longer live.
+
+### Leaving, as opposed to dropping
+
+`leaveRoom({notify})` is the one way out: it **cancels the pending reconnect**, closes the connection, nulls `state.conn` and stops the identity provider. The three paths that leave a room — `leaveLobby()`, `showJoinRejected()`, and the camera-failure path in `enterLobbyFromForm()` — all go through it, as does `pagehide`.
+
+Cancelling matters because leaving deliberately keeps `name`/`room`/`resumePlayerId` so that a *blip* reconnects as the same player. A retry that outlived a leave therefore had everything `sendJoin()` needed, and would quietly put the player back in the room they had just left — a ghost nobody can scan or shoot, whose `welcome` then saved that room as the one to resume into on the next page load.
+
+Two things know the connection is no longer live:
+
+- `state.connected`, set in `onOpen`/`onClose`. `renderLobby()` reads it, because it is the only writer of the Launch button's `disabled` state: with the connection down, Launch would otherwise hand the player a 3 s countdown into a round the server never hears about, on a game screen with no way back out. `showConnectionProblem()` re-renders the lobby for that reason.
+- the banner, on whichever screen is showing.
+
+### Closing the tab
+
+`net.js` listens for **`pagehide`** and calls `leaveRoom({notify: true})`, so the room drops the player at once instead of holding a phantom until the long poll times out. `pagehide` rather than `beforeunload`, which iOS Safari does not reliably fire — and deliberately *not* `visibilitychange`, because the page goes hidden every time the player glances at a notification and a round has to survive that. The server's poll timeout remains the backstop for a tab the OS kills outright.
 
 ## Resuming after a reload
 

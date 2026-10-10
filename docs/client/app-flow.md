@@ -36,6 +36,7 @@ stateDiagram-v2
   lobby --> scan: Scan / Rescan
   scan --> lobby: scan saved or failed
   lobby --> game: Launch, or server state = countdown
+  scan --> game: server state = countdown / playing
   game --> lobby: server state = over
   lobby --> join: Leave
   lobby --> join: "Lobby is already running."
@@ -85,13 +86,16 @@ With `?debug`, the overlay gets a `Startup` line with each step's duration and t
 - Rendered by `renderLobby()` from the latest `state` and `roster` messages.
 - One row per player with a **Scan/Rescan** button. Debug clones have no button and show *"Mirrors <name>'s scan"*.
 - **Launch** (`launchGame`) first checks locally that everyone is scanned, then starts a local countdown of `GAME_LAUNCH_COUNTDOWN_MS` (3 s, mirroring the server's `COUNTDOWN_MS`), switches to the game screen, and sends `{type: 'start'}`. The local countdown is only a prediction so the first second isn't dead time: every `state` message with status `countdown` resets it to the server's own `startsInMs`. If the server rejects the start, the client returns to the lobby with the error.
-- **Leave** (`leaveLobby`) tells the server immediately (`sendBeacon` to `/api/disconnect`), stops the camera and clears the saved lobby.
+- **Launch** is disabled whenever the connection is down as well as while a round is running, because `start` has to reach the server; see [Networking → Leaving](networking.md#leaving-as-opposed-to-dropping).
+- **Leave** (`leaveLobby`) goes through `leaveRoom({notify: true})`, which cancels any pending reconnect before telling the server (`sendBeacon` to `/api/disconnect`) — otherwise a drop in the last 1.5 s would rejoin the room behind the player. It then stops the camera, the identity provider and clears the saved lobby.
 
 ### Scan (`#scan-screen`)
 
 `beginPlayerScan(player)` switches to this screen and starts `runAutoScan()` after the next paint. The full pipeline is described in [Scanning](scanning.md). While the scan screen is idle, the render loop draws every detected person, highlighting in green the one the scan would use.
 
 A **✕** button in the corner calls `cancelScan()`, which just sets `state.autoScanning = false` and returns to the lobby with *"Scan cancelled."*. The recording, processing and countdown loops all check that flag every iteration and bail out cleanly, and their `finally` blocks notice the screen has changed and leave the UI alone.
+
+A round that starts **during** a scan cancels it and takes the phone into the game, because `onState` can enter the game from `'scan'` as well as from `'lobby'`. Without that, both the `countdown` snapshot and the `playing` one behind it were recorded and dropped, and the phone landed back in a lobby with Launch and every Scan button disabled and nothing on screen to say a round was running — the server pushes a snapshot once per transition and then only on events, so it self-healed only when somebody landed a hit. Cancelling rather than merely switching screens is what retires the scan's run token, so a scan still parked on an `await` cannot finish later and pull the player out of the round.
 
 ### Game (`#game-screen`)
 
