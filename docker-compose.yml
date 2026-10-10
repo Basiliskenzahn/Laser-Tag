@@ -9,7 +9,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: backend_frontend/Dockerfile
     expose:
       - '4000' # internal only - reached through the frontend's nginx reverse proxy
 
