@@ -89,6 +89,15 @@ Model options that aren't separate constants but are worth knowing about, inside
 | `GAME_POSE_DETECT_INTERVAL_MS` | 520 | Minimum interval for the slower pose model |
 | `SHOT_REFRESH_MAX_AGE_MS` | 90 | A shot triggers a fresh detection if the last one is older than this |
 
+`frontend/public/camera.js` — the first-inference warm-up (see [App flow → Join](../client/app-flow.md#join-join-screen)):
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `WARMUP_MAX_WIDTH` | 512 | Width of the warm-up frame. **Keep equal to `GAME_DETECT_MAX_WIDTH`** above, or the warm-up compiles shaders for a size the round won't use. Duplicated by value rather than imported, because `camera.js` importing from `screens/game.js` would close a cycle (`game.js` → `scan.js` → `camera.js`). |
+| `WARMUP_FALLBACK_HEIGHT` | 288 | Height of the blank frame used when the camera hasn't produced one yet (16:9 at the width above) |
+| `WARMUP_TIMESTAMP_MS` | 1 | Timestamp handed to the MediaPipe tasks. Must stay **below** every timestamp the game can pass, since VIDEO mode requires strictly increasing values per task; every real call derives one from `performance.now()`, already in the thousands by the time a model loads. Raising this is how you'd silently break detection later. |
+| `WARMUP_REGION` | 0.3–0.7 × 0.08–0.95 | Where a person roughly stands in frame, so the embedder and re-identification warm their crop paths instead of being handed the whole frame |
+
 ## Targeting
 
 `frontend/public/motion-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
