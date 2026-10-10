@@ -1,15 +1,8 @@
 services:
-  backend_python:
-    build:
-      context: ./backend_python/
-      dockerfile: Dockerfile
-    expose:
-      - '8000'
-
   backend:
     build:
       context: .
-      dockerfile: backend_frontend/Dockerfile
+      dockerfile: backend/Dockerfile
     expose:
       - '4000' # internal only - reached through the frontend's nginx reverse proxy
 
