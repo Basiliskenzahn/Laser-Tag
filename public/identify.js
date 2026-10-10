@@ -278,6 +278,10 @@ const EMBED_LOWER_WEIGHT = 0.18;
 const EMBED_GRID_WEIGHT = 0.16;
 const EMBED_SHAPE_WEIGHT = 0.06;
 const EMBED_WEIGHT = 0.3;
+const GALLERY_TOP_MATCH_COUNT = 3;
+const GALLERY_AGREEMENT_WINDOW = 0.1;
+const GALLERY_AGREEMENT_WEIGHT = 0.25;
+const GALLERY_SUPPORT_BONUS = 0.012;
 
 function similarityParts(a, b) {
   const upper = cosine(a.hist, b.hist);
@@ -302,17 +306,52 @@ function similarityParts(a, b) {
   };
 }
 
-// The best-matching enrolled angle wins - this is what makes matching tolerant of whatever
-// angle the camera currently sees the player from.
-function bestAngleScore(signature, gallery) {
-  let best = null;
-  if (signature.usable === false) return null;
-  for (const sample of gallery) {
-    if (!sample?.hist?.length || !sample?.grid?.length || !sample?.lower?.length || !sample?.shape?.length) continue;
-    const candidate = similarityParts(signature, sample);
-    if (!best || candidate.score > best.score) best = candidate;
+function averageMatches(matches) {
+  const totals = { upper: 0, lower: 0, grid: 0, shape: 0, embed: 0, score: 0 };
+  for (const match of matches) {
+    totals.upper += match.upper;
+    totals.lower += match.lower;
+    totals.grid += match.grid;
+    totals.shape += match.shape;
+    totals.embed += match.embed;
+    totals.score += match.score;
   }
-  return best;
+  const n = matches.length || 1;
+  return {
+    upper: totals.upper / n,
+    lower: totals.lower / n,
+    grid: totals.grid / n,
+    shape: totals.shape / n,
+    embed: totals.embed / n,
+    score: totals.score / n,
+  };
+}
+
+// A single enrolled angle can be noisy, so matching blends the best angle with nearby
+// supporting angles. This keeps side/front tolerance while reducing wins from one bad sample.
+function bestAngleScore(signature, gallery) {
+  if (signature.usable === false) return null;
+  const matches = [];
+  for (let i = 0; i < gallery.length; i++) {
+    const sample = gallery[i];
+    if (!sample?.hist?.length || !sample?.grid?.length || !sample?.lower?.length || !sample?.shape?.length) continue;
+    matches.push({ ...similarityParts(signature, sample), angleIndex: i });
+  }
+  if (!matches.length) return null;
+  matches.sort((a, b) => b.score - a.score);
+  const best = matches[0];
+  const agreeing = matches
+    .filter((match) => best.score - match.score <= GALLERY_AGREEMENT_WINDOW)
+    .slice(0, GALLERY_TOP_MATCH_COUNT);
+  const agreement = averageMatches(agreeing);
+  const supportBonus = Math.min(agreeing.length - 1, GALLERY_TOP_MATCH_COUNT - 1) * GALLERY_SUPPORT_BONUS;
+  return {
+    ...best,
+    score: best.score * (1 - GALLERY_AGREEMENT_WEIGHT) + agreement.score * GALLERY_AGREEMENT_WEIGHT + supportBonus,
+    angleScore: best.score,
+    agreementScore: agreement.score,
+    agreementCount: agreeing.length,
+  };
 }
 
 const MATCH_THRESHOLD = 0.54; // below this, call it unknown rather than guess
@@ -335,25 +374,30 @@ function rejectionReason(best, candidates, secondScore) {
 
 // players: [{ id, name, gallery: [{hist, grid}, ...] }, ...]
 // excludeId: the local player - never matched against their own gallery.
-export function matchGallery(signature, players, excludeId, { includeRejected = false } = {}) {
-  let best = null;
-  let secondScore = -Infinity;
-  let candidates = 0;
+export function matchGallery(signature, players, excludeId, { includeRejected = false, closedSet = false } = {}) {
+  const rankings = [];
   for (const player of players) {
-    if (player.id === excludeId || !player.gallery?.length) continue;
+    if ((!closedSet && player.id === excludeId) || !player.gallery?.length) continue;
     const match = bestAngleScore(signature, player.gallery);
     if (!match) continue;
-    candidates++;
-    if (!best || match.score > best.score) {
-      if (best) secondScore = best.score;
-      best = { id: player.id, name: player.name, ...match };
-    } else if (match.score > secondScore) {
-      secondScore = match.score;
-    }
+    rankings.push({ id: player.id, name: player.name, ...match });
   }
+  rankings.sort((a, b) => b.score - a.score);
+  for (let i = 0; i < rankings.length; i++) {
+    const rival = i === 0 ? rankings[1] : rankings[0];
+    rankings[i].margin = rankings[i].score - (rival?.score ?? 0);
+  }
+  const best = rankings[0] ?? null;
+  const candidates = rankings.length;
+  const secondScore = rankings[1]?.score ?? -Infinity;
   const reason = rejectionReason(best, candidates, secondScore);
+  if (best?.id === excludeId) {
+    const selfMatch = { ...best, accepted: false, reason: 'self', candidates, rankings };
+    return includeRejected || closedSet ? selfMatch : null;
+  }
+  if (closedSet && best) return { ...best, accepted: true, reason, candidates, rankings };
   if (!reason) return { ...best, accepted: true, candidates };
-  return includeRejected && best ? { ...best, accepted: false, reason, candidates } : null;
+  return includeRejected && best ? { ...best, accepted: false, reason, candidates, rankings } : null;
 }
 
 function iou(a, b) {
@@ -446,8 +490,13 @@ function clearIdentity(track) {
   track.grid = 0;
   track.shape = 0;
   track.embed = 0;
+  track.rankings = [];
   track.streak = 0;
   track.streakId = undefined;
+  track.identifiedAt = null;
+  track.identityHits = 0;
+  track.lastEnrichedAt = 0;
+  track.selfRejected = false;
 }
 
 function resolveDuplicateIdentities(tracks, now) {
@@ -460,8 +509,44 @@ function resolveDuplicateIdentities(tracks, now) {
   }
   for (const duplicates of byPlayer.values()) {
     if (duplicates.length < 2) continue;
-    duplicates.sort((a, b) => identityConfidence(b, now) - identityConfidence(a, now));
+    duplicates.sort((a, b) => {
+      const seenDelta = Number(Boolean(b.seenThisFrame)) - Number(Boolean(a.seenThisFrame));
+      if (seenDelta) return seenDelta;
+      const scoreDelta = (b.score ?? 0) - (a.score ?? 0);
+      return Math.abs(scoreDelta) > 0.0001 ? scoreDelta : identityConfidence(b, now) - identityConfidence(a, now);
+    });
     for (const duplicate of duplicates.slice(1)) clearIdentity(duplicate);
+  }
+}
+
+function resolveClosedSetIdentities(tracks, now, selfId) {
+  const visible = tracks.filter((track) => track.lastSeen === now && !track.selfRejected && track.rankings?.length);
+  if (visible.length < 2) return;
+
+  const pairs = [];
+  for (const track of visible) {
+    for (const candidate of track.rankings) {
+      if (candidate.id === selfId) continue;
+      const sticky = candidate.id === track.playerId ? 0.035 : 0;
+      const evidence = (track.evidence?.get(candidate.id) ?? 0) * 0.025;
+      const margin = Number.isFinite(candidate.margin) ? Math.max(-0.12, Math.min(0.12, candidate.margin)) * 0.35 : 0;
+      const agreement = Math.min(candidate.agreementCount ?? 1, GALLERY_TOP_MATCH_COUNT) * 0.006;
+      pairs.push({ track, candidate, score: candidate.score + margin + sticky + evidence + agreement });
+    }
+  }
+  pairs.sort((a, b) => b.score - a.score);
+
+  const usedTracks = new Set();
+  const usedPlayers = new Set();
+  for (const { track, candidate } of pairs) {
+    if (usedTracks.has(track) || usedPlayers.has(candidate.id)) continue;
+    assignIdentity(track, candidate);
+    usedTracks.add(track);
+    usedPlayers.add(candidate.id);
+  }
+
+  for (const track of visible) {
+    if (!usedTracks.has(track)) clearIdentity(track);
   }
 }
 
@@ -473,10 +558,10 @@ const INITIAL_STREAK = 2; // a new track must agree a couple of times before get
 const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
 const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66;
 const EVIDENCE_DECAY = 0.82;
-const EVIDENCE_ACCEPT = 0.72;
-const EVIDENCE_MARGIN = 0.18;
-const EVIDENCE_MIN_SCORE = 0.46;
-const EVIDENCE_MIN_PART = 0.28;
+const EVIDENCE_ACCEPT = 0.58;
+const EVIDENCE_MARGIN = 0.12;
+const EVIDENCE_MIN_SCORE = 0.42;
+const EVIDENCE_MIN_PART = 0.24;
 const SOFT_LABEL_SCORE = 0.48;
 
 function decayEvidence(track) {
@@ -542,6 +627,8 @@ function evidenceWinner(track) {
 }
 
 function assignIdentity(track, match) {
+  const previousId = track.playerId;
+  track.selfRejected = false;
   track.playerId = match?.id ?? null;
   track.name = match?.name ?? null;
   track.score = match?.score ?? 0;
@@ -551,6 +638,13 @@ function assignIdentity(track, match) {
   track.shape = match?.shape ?? 0;
   track.embed = match?.embed ?? 0;
   track.misses = 0;
+  if (match?.id) {
+    track.identifiedAt = previousId === match.id ? (track.identifiedAt ?? track.lastSeen) : track.lastSeen;
+    track.identityHits = previousId === match.id ? (track.identityHits ?? 0) + 1 : 1;
+  } else {
+    track.identifiedAt = null;
+    track.identityHits = 0;
+  }
   track.streak = 0;
   track.streakId = undefined;
 }
@@ -566,7 +660,14 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
-  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null } = {}) {
+  update(
+    boxes,
+    video,
+    players,
+    selfId,
+    now = performance.now(),
+    { includeRejected = false, embedder = null, identifyOnce = false, closedSet = false } = {},
+  ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
     const pairs = [];
@@ -617,6 +718,7 @@ export class Tracker {
         grid: 0,
         shape: 0,
         embed: 0,
+        rankings: [],
         debugMatch: null,
         evidence: new Map(),
         evidenceDetails: new Map(),
@@ -624,18 +726,36 @@ export class Tracker {
         streak: 0,
         misses: 0,
         missedFrames: 0,
+        identifiedAt: null,
+        identityHits: 0,
+        lastEnrichedAt: 0,
+        selfRejected: false,
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
 
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
-      const due = track.checks <= SETTLE_CHECKS || now - track.lastCheck >= RECHECK_MS || !track.playerId;
+      const due =
+        !track.playerId ||
+        (!identifyOnce && (track.checks <= SETTLE_CHECKS || now - track.lastCheck >= RECHECK_MS));
       if (!due) continue;
       track.lastCheck = now;
 
       const signature = extractSignature(video, track.box, embedder, now);
-      const match = matchGallery(signature, players, selfId, { includeRejected: true });
+      const match = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
+      track.rankings = match?.rankings ?? (match ? [match] : []);
+      if (match?.reason === 'self' && match.id === selfId) {
+        const rankings = track.rankings;
+        clearIdentity(track);
+        track.evidence.clear();
+        track.evidenceDetails.clear();
+        track.rankings = rankings;
+        track.debugMatch = match;
+        track.selfRejected = true;
+        continue;
+      }
+      track.selfRejected = false;
       decayEvidence(track);
       addEvidence(track, match);
       const evidenceMatch = evidenceWinner(track);
@@ -670,6 +790,7 @@ export class Tracker {
         }
       }
     }
+    if (closedSet) resolveClosedSetIdentities(this.tracks, now, selfId);
     resolveDuplicateIdentities(this.tracks, now);
     return this.tracks;
   }

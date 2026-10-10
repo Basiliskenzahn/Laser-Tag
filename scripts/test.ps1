@@ -1,10 +1,16 @@
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$node = Join-Path $root '.tools\node\node.exe'
 
-if (!(Test-Path -LiteralPath $node)) {
-  throw "Portable Node was not found at $node"
+. "$PSScriptRoot\Resolve-Docker.ps1"
+$docker = Resolve-Docker
+
+Push-Location $root
+try {
+  & $docker compose run --rm tests
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+} finally {
+  Pop-Location
 }
-
-& $node --test "$root\server\game.test.js" "$root\server\realtime.test.js"

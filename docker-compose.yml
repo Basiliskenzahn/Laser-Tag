@@ -19,5 +19,16 @@ services:
     depends_on:
       - backend
 
+  tests:
+    image: node:20-bookworm-slim
+    profiles:
+      - test
+    working_dir: /app
+    volumes:
+      - .:/app
+      - test-node-modules:/app/node_modules
+    command: sh -c "npm ci && npm test"
+
 volumes:
   certs:
+  test-node-modules:

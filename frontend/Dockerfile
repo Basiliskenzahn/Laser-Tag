@@ -14,7 +14,7 @@ COPY --from=deps /app/node_modules/@mediapipe/tasks-vision/ /usr/share/nginx/htm
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY frontend/common-locations.conf /etc/nginx/common-locations.conf
 COPY frontend/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 EXPOSE 80 443
 ENTRYPOINT ["/entrypoint.sh"]

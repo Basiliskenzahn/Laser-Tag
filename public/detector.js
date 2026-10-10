@@ -25,13 +25,13 @@ export async function createDetector() {
     baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     scoreThreshold: MIN_SCORE,
-    maxResults: 5,
+    maxResults: 8,
     categoryAllowlist: ['person'],
   });
   const poseOptions = (delegate) => ({
     baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
     runningMode: 'VIDEO',
-    numPoses: 1,
+    numPoses: 8,
     minPoseDetectionConfidence: 0.18,
     minPosePresenceConfidence: 0.18,
     minTrackingConfidence: 0.18,
@@ -136,6 +136,15 @@ function overlap(a, b) {
   return union > 0 ? inter / union : 0;
 }
 
+function coveredBy(inner, outer) {
+  const x1 = Math.max(inner.x, outer.x);
+  const y1 = Math.max(inner.y, outer.y);
+  const x2 = Math.min(inner.x + inner.w, outer.x + outer.w);
+  const y2 = Math.min(inner.y + inner.h, outer.y + outer.h);
+  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  return inter / Math.max(1, inner.w * inner.h);
+}
+
 function centerDistanceRatio(a, b) {
   const ax = a.x + a.w / 2;
   const ay = a.y + a.h / 2;
@@ -161,12 +170,27 @@ export function detectScanPeople(detector, poseDetector, source, timestamp) {
 
 export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
   const objectBoxes = detectPeople(detector, source, timestamp);
-  const poseFallbacks = poseBoxes(poseDetector, source, timestamp).filter((poseBox) =>
+  const poses = poseBoxes(poseDetector, source, timestamp).filter((poseBox) => poseBox.score >= TRACKED_POSE_MIN_SCORE);
+  const splitObjects = new Set(
+    objectBoxes.filter(
+      (objectBox) =>
+        poses.filter((poseBox) => coveredBy(poseBox, objectBox) > 0.62 && centerDistanceRatio(poseBox, objectBox) > 0.18).length >= 2,
+    ),
+  );
+  const keptObjects = objectBoxes.filter((objectBox) => !splitObjects.has(objectBox));
+  const poseFallbacks = poses.filter((poseBox) =>
     poseBox.score >= TRACKED_POSE_MIN_SCORE &&
-    objectBoxes.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
+    keptObjects.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
   );
   return keepDistinct(
-    [...objectBoxes, ...poseFallbacks],
+    [...keptObjects, ...poseFallbacks],
+    (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
+  );
+}
+
+export function detectTrackedPeopleFast(detector, source, timestamp) {
+  return keepDistinct(
+    detectPeople(detector, source, timestamp),
     (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
   );
 }

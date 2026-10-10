@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Room, MAX_HP, DAMAGE, COUNTDOWN_MS, SHOT_COOLDOWN_MS } from './game.js';
+import { Room, MAX_HP, MAX_PLAYERS, DAMAGE, COUNTDOWN_MS, SHOT_COOLDOWN_MS } from './game.js';
+
+const gallery = [{ hist: [1, 0], grid: [0, 1] }];
 
 function makeRoom() {
   let t = 0;
@@ -11,7 +13,7 @@ function makeRoom() {
 
 function startedRoom(names = ['a', 'b']) {
   const { room, clock } = makeRoom();
-  for (const id of names) room.join(id, id, []);
+  for (const id of names) room.join(id, id, gallery);
   room.start();
   clock.advance(COUNTDOWN_MS);
   return { room, clock };
@@ -19,23 +21,41 @@ function startedRoom(names = ['a', 'b']) {
 
 test('a round needs at least two players, and starts on request', () => {
   const { room } = makeRoom();
-  room.join('a', 'Alice', []);
+  room.join('a', 'Alice', gallery);
   assert.equal(room.start().ok, false);
-  room.join('b', 'Bob', []);
+  room.join('b', 'Bob', gallery);
   assert.equal(room.status, 'waiting');
   assert.equal(room.start().ok, true);
   assert.equal(room.status, 'countdown');
 });
 
+test('a round cannot launch until every player has a scan', () => {
+  const { room } = makeRoom();
+  room.join('a', 'Alice');
+  room.join('b', 'Bob');
+  assert.equal(room.start().ok, false);
+  assert.equal(room.setGallery('a', gallery).ok, true);
+  assert.equal(room.start().ok, false);
+  assert.equal(room.setGallery('b', gallery).ok, true);
+  assert.equal(room.start().ok, true);
+});
+
 test('a room caps out, and rejects joins once a round is running', () => {
-  const { room } = startedRoom();
-  assert.equal(room.join('c', 'Carol', []).ok, false);
+  const { room } = makeRoom();
+  for (let i = 0; i < MAX_PLAYERS; i++) assert.equal(room.join(`p${i}`, `P${i}`, gallery).ok, true);
+  assert.equal(room.players.size, MAX_PLAYERS);
+  assert.equal(room.join('extra', 'Extra', []).ok, false);
+
+  room.start();
+  const late = room.join('late', 'Late', []);
+  assert.equal(late.ok, false);
+  assert.equal(late.error, 'Lobby is already running.');
 });
 
 test('shots are ignored during the countdown', () => {
   const { room } = makeRoom();
-  room.join('a', 'Alice', []);
-  room.join('b', 'Bob', []);
+  room.join('a', 'Alice', gallery);
+  room.join('b', 'Bob', gallery);
   room.start();
   assert.equal(room.shoot('a', 'b', 'body').ok, false);
   assert.equal(room.players.get('b').hp, MAX_HP);
@@ -93,12 +113,28 @@ test('free-for-all: the last player standing wins, eliminated players can no lon
   assert.equal(room.winner, 'a');
 });
 
-test('leaving resets the round for the remaining players', () => {
-  const { room } = startedRoom();
+test('leaving a free-for-all removes that player without resetting the round', () => {
+  const { room } = startedRoom(['a', 'b', 'c']);
   room.shoot('a', 'b', 'body');
   room.leave('b');
-  assert.equal(room.status, 'waiting');
+  assert.equal(room.status, 'playing');
+  assert.equal(room.players.has('b'), false);
   assert.equal(room.players.get('a').hp, MAX_HP);
+  assert.equal(room.players.get('c').hp, MAX_HP);
+});
+
+test('leaving can decide a free-for-all when only one player remains alive', () => {
+  const { room, clock } = startedRoom(['a', 'b', 'c']);
+  let result;
+  do {
+    result = room.shoot('a', 'b', 'head');
+    clock.advance(SHOT_COOLDOWN_MS);
+  } while (!result.ko);
+
+  room.leave('c');
+  assert.equal(room.status, 'over');
+  assert.equal(room.winner, 'a');
+  assert.equal(room.players.get('a').wins, 1);
 });
 
 test('roster carries each player\'s appearance gallery; state does not', () => {

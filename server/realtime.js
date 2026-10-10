@@ -71,6 +71,11 @@ function cleanName(name) {
   return String(name || '').trim().slice(0, 20) || 'Player';
 }
 
+function cleanPlayerId(id) {
+  const clean = String(id || '').trim();
+  return /^[a-zA-Z0-9:-]{8,80}$/.test(clean) ? clean : '';
+}
+
 // Appearance gallery from enrolment: a capped set of angle samples, each a couple of
 // short numeric vectors. Capped defensively since it comes straight from the client.
 const GALLERY_FIELDS = [
@@ -100,8 +105,8 @@ function cleanGallery(gallery) {
 // One connected phone, independent of transport. `conn.send(msg)` delivers a message to it;
 // the transport calls receive() for each incoming message and close() when it goes away.
 function openSession(conn) {
-  const id = crypto.randomUUID();
-  const cloneId = `${id}:debug-clone`;
+  let id = crypto.randomUUID();
+  let cloneId = `${id}:debug-clone`;
   let room = null;
 
   function receive(msg) {
@@ -112,6 +117,17 @@ function openSession(conn) {
       const target = rooms.get(code) ?? new Room(code);
       const name = cleanName(msg.name);
       const gallery = cleanGallery(msg.gallery);
+      const requestedId = cleanPlayerId(msg.playerId);
+      if (requestedId && target.players.has(requestedId)) {
+        id = requestedId;
+        cloneId = `${id}:debug-clone`;
+        room = target;
+        connections.set(id, conn);
+        conn.send({ type: 'welcome', id });
+        broadcastState(room);
+        broadcastRoster(room);
+        return;
+      }
       if (msg.debug === true && target.players.size > MAX_PLAYERS - 2) {
         conn.send({ type: 'error', message: 'Room is full' });
         return;
@@ -142,6 +158,16 @@ function openSession(conn) {
 
     if (msg.type === 'shoot') {
       processHit(room, id, msg.targetId, msg.zone);
+    } else if (msg.type === 'scan') {
+      const gallery = cleanGallery(msg.gallery);
+      const result = room.setGallery(msg.targetId, gallery);
+      if (!result.ok) {
+        conn.send({ type: 'error', message: result.error });
+        return;
+      }
+      conn.send({ type: 'scanSaved', targetId: msg.targetId });
+      broadcastRoster(room);
+      broadcastState(room);
     } else if (msg.type === 'start') {
       const result = room.start();
       if (!result.ok) {
@@ -153,6 +179,7 @@ function openSession(conn) {
   }
 
   function close() {
+    if (connections.get(id) !== conn) return;
     connections.delete(id);
     if (!room) return;
     room.leave(id);
@@ -206,6 +233,12 @@ function closePoller(token) {
   clearTimeout(poller.waitTimer);
   if (poller.waiting) respondJson(poller.waiting, 410, { error: 'Session closed' });
   poller.session.close();
+}
+
+function disconnectPoller(token, res) {
+  closePoller(token);
+  res.writeHead(204, { 'Cache-Control': 'no-store' });
+  res.end();
 }
 
 function sweepPollers() {
@@ -331,6 +364,11 @@ export function handleHttp(req, res) {
 
   if (req.method === 'POST' && url.pathname === '/api/hit') {
     receiveHit(req, res);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/disconnect') {
+    disconnectPoller(url.searchParams.get('token'), res);
     return true;
   }
 
