@@ -13,8 +13,10 @@
 import { SAMPLE_MS } from './matching.js';
 
 // The shooter's own turning (deg/s) above which camera-image motion isn't trusted: following a
-// target with the camera hides their movement. Holding a phone to aim stays well below this.
-const PANNING_DEG_PER_S = 10;
+// target with the camera hides their movement. 10 deg/s masked most of a hand-held phone's time
+// (small aiming corrections exceed it), so motion almost never got to decide; real panning to
+// follow someone is faster than this.
+const PANNING_DEG_PER_S = 25;
 const HISTORY_MS = 12_000;
 
 export class MotionSensor {

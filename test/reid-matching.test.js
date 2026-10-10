@@ -70,3 +70,25 @@ test('averaged scan samples keep a normalised re-identification embedding', () =
   assert.ok(Math.abs(Math.hypot(...avg.reid) - 1) < 1e-9);
   assert.equal(averageSignatures([colours]).reid.length, 0);
 });
+
+test('a named track whose re-identification no longer fits its player loses the name', async () => {
+  const { Tracker } = await import('../frontend/public/identify.js');
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
+  let current = similarTo(rexReid, 0.95);
+  const reid = { latest: () => current, request() {} }; // stands in for reid.js's background embedder
+  const tracker = new Tracker();
+  let now = 1000;
+  const step = () => tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
+  let track;
+  for (let i = 0; i < 4; i++) track = step();
+  assert.equal(track.playerId, 'rex');
+
+  // Someone else steps into the same spot: the box carries on, but they look nothing like Rex.
+  current = similarTo(rexReid, 0.3);
+  track = step();
+  track = step();
+  assert.equal(track.playerId, 'rex', 'two bad checks are not enough');
+  track = step();
+  assert.equal(track.playerId, null, 'three in a row drop the name');
+});

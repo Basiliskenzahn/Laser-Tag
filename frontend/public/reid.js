@@ -43,7 +43,17 @@ export async function createReid() {
   ort.env.wasm.wasmPaths = '/vendor/ort/';
   // Threads need cross-origin isolation; a single thread is plenty for this small model.
   ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-  const session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  // Run inference in a Web Worker ("proxy") so it never blocks the main thread, where the person
+  // detector and the drawing run. Falls back to the main thread if the worker can't start.
+  ort.env.wasm.proxy = true;
+  let session;
+  try {
+    session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  } catch (err) {
+    console.warn('Re-identification worker unavailable, running on the main thread', err);
+    ort.env.wasm.proxy = false;
+    session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;

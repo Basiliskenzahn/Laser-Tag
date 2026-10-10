@@ -83,5 +83,5 @@ The constants (`HEAD_TOP`, `HEAD_HEIGHT`, `HEAD_WIDTH`, `BODY_TOP`, `BODY_HEIGHT
 ## Performance notes
 
 - In the game, inference runs on a copy of the frame scaled to at most **512 px wide**; boxes are scaled back to full video resolution afterwards.
-- Detection runs every **120 ms** while some visible person is still unidentified and every **180 ms** once everyone is identified. It does not run on every animation frame.
+- Detection runs every **80 ms** while some visible person is still unidentified and every **120 ms** once everyone is identified, but never more often than the last detection's time ÷ 0.7, so a slow phone spends at most ~70% of its time detecting. It does not run on every animation frame; between detections the overlay and the shot move each box along its track's velocity (at most 0.25 s ahead).
 - Scanning records frames at up to **1024 px wide** and runs detection on them after recording, not live (see [Scanning](scanning.md)).

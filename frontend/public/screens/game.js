@@ -17,8 +17,11 @@ import { drawScan } from './scan.js';
 
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
-const GAME_ACQUIRE_DETECT_INTERVAL_MS = 120;
-const GAME_TRACK_DETECT_INTERVAL_MS = 180;
+const GAME_ACQUIRE_DETECT_INTERVAL_MS = 80;
+const GAME_TRACK_DETECT_INTERVAL_MS = 120;
+// Detection may take at most this share of the time, so slower phones slow it down themselves
+// instead of starving the drawing and the shot.
+const DETECT_MAX_BUSY_SHARE = 0.7;
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
 const SHOT_REFRESH_MAX_AGE_MS = 90;
 const GAME_DETECT_MAX_WIDTH = 512;
@@ -67,9 +70,9 @@ function scaleBoxes(boxes, scaleX, scaleY) {
 
 function gameDetectInterval(now) {
   const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
-  return liveTracks.length && liveTracks.every((track) => track.playerId)
-    ? GAME_TRACK_DETECT_INTERVAL_MS
-    : GAME_ACQUIRE_DETECT_INTERVAL_MS;
+  const base =
+    liveTracks.length && liveTracks.every((track) => track.playerId) ? GAME_TRACK_DETECT_INTERVAL_MS : GAME_ACQUIRE_DETECT_INTERVAL_MS;
+  return Math.max(base, inferenceMs / DETECT_MAX_BUSY_SHARE);
 }
 
 function shouldUsePoseFallback(now, forcePose = false) {
@@ -212,6 +215,14 @@ function isLiveTrack(track, now = performance.now()) {
   return now - track.lastSeen <= LIVE_TRACK_MS;
 }
 
+// Between detections (which run only a few times a second on a phone), move each box along its
+// track's recent velocity, at most a quarter second ahead, so it follows the person smoothly. The
+// shot uses the same box as the overlay: what you see is what you hit.
+function liveBox(track, now) {
+  const dt = Math.min(0.25, Math.max(0, (now - (track.lastUpdated ?? track.lastSeen)) / 1000));
+  return { ...track.box, x: track.box.x + (track.vx ?? 0) * dt, y: track.box.y + (track.vy ?? 0) * dt };
+}
+
 function canLocalPlayerFire() {
   return state.mode === 'game' && state.game?.status === 'playing' && isAlivePlayer(localSelfId());
 }
@@ -225,8 +236,9 @@ function targetUnderCrosshair(px, py) {
     if (!isLiveTrack(t, now)) continue;
     const id = resolveIdentity(t, now);
     if (!id.playerId || !isAlivePlayer(id.playerId)) continue;
-    if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head', identity: id };
-    if (contains(bodyBox(t.box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
+    const box = liveBox(t, now);
+    if (contains(headBox(box), px, py)) return { track: t, zone: 'head', identity: id };
+    if (contains(bodyBox(box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
   }
   return bodyHit;
 }
@@ -390,19 +402,20 @@ function drawGame({ vw, vh, toScreen }) {
     const targeted = !dead && hit?.track === track;
     const debugMatch = DEBUG && !known && !track.selfRejected ? track.debugMatch : null;
     const color = targeted ? '#ff2e4d' : known && alive ? '#39ff88' : known ? '#6b7280' : debugMatch ? '#ffd166' : '#8a97a6';
+    const box = liveBox(track, now);
     ctx.strokeStyle = color;
     ctx.setLineDash(known && !alive ? [2, 5] : known ? [] : debugMatch ? [8, 4] : [4, 4]);
-    ctx.strokeRect(...toScreen(track.box));
+    ctx.strokeRect(...toScreen(box));
 
     if (alive || !known) {
       ctx.setLineDash([]);
-      ctx.strokeRect(...toScreen(bodyBox(track.box)));
+      ctx.strokeRect(...toScreen(bodyBox(box)));
 
       ctx.setLineDash([6, 4]);
-      ctx.strokeRect(...toScreen(headBox(track.box)));
+      ctx.strokeRect(...toScreen(headBox(box)));
     }
 
-    const [x, y] = toScreen(track.box);
+    const [x, y] = toScreen(box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
     const label = known

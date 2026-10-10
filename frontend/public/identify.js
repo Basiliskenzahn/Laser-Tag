@@ -121,11 +121,26 @@ const MIN_SHAPE_SCORE = 0.36;
 // reid.js's header for the resulting *game-level* number (77% recognised at 5% bystander
 // acceptance), which is lower than the 83%/7.6% above because it is not the same measurement.
 // The margin halves wrong-player assignments.
-const REID_MATCH_THRESHOLD = 0.72;
+//
+// 0.80 rather than 0.72: real games showed too many false positives. On a benchmark look-alike
+// (a person scoring 0.77 against a player's scan on average), 0.80 cut the frames where he was
+// shootable as that player from 83 to 27 out of ~100, while the real player stayed shootable
+// (his scores sit around 0.86). Once named, a track keeps its name until it's revoked below.
+const REID_MATCH_THRESHOLD = 0.8;
+// A named track whose re-identification score for its own player drops below this on several
+// checks in a row is someone else now (people walking past each other, the player leaving and a
+// bystander stepping into the same spot): the name is dropped instead of staying latched.
+const REID_REVOKE_SCORE = 0.6;
+const REID_REVOKE_CHECKS = 3;
 const REID_MATCH_MARGIN = 0.03;
-const REID_EVIDENCE_MIN_SCORE = 0.62; // below this a check contributes no evidence at all
-const REID_SOFT_LABEL_SCORE = 0.66; // good enough to be a candidate, not to be accepted outright
-const REID_INITIAL_LOCK = 0.8; // name a brand new track on one check this strong
+// Evidence and soft labels can name a track from scores just under the threshold (several
+// agreeing checks); they're tied to the threshold so raising it actually tightens identification.
+// Fixed values here (0.62 / 0.66) used to let anyone scoring above them become a player.
+const REID_EVIDENCE_MIN_SCORE = REID_MATCH_THRESHOLD - 0.03;
+const REID_SOFT_LABEL_SCORE = REID_MATCH_THRESHOLD - 0.015;
+// A shot needs the named track's score at least this high (motion-identity.js isStableTarget).
+export const REID_TARGET_MIN_SCORE = REID_MATCH_THRESHOLD - 0.01;
+const REID_INITIAL_LOCK = 0.85; // name a brand new track on one check this strong
 
 // -- tracker association and lifecycle: matching boxes to tracks frame to frame --
 const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
@@ -339,7 +354,11 @@ function personEmbedding(source, box, embedder, timestamp) {
 
 // { hist, lower, grid, embed } for one video frame + box. Used both at enrolment and live.
 // `reid` is not set here: it is asynchronous, so the caller attaches it (see Tracker.update).
-export function extractSignature(source, box, embedder = null, timestamp = performance.now()) {
+// `appearance: false` skips the colour features and the MobileNet embedding - each one reads
+// pixels back from the GPU, which is the costliest part of a check on a phone. Used when the
+// re-identification embedding decides the match anyway (see Tracker.update).
+export function extractSignature(source, box, embedder = null, timestamp = performance.now(), { appearance = true } = {}) {
+  if (!appearance) return { hist: [], lower: [], grid: [], shape: [], embed: [], usable: usableMatchBox(source, box) };
   return {
     hist: appearanceHistogram(source, subBox(box, 0.16, 0.2, 0.68, 0.42)),
     lower: appearanceHistogram(source, subBox(box, 0.18, 0.58, 0.64, 0.34)),
@@ -617,6 +636,17 @@ function identityConfidence(track, now) {
   return track.score + evidence * 0.08 + Math.min(track.checks, 10) * 0.01 - Math.min(track.misses, 4) * 0.04 - stalePenalty * 0.25;
 }
 
+// Counts consecutive checks on which the re-identification score for the track's current player
+// is clearly too low; true once it's been REID_REVOKE_CHECKS in a row.
+function revokedByReid(track, match) {
+  const current = (track.rankings?.length ? track.rankings : [match]).find((r) => r?.id === track.playerId);
+  if (!current?.hasReid) return false;
+  track.reidMisses = current.score < REID_REVOKE_SCORE ? (track.reidMisses ?? 0) + 1 : 0;
+  if (track.reidMisses < REID_REVOKE_CHECKS) return false;
+  track.reidMisses = 0;
+  return true;
+}
+
 function clearIdentity(track) {
   track.playerId = null;
   track.name = null;
@@ -882,6 +912,7 @@ export class Tracker {
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
 
+    const reidDecides = Boolean(reid) && players.every((p) => !p.gallery?.length || p.gallery.some((s) => s.reid?.length));
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
       const due =
@@ -890,7 +921,9 @@ export class Tracker {
       if (!due) continue;
       track.lastCheck = now;
 
-      const signature = extractSignature(video, track.box, embedder, now);
+      // When every enrolled player has re-identification embeddings, they alone decide (see
+      // similarityParts), so the expensive colour features and MobileNet embedding are skipped.
+      const signature = extractSignature(video, track.box, reidDecides ? null : embedder, now, { appearance: !reidDecides });
       if (reid) {
         // Re-identification runs in the background: use this track's latest embedding and ask
         // for a fresh one. Until its first embedding arrives, don't identify the track from
@@ -914,6 +947,11 @@ export class Tracker {
         continue;
       }
       track.selfRejected = false;
+      if (track.playerId && track.hasReid && revokedByReid(track, match)) {
+        clearIdentity(track);
+        track.evidence.clear();
+        track.evidenceDetails.clear();
+      }
       decayEvidence(track);
       addEvidence(track, match);
       const evidenceMatch = evidenceWinner(track);

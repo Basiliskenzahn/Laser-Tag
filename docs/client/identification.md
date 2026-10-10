@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.72 (`REID_MATCH_THRESHOLD`) | `score` |
+| Overall score | ≥ 0.80 (`REID_MATCH_THRESHOLD`) | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -175,7 +175,7 @@ The floors for "plausible" depend on the signal:
 
 | | Minimum score to count as evidence | Minimum score for a soft label |
 | --- | --- | --- |
-| With `reid` | 0.62 (`REID_EVIDENCE_MIN_SCORE`) | 0.66 (`REID_SOFT_LABEL_SCORE`) |
+| With `reid` | threshold − 0.03 (`REID_EVIDENCE_MIN_SCORE`) | threshold − 0.015 (`REID_SOFT_LABEL_SCORE`) |
 | Colour | 0.42 (`EVIDENCE_MIN_SCORE`), and each part ≥ 0.24 | 0.48 (`SOFT_LABEL_SCORE`), and each part ≥ 0.24 |
 
 A *soft label* is a rejected match that is still good enough to be the track's candidate for the hysteresis below. Matches rejected for `margin` are never soft-labelled: an ambiguous frame should not nudge the identity either way.
@@ -184,7 +184,7 @@ The identity then changes only through hysteresis:
 
 | Situation | Needed to (re)assign |
 | --- | --- |
-| New track, very confident match (score ≥ 0.80 with `reid`, ≥ 0.66 without) | 1 check |
+| New track, very confident match (score ≥ 0.85 with `reid`, ≥ 0.66 without) | 1 check |
 | New track, otherwise | 2 agreeing checks in a row |
 | Track already identified as someone else | 4 agreeing checks in a row |
 | Check finds no candidate | Identity is **kept**. A known track only loses its identity when it disappears, loses a conflict, or another player wins the switch. |
