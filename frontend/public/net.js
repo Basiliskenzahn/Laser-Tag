@@ -180,7 +180,10 @@ function onState(game) {
   if (game.status === 'over') {
     const winner = game.players.find((player) => player.id === game.winner);
     const message = game.winner === state.myId ? 'You win!' : `${winner?.name ?? 'Someone'} wins!`;
-    if (previous?.status !== 'over') {
+    // Only for a round this phone saw running. The server keeps a finished round "over" until the
+    // next start, so joining, reloading or reconnecting afterwards (previous is null) must not
+    // replay its result.
+    if (previous?.status === 'countdown' || previous?.status === 'playing') {
       game.winner === state.myId ? sound.win() : sound.lose();
     }
     if (state.mode !== 'lobby') showLobby(message);
