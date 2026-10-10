@@ -33,7 +33,6 @@ export const state = {
   tracks: [],
   gallery: [], // signatures captured for the player currently being scanned
   localGallery: [], // this phone owner's gallery, used only as a self-match guard
-  scanThumbs: [], // data URLs matching gallery samples, used for the reusable debug cache
   savedScan: null,
   scanTargetId: null,
   scanTargetName: '',
@@ -70,14 +69,6 @@ export function save(key, value) {
   }
 }
 
-export function removeSaved(key) {
-  try {
-    localStorage.removeItem(`laser-tag:${key}`);
-  } catch {
-    // Private mode etc.; this is only a convenience.
-  }
-}
-
 export function loadActiveLobby() {
   try {
     const lobby = JSON.parse(load('activeLobby'));
@@ -111,5 +102,9 @@ export function saveActiveLobby() {
 }
 
 export function clearActiveLobby() {
-  removeSaved('activeLobby');
+  try {
+    localStorage.removeItem('laser-tag:activeLobby');
+  } catch {
+    // Private mode etc.; this is only a convenience.
+  }
 }

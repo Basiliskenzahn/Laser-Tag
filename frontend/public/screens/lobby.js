@@ -29,7 +29,7 @@ export function renderLobby() {
     const gallery = ownerId ? scannedGallery(ownerId) : rosterPlayer.gallery;
     const scanned = Boolean(gallery?.length);
     const row = document.createElement('div');
-    row.className = `lobby-player${scanned ? ' scanned' : ''}${ownerId ? ' mirrored' : ''}`;
+    row.className = `lobby-player${scanned ? ' scanned' : ''}`;
 
     const details = document.createElement('div');
     const name = document.createElement('div');
@@ -102,10 +102,8 @@ export function leaveLobby() {
   state.roster = [];
   state.gallery = [];
   state.localGallery = [];
-  state.scanThumbs = [];
   state.scanTargetId = null;
   state.scanTargetName = '';
-  $('scan-thumbs').innerHTML = '';
   $('join-screen').hidden = false;
   $('lobby-screen').hidden = true;
   $('scan-screen').hidden = true;

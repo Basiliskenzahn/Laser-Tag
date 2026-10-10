@@ -57,7 +57,6 @@ async function startLobby({ resumePlayerId = null, auto = false } = {}) {
   state.resumePlayerId = resumePlayerId;
   state.localGallery = [];
   state.gallery = [];
-  state.scanThumbs = [];
   state.scanTargetId = null;
   state.scanTargetName = '';
   state.savedScan = loadScanCache();
