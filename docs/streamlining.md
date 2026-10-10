@@ -22,16 +22,17 @@ Now: `server/` has been archived to `deprecated/server/` (see `deprecated/README
 from `package.json`'s scripts/dependencies (`start`, `dev`, and the now-unneeded `selfsigned`).
 `backend/` is the only backend.
 
-**This traded one problem for a sharper one, worth reading carefully:** `server/game.test.js` and
-`server/realtime.test.js` were the *only* automated test coverage this game's rules and protocol
-ever had - and they tested the Node copy, not the Python one that's live. Archiving `server/`
-didn't remove real coverage of `backend/` (there wasn't any), but it does mean the only test
-suites that ever existed for this logic are now sitting unrun in `deprecated/`, and the CI/CD
-pipeline still has no test gate at all (next item). Porting those suites to the Python backend -
-pytest, or an HTTP-driven Node test against the running Python process, either works - is the
-single highest-value thing left to do here. See `deprecated/server/game.test.js` and
-`deprecated/server/realtime.test.js` for what they covered; `docs/development/testing.md`'s
-"Writing tests" section has pointers on the patterns they used.
+**Follow-up, now also resolved:** archiving `server/` initially meant the only test suites that
+ever existed for this game's rules/protocol were sitting unrun in `deprecated/`, testing a backend
+that's no longer live. `backend/test_models.py` and `backend/test_protocol.py` port that coverage
+to the Python backend (`unittest` + `aiohttp.test_utils`, no new dependency) - see
+[Testing](development/testing.md). Run via `docker compose run --rm backend-tests` or
+`python -m unittest discover -s backend`.
+
+What's still open: the CI/CD pipeline doesn't run *either* test suite before deploying (next
+item), and while writing the Python tests it turned out the session-based `{"type": "shoot"}`
+message path is dead from the real client's perspective - see
+[Testing → backend/test_protocol.py](development/testing.md) for the note on that.
 
 ### Dead frontend code - now archived
 
@@ -50,11 +51,11 @@ header for exactly what each piece used to do.
 ### No CI test gate before deploy
 
 `.github/workflows/ci-cd-action.yml` triggers on every PR merge to `main` and does exactly one
-thing: SSH in and `docker compose up --build -d`. There's no step that runs `npm test`, let alone
-anything for the Python backend, before that happens. `docker-compose.yml` has a `tests` profile
-(`docker compose run --rm tests`) that would run the JS suite in a container, but nothing invokes
-it automatically. Now that `backend/` is the only implementation and has zero tests of its own
-(see above), there is genuinely no automated check of anything server-side before a deploy.
+thing: SSH in and `docker compose up --build -d`. There's no step that runs either test suite
+first. `docker-compose.yml`'s `test` profile now has both `tests` (JS, `docker compose run --rm
+tests`) and `backend-tests` (Python, `docker compose run --rm backend-tests`) ready to run in a
+container - but nothing in CI invokes either automatically, so a broken change in either the
+client or the backend deploys straight to the live server with nothing catching it first.
 
 Not fixed because: editing the deploy pipeline itself felt like it needed a deliberate decision
 from whoever owns the hackathon server credentials, not a drive-by change bundled into a
@@ -145,6 +146,14 @@ code calls them today - listed so they don't surprise someone who changes a call
   `classifierOpinion()` is their only caller - but they read like targeting constants that
   conceptually belong next to the rest of the game loop in `screens/game.js`. Moving them would
   create a `game.js` ↔ `motion-identity.js` import cycle, which is why they're there instead.
+- **The session-based `{"type": "shoot"}` message is dead from the real client's perspective.**
+  `backend.transport.Session.receive()` still handles it (and it's part of the documented
+  protocol, exercised by `backend/test_protocol.py`), but `screens/game.js` only ever fires via
+  the stateless `POST /api/hit` shortcut - for the latency reasons in
+  [Protocol](server/protocol.md#post-apihit): that response carries the hit's result directly,
+  rather than needing the shooter's own `/api/poll` loop to cycle back around with it. Not
+  removed, since it's a documented, tested part of the protocol that some other client could use -
+  just worth knowing before assuming both paths are equally live.
 
 ## Already fixed in this pass (recorded so nobody re-discovers them as open)
 

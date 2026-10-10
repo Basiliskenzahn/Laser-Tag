@@ -1,8 +1,9 @@
 # Testing
 
-The tests use Node's built-in test runner (`node:test`). There are no test dependencies beyond the project's own.
+Two separate test suites: JS (`node --test`, for the client) and Python (`unittest`, for the
+backend). Neither needs a dependency beyond the project's own.
 
-## Running
+## Running the JS suite
 
 In Docker, with nothing installed locally:
 
@@ -24,9 +25,63 @@ npm test
 node --test test/*.test.js frontend/public/identify.test.js
 ```
 
-That is: the two browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`. There used to be a third category - unit tests for the Node backend's `Room` class and its HTTP/SSE protocol (`server/game.test.js`, `server/realtime.test.js`) - but that backend was archived to `deprecated/server/` (see [Streamlining](../streamlining.md)) along with its tests, which were never ported to the Python backend that's actually deployed. **`backend/` currently has no automated tests at all.**
+That is: the two browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
+
+## Running the Python suite
+
+In Docker:
+
+```bash
+docker compose run --rm backend-tests
+```
+
+Or with Python 3.12+ and the backend's own dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+python -m unittest discover -s backend -p "test_*.py" -v
+```
+
+`backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the Node
+implementation's archived test suites (`deprecated/server/game.test.js`,
+`deprecated/server/realtime.test.js`) against the Python backend that's actually deployed -
+written when it turned out, during an unrelated cleanup, that `backend/` had no tests of its own
+at all (see [Streamlining](../streamlining.md) for that history). `test_models.py` uses
+`unittest.TestCase` with a fake clock (`room.now = lambda: t`, since `Room.now()` isn't
+constructor-injectable in Python the way the Node version was); `test_protocol.py` uses
+`aiohttp.test_utils.AioHTTPTestCase` to drive the real `create_app()` with polling clients, exactly
+like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ## What's covered
+
+### `backend/test_models.py`: game rules
+
+Unit tests for the `Room` class, 14 cases: starting needs 2 players and full scans, room capacity,
+no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
+unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
+it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round, that
+`roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
+directions.
+
+### `backend/test_protocol.py`: HTTP/SSE protocol
+
+Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
+phones), 14 cases: joining and starting, launching only once everyone is scanned, resuming with a
+remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
+being targetable instead of the owner), a full room of 8, a held poll answered promptly, `410` for
+unknown sessions, damage over polling (via the session `shoot` message - see note below), a
+three-player free-for-all, `POST /api/hit` producing an SSE `health` event, and motion samples
+being sanitised and relayed to everyone except the sender.
+
+`rooms`/`connections`/`pollers`/`sse_clients` in `backend.transport` are module-level globals
+shared by the whole test process (there's no per-test app state to reset) - every test uses a
+**unique room code**, same as the Node suite did.
+
+> **Note found while writing this:** the session-based `{"type": "shoot"}` message
+> (`test_shots_and_damage_travel_over_polling` exercises it) is part of the documented protocol and
+> still works, but the real client (`screens/game.js`) doesn't use it - it only ever calls the
+> stateless `POST /api/hit` shortcut, for the latency reasons noted in
+> [Protocol](../server/protocol.md#post-apihit). Worth knowing before "simplifying" one path away.
 
 ### `frontend/public/identify.test.js`: tracker
 
@@ -48,14 +103,15 @@ The thresholds in `motion/matching.js` were chosen against this simulation, so c
 
 ## What isn't covered
 
-- **The backend, entirely.** `backend/models.py` (game rules) and `backend/transport.py` (protocol) have no tests. The suites that used to cover this logic (against the now-archived Node implementation) are sitting in `deprecated/server/` and would need porting to pytest (or an HTTP-driven Node test against the running Python process) to mean anything again - see [Streamlining](../streamlining.md). Until then, check backend changes by hand: run the frontend and backend in Docker and play through the change with [debug mode](debug-mode.md).
+- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.
 - **Detection, signatures and scanning.** These need a real browser, camera and models. Test them by hand with `?debug`.
 - **The re-identification model itself.** `reid.js` needs ONNX Runtime Web, a canvas and the model file, so nothing exercises the loading, pre-processing or the request/collect queue. Only the matching rules built on its output are tested.
 - **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers come from simulation, not from real phones.
-- **CI.** The deploy workflow doesn't run tests. Run them before merging.
+- **CI.** The deploy workflow doesn't run either test suite. Run them before merging - see [Streamlining](../streamlining.md).
 
 ## Writing tests
 
 - Put browser-free client tests in `test/`. Keeping the pure logic in modules with no browser APIs (as `motion/matching.js` does) is what makes this possible — prefer that over mocking `window`.
-- A new file under `test/` is picked up by the glob in the `test` script automatically. Anywhere else (including a future `backend/` test suite), add it to that script in `package.json`.
-- If you port the archived `server/*.test.js` suites to the Python backend: the fake-clock pattern (`Room('test', { now: () => t })`) and the `pollingClient()`/`waitFor()`/`readSseEvent()` helpers they used are a reasonable template even in pytest - see `deprecated/server/game.test.js` and `deprecated/server/realtime.test.js`.
+- A new JS file under `test/` is picked up by the glob in the `test` script automatically. Anywhere else, add it to that script in `package.json`.
+- A new Python file under `backend/` matching `test_*.py` is picked up by `python -m unittest discover` automatically - no registration needed.
+- For backend protocol tests: use a **unique room code per test** (`unique_room()` in `test_protocol.py`), since the module-level registries in `backend.transport` are shared across the whole test process. For model tests: fake the clock with `room.now = lambda: t` rather than real `time.sleep()`.

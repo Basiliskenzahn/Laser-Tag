@@ -32,6 +32,8 @@ backend/                Python game server (Docker, production, and local dev - 
   models.py              Player/Room: pure game rules, no networking
   transport.py           Poller/Session, broadcast, room/connection registries
   sanitize.py            Cleaning every value that comes from the client
+  test_models.py         Room unit tests (fake clock, no networking)
+  test_protocol.py       HTTP/SSE protocol tests (aiohttp.test_utils, polling clients)
   Dockerfile
   requirements.txt
 test/                   Browser-free client tests (motion, reid matching)
@@ -61,13 +63,15 @@ docker-compose.yml
 
 ## Changing rules, messages, validation or limits
 
-There's one backend now (`backend/`), but it has no automated tests - see [Testing → What isn't covered](testing.md#what-isnt-covered). When you change rules, messages, validation or limits:
+There's one backend now (`backend/`), and it has its own test suite - see [Testing](testing.md).
+When you change rules, messages, validation or limits:
 
-1. Make the change in `backend/models.py` / `backend/transport.py`.
-2. Check it by hand against the Python backend in Docker (`?debug` helps), since nothing tests it automatically yet.
+1. Make the change in `backend/models.py` / `backend/transport.py` / `backend/sanitize.py`.
+2. Add or update a case in `backend/test_models.py` or `backend/test_protocol.py`.
 3. Update [Protocol](../server/protocol.md) and [Game rules](../server/game-rules.md).
 
-See [Streamlining](../streamlining.md) if you're the one who ends up fixing the missing test coverage - the archived `deprecated/server/*.test.js` suites are a reasonable starting template.
+Nothing runs these in CI yet - see [Streamlining](../streamlining.md) - so also check by hand
+against the Python backend in Docker (`?debug` helps) before relying on the suite alone.
 
 ## Changing the signature format
 
@@ -100,8 +104,7 @@ Useful starting points if you're looking for something to work on:
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.
 - **Solo scanning:** a scan needs a second person holding the phone. A front-camera or mirror mode would remove that.
 - **iOS vibration:** Safari doesn't support `navigator.vibrate`.
-- **Untested backend:** `backend/` has no automated tests at all - see [Streamlining](../streamlining.md).
-- **No CI tests:** the deploy job doesn't run the test suite first.
+- **No CI tests:** the deploy job doesn't run either test suite first - see [Streamlining](../streamlining.md).
 - **Large galleries:** the colour fields are still sent at full float precision, so a full gallery is ~210 KB against a 1 MB limit. Fine now, worth watching.
 - **SSE events are unused** by the client beyond debug logging.
 - **In-memory state:** restarting the server ends all games.

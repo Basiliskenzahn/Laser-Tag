@@ -69,12 +69,10 @@ All state is in process memory. Restarting the container ends every game and dro
 - Body size limit (`MAX_BODY_BYTES`, 1 MB) is enforced by aiohttp's `client_max_size`.
 - `/` is a health check, not the client - nginx serves the client's static files.
 
-## No automated tests
+## Tests
 
-This is the one backend now - see [Streamlining](../streamlining.md) for the Node implementation it
-replaced - but it has no test suite of its own. The tests that existed
-(`server/game.test.js`, `server/realtime.test.js`) tested the Node copy and moved with it to
-`deprecated/server/` when that was archived. Nothing currently verifies `models.py`/`transport.py`
-automatically; see [Streamlining → Two complete backend implementations](../streamlining.md) for
-the consequence and what porting those tests would take. Until that happens, check changes here by
-running the frontend and backend in Docker and playing through them with [debug mode](../development/debug-mode.md).
+`backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the archived
+Node suites (`deprecated/server/game.test.js`, `deprecated/server/realtime.test.js`) against this
+backend - no new dependency, since `unittest` is stdlib and `aiohttp.test_utils` ships with
+`aiohttp`, which is already required. See [Testing](../development/testing.md) for what they cover
+and how to run them.

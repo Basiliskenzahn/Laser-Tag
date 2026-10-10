@@ -87,11 +87,12 @@ protocol in `backend/app.py`/`backend/transport.py`. A second, Node implementati
 run the whole game without Docker; it's archived under `deprecated/server/` (see
 [Streamlining](streamlining.md)) and no longer built, run, or tested.
 
-That archiving didn't add test coverage, it just stopped *hiding* the lack of it: the Node
-implementation's tests (`server/game.test.js`, `server/realtime.test.js`) were the only automated
-coverage this game's rules and protocol ever had, and they tested the Node copy, not the Python
-one that's actually deployed. **`backend/` has no automated tests of its own.** See
-[Streamlining](streamlining.md) for what porting those suites would take.
+That archiving briefly made things worse before it made them better: the Node implementation's
+tests (now `deprecated/server/*.test.js`) were the only automated coverage this game's rules and
+protocol ever had, and they tested the Node copy, not the Python one that's actually deployed.
+`backend/test_models.py` and `backend/test_protocol.py` port that coverage to the real backend -
+see [Testing](development/testing.md). What's still missing: CI doesn't run either test suite
+before deploying - see [Streamlining](streamlining.md).
 
 ## State: who owns what
 
