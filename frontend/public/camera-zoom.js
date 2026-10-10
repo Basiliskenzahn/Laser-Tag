@@ -186,6 +186,10 @@ export function createZoomController({ getTrack, getMode, requested, onStatus = 
   let applied = 1;
   let busy = false;
   let again = false;
+  // Latched once the device has said it cannot zoom. Without this the watcher probes
+  // getCapabilities on every single poll for the rest of the round, which is both pointless work
+  // and exactly the console spam the feature is not allowed to produce.
+  let impossible = false;
 
   const report = (next) => {
     const changed = next.state !== status.state || next.zoom !== status.zoom;
@@ -202,10 +206,11 @@ export function createZoomController({ getTrack, getMode, requested, onStatus = 
         if (want == null || want === applied) break;
         const next = await applyTrackZoom(getTrack(), want);
         if (next.state === 'applied' || next.state === 'unapplied') applied = want;
+        // A device that cannot zoom will not learn how to, so stop asking. This latch is what
+        // keeps the unsupported path to exactly one probe for the whole session.
+        if (next.state === 'unsupported') impossible = true;
         report(next);
-        // A device that cannot zoom will not learn how to, so stop asking: this is what keeps the
-        // unsupported path to exactly one probe for the whole session.
-        if (next.state === 'unsupported') return;
+        if (impossible) return;
       } while (again);
     } finally {
       busy = false;
@@ -219,14 +224,16 @@ export function createZoomController({ getTrack, getMode, requested, onStatus = 
     status: () => status,
     label: () => zoomStatusLabel(status),
     sync() {
-      if (requested == null) return undefined;
+      if (requested == null || impossible) return undefined;
       if (busy) {
         again = true;
         return undefined;
       }
       return run();
     },
-    // Leaving the camera behind: the next stream is a new one, starting at 1x again.
+    // Leaving the camera behind: the next stream is a new one, starting at 1x again. The
+    // `impossible` latch is deliberately *not* cleared - it is a property of the phone's camera,
+    // not of this particular stream, so a rejoin should not start probing all over again.
     reset() {
       applied = 1;
       report(ZOOM_OFF);
