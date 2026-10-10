@@ -780,10 +780,28 @@ function assertEnrollableGallery(gallery) {
 function saveCurrentScan(targetId, message = `Saved scan for ${scanPersonName()}.`) {
   if (!targetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
   const gallery = state.gallery;
+  const name = scanPersonName();
   if (targetId === localSelfId()) state.localGallery = gallery;
-  send({ type: 'scan', targetId, gallery });
+  const delivery = send({ type: 'scan', targetId, gallery });
   saveScanCache(targetId);
   showLobby(message);
+  // "Saved scan for <name>" is the lobby's last word on a scan, and it used to be said whether or
+  // not the gallery ever left the phone: a scan sent down a connection that had gone away was a
+  // rotation the player was told had worked and that no other phone ever saw. `send` is
+  // fire-and-forget here and returns a delivery promise on the branch that reworked the
+  // connection, so take whichever it is and correct the lobby if it turns out not to have
+  // arrived - only while the player is still looking at the lobby line that claimed it.
+  Promise.resolve(delivery).then(
+    (delivered) => {
+      if (delivered === false) replaceLobbyMessage(`${name}'s scan could not be sent. Check the connection and rescan.`);
+    },
+    (err) => replaceLobbyMessage(`${name}'s scan could not be sent: ${err?.message || err}. Rescan to try again.`),
+  );
+}
+
+// Corrects the lobby status line after the fact, and only if the player is still reading it.
+function replaceLobbyMessage(message) {
+  if (state.mode === 'lobby') $('lobby-status').textContent = message;
 }
 
 // Scan screen: just highlight whoever would be captured if "Capture" were tapped now.
