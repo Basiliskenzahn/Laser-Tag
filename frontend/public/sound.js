@@ -2,10 +2,14 @@
 
 let ctx = null;
 
-// Browsers only allow audio after a user gesture, so call this from a tap handler.
+// iOS mutes Web Audio with the ring/silent switch unless the page says it plays media.
+if (navigator.audioSession) navigator.audioSession.type = 'playback';
+
+// Browsers only allow audio after a user gesture, so call this from a tap handler. iOS also
+// suspends the context again when the camera starts or the page is hidden, so every tap retries.
 export function unlock() {
   ctx ??= new (window.AudioContext || window.webkitAudioContext)();
-  ctx.resume();
+  if (ctx.state !== 'running') ctx.resume();
 }
 
 function tone({ type = 'square', from, to = from, duration, volume = 0.2, delay = 0 }) {

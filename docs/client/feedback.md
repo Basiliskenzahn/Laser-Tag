@@ -36,7 +36,7 @@ On the scan screen, `drawScan()` outlines every detected person, with the one th
 
 | Function | When | Sound |
 | --- | --- | --- |
-| `unlock()` | Tapping **Continue** | Creates/resumes the audio context. Browsers block audio until a user gesture. |
+| `unlock()` | Tapping **Continue**, then every tap/click/key | Creates the audio context and resumes it if it isn't running. Browsers block audio until a user gesture, a resumed lobby skips the join tap, and iOS suspends the context when the camera starts. |
 | `shoot()` | Every shot | Falling square-wave "pew" |
 | `hitConfirmed(headshot)` | Your hit landed | Short sine ping, a second higher ping for headshots |
 | `hurt()` | You got hit | Low sawtooth buzz |

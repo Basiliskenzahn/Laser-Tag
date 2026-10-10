@@ -35,6 +35,10 @@ $('join-form').addEventListener('submit', async (event) => {
   enterLobbyFromForm();
 });
 
+// Every later tap unlocks too: a resumed lobby never sees the join tap, and iOS suspends audio
+// when the camera starts. touchend, not pointerdown, because that is what counts as a gesture.
+for (const type of ['touchend', 'click', 'keydown']) document.addEventListener(type, sound.unlock);
+
 document.addEventListener('visibilitychange', () => {
   // The browser releases the wake lock whenever the page is hidden.
   if (document.visibilityState === 'visible' && state.detector) keepScreenOn();
