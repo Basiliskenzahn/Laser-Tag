@@ -165,7 +165,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.72 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In a real test 0.80 recognised nobody (phones score lower than the benchmark). |
+| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.76 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark) and 0.72 let bystanders through. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
 | `REID_EVIDENCE_MIN_SCORE` | threshold − 0.03 | Below this a rejected match contributes no evidence. Fixed at 0.62 before, which let evidence name anyone above it regardless of the threshold. |
 | `REID_SOFT_LABEL_SCORE` | threshold − 0.015 | A rejected match this good can still be the track's candidate |

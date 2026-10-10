@@ -124,11 +124,11 @@ const MIN_SHAPE_SCORE = 0.36;
 //
 //
 // Real phones score players lower than the benchmark (the scan is taken by another phone, in other
-// light): 0.80 recognised nobody in a real test. The default is 0.72 again, but evidence and soft
+// light): 0.80 recognised nobody in a real test and 0.72 let bystanders through, so the default is 0.76. Evidence and soft
 // labels are now tied to it (they used to name anyone above fixed 0.62 / 0.66 and let false
 // positives through regardless of the threshold). Tune it in the field with ?reid=0.70 in the
 // address (env.js); ?debug shows each person's best score on their box.
-const REID_DEFAULT_THRESHOLD = 0.72;
+const REID_DEFAULT_THRESHOLD = 0.76;
 let reidMatchThreshold = REID_DEFAULT_THRESHOLD;
 
 export function setReidThreshold(value) {
