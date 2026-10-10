@@ -40,6 +40,28 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 
 "fps" here is detections per second, not screen frame rate. In the game, detection runs every 80–120 ms, and less often if a phone can't keep up, so 7–12 is normal; boxes are moved along between detections.
 
+### Startup and scan costs
+
+Two more lines are appended to the overlay, both one-off, both absent until the thing they measure has happened.
+
+```
+Startup cam 310ms · wasm 190ms · obj 980ms · pose 760ms · embed 540ms · reid 410ms → lobby 1.3s · all 2.1s
+Scan 54/60 usable · obj 66 pose 6 embed 54 reid 30 jpeg 24
+  rec 12.1s · proc 8.4s · sel 210ms · thumb 90ms · reid 3.2s
+```
+
+| Line | Meaning |
+| --- | --- |
+| `Startup` | `cam` and `wasm` are measured from the start of startup; `obj`, `pose`, `embed` and `reid` are each model's **own** create call, so they can be compared with each other — `pose` and `embed` overlap in wall-clock terms, which is the point. `lobby` is the total to the lobby actually being on screen, and `all` the total to nothing still loading. The gap between those two is the work that used to be in front of the player and now isn't. From `startupTimingLine()` in `startup.js`; also logged once with `console.debug`. |
+| `Scan` | Actual inference counts for the last scan, per model, plus usable/recorded frames and JPEG thumbnail encodes. `obj` includes the second pass each [pose rescue](../client/scanning.md#3-per-frame-analysis) costs. Preview detections during the countdown are **not** counted here. |
+| `  rec … reid` | Wall-clock per phase: recording, the per-frame detect+describe loop, selection, thumbnails, and the OSNet pass. From `scanCostLine()` in `screens/scan.js`; also logged once per scan. |
+
+Use these to check the two things that are easy to get wrong:
+
+- **`lobby` much larger than `obj` + `cam`:** something has been put back in front of the lobby that does not belong there. The lobby needs the camera and the object detector and nothing else — see [What Continue actually waits for](../client/app-flow.md#what-continue-actually-waits-for).
+- **`pose` + `embed` ≈ their sum rather than overlapping:** they are being created serially again. They must wait for the object detector's delegate, but not for each other.
+- **A `Scan` line with a non-trivial `pose` count:** the pose landmarker is rescue-only during processing, so a high count means the object detector is losing the player on many frames — usually bad framing or bad light, and the scan is probably about to fail its 12-sample floor.
+
 Use this to tune identification:
 
 - **No `+ReID` on line 1:** the ONNX model didn't load, and matching is running on the much weaker colour signature. Check the console and that `/vendor/ort/` and `/models/osnet_x0_25_msmt17.onnx` are being served.

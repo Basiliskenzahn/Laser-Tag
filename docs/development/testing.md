@@ -25,7 +25,7 @@ npm test
 node --test test/*.test.js frontend/public/identify.test.js
 ```
 
-That is: the two browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
+That is: the browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
 
 ## Running the Python suite
 
@@ -91,6 +91,20 @@ Checks that when two visible tracks carry the same player id, only the higher-sc
 Drives `matchGallery()` and `averageSignatures()` with synthetic 512-dimensional unit vectors at chosen cosine similarities, and colour parts deliberately set to look like a perfect match so only the `reid` score can decide. Covers: the re-identification score deciding when both sides have one; a bystander being rejected in closed-set mode *despite* matching colours; two players scoring alike being a tie rather than a guess; galleries without `reid` falling back to the old colour behaviour; and averaged scan samples keeping a normalised embedding.
 
 This is the suite that pins down the priority rules described in [Identification](../client/identification.md#the-signals-in-order-of-strength) — it needs no browser because the embedding is just a vector by the time matching sees it.
+
+### `test/startup-sequencing.test.js`: what the player waits for
+
+Drives `startup.js` with a deferred promise per model and a hand-cranked clock, so every assertion is about *ordering* rather than about outcomes. Covers: the lobby gate being camera + object detector and nothing else; pose and the embedder being created in parallel with each other; neither starting before the object detector's delegate is known; a GPU→CPU fallback putting all three on the same delegate; re-identification not waiting for the MediaPipe bundle at all; optional models landing and being warmed whenever they arrive, including after the lobby is already open; a model that fails landing as `null` without rejecting the gate; and the recorded timings.
+
+These are deliberately ordering tests rather than "do the models load" tests, because a test of the latter kind would still pass if someone put the optional models back on the critical path — which is exactly the bug the module exists to prevent. See [What Continue actually waits for](../client/app-flow.md#what-continue-actually-waits-for).
+
+### `test/scan-model-gate.test.js`: what enrolment waits for
+
+The other side of the same change. The lobby no longer waits for the embedder or the recogniser, so a scan could now begin before they arrive — and a scan without them does not fail, it quietly enrols weaker signatures into a gallery that is then cached and matched against for the whole round. Covers: there being something to wait for while the lobby is open and the models are not; the wait ending as they land; a model that *failed* not being waited for, since `null` is its final answer; a hung download degrading the scan rather than trapping the player on the scan screen; and the normal case costing nothing.
+
+### `test/scan-reid.test.js`: the deferred OSNet pass
+
+Tests `scan-reid.js` against a fixture of five samples — both shapes `selectRotationSamples()` produces — with two frames deliberately shared between samples. The headline test embeds that fixture through both the real batched implementation and a naive serial reference and asserts the resulting vectors are identical, because the gallery not changing is the thing that matters. Also covers: a shared frame being embedded once; at least `REID_DISPATCH_BATCH` embeddings genuinely in flight at once (this fails if someone puts the per-frame `await` back); a cancel leaving every signature untouched and dispatching no further batch; a failed inference failing the whole scan rather than a gallery with holes; honest per-frame progress; and the averaging arithmetic.
 
 ### `test/motion.test.js`: motion matching
 

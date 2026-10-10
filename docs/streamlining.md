@@ -151,6 +151,29 @@ code calls them today - listed so they don't surprise someone who changes a call
 - `visualActivity()` divides by box height with no guard against zero. `detectTrackedPeople`
   already filters boxes to `h > 8`, so unreachable in practice.
 
+## Model delivery: two header problems holding back the client
+
+Both are one-line nginx changes with real, measurable client wins, and neither can be fixed from
+JavaScript. Found while cutting the join → lobby wait (`luxkaiwalker/startup-latency`).
+
+- **OSNet always runs single-threaded.** `reid.js` asks for
+  `crossOriginIsolated ? min(4, hardwareConcurrency) : 1` WASM threads, and nothing serves the
+  `Cross-Origin-Opener-Policy: same-origin` / `Cross-Origin-Embedder-Policy: require-corp` headers
+  that `crossOriginIsolated` requires — so the ternary has only ever taken its `1` branch. OSNet is
+  the most expensive inference in the app and dominates the end of every scan (~30 inferences, and
+  the wait the player notices after the rotation). The code to use up to four threads is already
+  written and has presumably never executed. Caveat before anyone does it: cross-origin isolation
+  also constrains what the page may embed, so it needs checking against the `/vendor/` assets and
+  the camera stream rather than being switched on blind.
+- **The models are served `no-store`, so they are re-downloaded every single page load.**
+  `frontend/common-locations.conf` sets `Cache-Control: no-store, max-age=0` on `.tflite`, `.task`,
+  `.wasm` and `.mjs`. For the HTML and the app JS that is deliberate and right. For 18 MB of
+  immutable model weights with content-addressable names it means a phone that reloads the page —
+  or rejoins after a crash, which the `activeLobby` resume path exists to make cheap — pays the
+  whole 18 MB again. It also forecloses the obvious startup optimisation: you cannot prefetch a
+  model into the HTTP cache to overlap its download with another model's initialisation, because
+  the browser is forbidden from reusing the response. `startup.js` documents why it does not try.
+
 ## Smaller things
 
 - **Circular imports in the new frontend module graph**: `net.js` ↔ `screens/game.js`, `net.js` ↔

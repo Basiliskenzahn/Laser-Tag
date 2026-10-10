@@ -21,7 +21,9 @@ Appearance matching uses whichever of these it has, strongest first:
 
 Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It isn't part of the per-check appearance score, but it nudges a track's typical score for a player: +0.06 when that player's phone moves with the person on screen, −0.08 when it clearly doesn't (`motionScoreAdjustment()` in `motion-identity.js`). Real games put players at 0.70–0.80+ and non-players at 0.60–0.65, so this widens the gap whenever people move.
 
-Both models are optional. `createReid()` failures are caught in `camera.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
+Both models are optional. `createReid()` failures and `createEmbedder()` failures are both caught in [`startup.js`](app-flow.md#what-continue-actually-waits-for), which lands `null` in the corresponding `state` slot (the delegate label simply loses its `+ReID` or `+Embed` suffix), so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
+
+Being optional is why neither is on the critical path into the lobby. It is also why [enrolment](scanning.md#0-waiting-for-the-models-if-it-comes-to-that) waits for both before it starts: *failing* to load is graceful degradation the player can see and live with, whereas enrolling a gallery while they were still *loading* is silent degradation baked into a cached gallery for the whole round.
 
 ## Signatures
 
@@ -43,7 +45,7 @@ A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. B
 
 Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap. All vectors are L2-normalised.
 
-`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning now attaches `reid` *after* averaging, `scan.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
+`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning attaches `reid` *after* averaging, `scan-reid.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
 
 ## The re-identification embedding (`reid.js`)
 
