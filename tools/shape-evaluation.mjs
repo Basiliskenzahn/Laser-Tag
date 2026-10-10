@@ -14,6 +14,7 @@
 //   npm run eval:shape            # or: node tools/shape-evaluation.mjs
 //   node tools/shape-evaluation.mjs --seed 7 --json
 //   node tools/shape-evaluation.mjs --scale-sweep [--floor 0.10]
+//   node tools/shape-evaluation.mjs --scale-sweep --sightings 3   # a quick look, not a result
 //
 // `--scale-sweep` answers a different question from the rest of the file: *what does admitting
 // smaller boxes cost?* Live matching refuses any box under 18% of frame height before it scores a
@@ -70,11 +71,15 @@ const MIN_MATCH_HEIGHT_RATIO = threshold('MIN_MATCH_HEIGHT_RATIO', 0.18);
 const FRAME = { width: 640, height: 480 };
 const ENROLLED_PLAYERS = 4; // a typical game
 const BYSTANDERS = 6; // people in the park who never scanned
-const SIGHTINGS_PER_PERSON = 60;
+// Population sizes, and the one thing about this harness that is allowed to be turned down:
+// `--sightings N` shrinks every per-person count proportionally. For a quick look, and for
+// test/shape-evaluation-smoke.test.js, which checks that the instrument still *runs* and must not
+// cost the test suite twenty seconds to do it. Any number quoted in docs/ comes from a full run.
+let SIGHTINGS_PER_PERSON = 60;
 // Partial bodies are the case `shape` was added for, so they get their own class: the correct
 // player, but only their top half in frame. A box like that still passes boxQuality (MIN_ASPECT is
 // 0.58), so nothing else in the pipeline is looking out for it.
-const PARTIAL_SIGHTINGS_PER_PLAYER = 30;
+let PARTIAL_SIGHTINGS_PER_PLAYER = 30;
 const PARTIAL_VISIBLE_FRACTION = 0.45; // how much of the body the box covers
 const SCAN_ANGLES = 4; // front / right / back / left, as scan.js enrols
 const SAMPLES_PER_ANGLE = 6; // SCAN_SAMPLE_COUNT in screens/scan.js
@@ -410,7 +415,7 @@ const SCALE_BUCKETS = [
   [0.25, 0.4],
   [0.4, 0.7],
 ];
-const SWEEP_SIGHTINGS_PER_PERSON = 60; // per bucket, per fixture mode
+let SWEEP_SIGHTINGS_PER_PERSON = 60; // per bucket, per fixture mode
 
 // What the colour features are actually read back through (identify.js readPixels calls): the
 // upper and lower histograms sample an 18x24 canvas and the body grid a 6x8 one. Printed with the
@@ -712,6 +717,14 @@ const flag = (name, fallback) => {
   return at >= 0 ? Number(args[at + 1]) : fallback;
 };
 const seed = flag('--seed', 20251010);
+
+// See SIGHTINGS_PER_PERSON. Shrinks the population, never the thresholds or the bucket layout.
+const sightings = flag('--sightings', 0);
+if (sightings > 0) {
+  SIGHTINGS_PER_PERSON = sightings;
+  SWEEP_SIGHTINGS_PER_PERSON = sightings;
+  PARTIAL_SIGHTINGS_PER_PLAYER = Math.max(1, Math.round(sightings / 2));
+}
 
 if (args.includes('--scale-sweep')) {
   const sweep = scaleSweep(seed, flag('--floor', 0.1));

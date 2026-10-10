@@ -10,6 +10,12 @@ import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
 import { identity } from '../identity.js';
 import { getReidThreshold } from '../identify.js';
+// A namespace import alongside the named one above, deliberately. The range diagnostics are being
+// added to identify.js on a sibling branch, and a named import of an export that is not there yet
+// is not a soft failure - it is a link error that stops the whole app loading. Read through the
+// namespace and a missing one is just `undefined`, which the readout handles.
+import * as matcher from '../identify.js';
+import { rangeReadout } from '../range-readout.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { startupTimingLine } from '../startup.js';
@@ -41,6 +47,17 @@ const GAME_DETECT_MAX_WIDTH = 512;
 // frame capture wants the main thread. Anything that reads `state.boxes` on this screen only
 // draws with it (drawScan), so none of this can reach an enrolled signature.
 const SCAN_PREVIEW_DETECT_INTERVAL_MS = 150;
+
+// The height-ratio thresholds the range readout draws its reference line at. Read off identify.js
+// so a retune there cannot leave the overlay quoting a number the matcher stopped using.
+//
+// TODO(range-instrumentation): identify.js does not export either of these yet - the far-range
+// branch adds MIN_MATCH_HEIGHT_RATIO and introduces the far floor. Until that lands, 0.18 is
+// mirrored from identify.js:79 and the floor is simply *absent* from the line rather than
+// invented, so the readout never shows a threshold nothing enforces. Delete the mirror - not the
+// lookup - when the export arrives.
+const MATCH_HEIGHT_GATE = matcher.MIN_MATCH_HEIGHT_RATIO ?? 0.18;
+const FAR_HEIGHT_FLOOR = matcher.MIN_FAR_MATCH_HEIGHT_RATIO ?? matcher.FAR_MATCH_MIN_HEIGHT_RATIO ?? null;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
@@ -311,6 +328,46 @@ let frames = 0;
 let fps = 0;
 let fpsWindowStart = performance.now();
 let inferenceMs = 0;
+// The last complete second's range diagnostics, snapshotted on the same window as `fps`.
+let rangeWindow = null;
+
+// `<pre id="debug">` lives inside `#game-screen` (index.html:80), which is `hidden` until a round
+// starts - so the overlay cannot be read on the join, lobby or scan screens even though join.js
+// unhides it. That is backwards for a range readout: measuring range means walking around with
+// the camera up, and the screen where the camera is up and detecting is the *scan* screen.
+//
+// So move it to <body> once, and only under ?debug. `position: fixed` and a z-index above the
+// screens (#game-screen and #scan-screen are z-index 1) because its containing block changes with
+// it. The tidy version of this is two lines of markup and CSS - see docs/development/debug-mode.md
+// - but neither index.html nor style.css is reachable from here, and this does the same thing.
+let debugOverlayMoved = false;
+function debugOverlay() {
+  const el = $('debug');
+  if (el && !debugOverlayMoved && document.body) {
+    debugOverlayMoved = true;
+    document.body.append(el);
+    el.style.position = 'fixed';
+    el.style.zIndex = '2';
+    el.style.maxWidth = 'calc(100% - 16px)';
+    el.style.whiteSpace = 'pre-wrap'; // long lines wrap instead of running off a phone screen
+  }
+  return el;
+}
+
+// Detection only runs on these two screens, so anywhere else `state.boxes` and `state.tracks` are
+// whatever they were when the last one ended. A stale range reading is worse than none.
+function rangeReadoutLine(visibleTracks) {
+  if (state.mode !== 'game' && state.mode !== 'scan') return '';
+  return rangeReadout({
+    boxes: state.boxes,
+    tracks: visibleTracks,
+    videoHeight: video.videoHeight,
+    selfId: localSelfId(),
+    diagnostics: rangeWindow,
+    gate: MATCH_HEIGHT_GATE,
+    floor: FAR_HEIGHT_FLOOR,
+  });
+}
 
 export function loop() {
   requestAnimationFrame(loop);
@@ -336,6 +393,13 @@ export function loop() {
       fps = (frames * 1000) / (now - fpsWindowStart);
       frames = 0;
       fpsWindowStart = now;
+      // identify.js keeps the range tallies as running totals. Snapshot and reset them on the
+      // same one-second window as fps, so the line says "here, at this distance, now" instead of
+      // a session total that never comes back down once you have walked closer. Snapshotting
+      // rather than reading live also stops the numbers flickering mid-window, exactly as fps
+      // does. One call a second, and only under ?debug.
+      rangeWindow = matcher.rangeDiagnostics?.() ?? null;
+      matcher.resetRangeDiagnostics?.();
     }
     const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
     const identified = visibleTracks.filter((t) => t.playerId && t.playerId !== localSelfId());
@@ -344,7 +408,9 @@ export function loop() {
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
     // Whatever is identifying people gets a line of its own, if it has anything to say.
     const identityLine = identity.debugLine(now, visibleTracks);
-    $('debug').textContent =
+    // Detected-but-refused vs never-detected, and the box heights the gate is judging.
+    const rangeLine = rangeReadoutLine(visibleTracks);
+    debugOverlay().textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
       (state.mode === 'game'
@@ -358,6 +424,7 @@ export function loop() {
                 .join(' ')}`
             : '')
         : '') +
+      (rangeLine ? `\n${rangeLine}` : '') +
       (ranked.length
         ? `\nRanks ${ranked
             .map(
