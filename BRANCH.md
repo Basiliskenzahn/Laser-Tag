@@ -43,7 +43,7 @@ Experiment and test-harness branches stay separate — they are instruments, not
 | Branch | Why it stays out |
 | --- | --- |
 | `luxkaiwalker/motion-only-tracking` | Disables appearance identification entirely and stubs the scan gate. A measuring rig for the motion signal; see [the motion-only experiment](docs/motion-only-experiment.md) |
-| `luxkaiwalker/motion-capture-harness` | Capture/replay tooling for real accelerometer data, plus a `backend/sanitize.py` truncation fix. The fix is worth cherry-picking on its own; the harness is test infrastructure |
+| `luxkaiwalker/motion-capture-harness` | Capture/replay tooling for real accelerometer data. Test infrastructure, so it stays out — but its `backend/sanitize.py` fix **has** been taken here (motion samples were truncated from the oldest end, discarding exactly the recent samples the 6 s correlation window needs), along with `backend/test_sanitize.py`. **Note it is now stale against this branch:** it hooks `motion-identity.js`, which `motion-isolation` has since rewritten |
 
 ## Also on this branch
 
