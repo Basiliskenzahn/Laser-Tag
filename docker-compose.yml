@@ -5,12 +5,11 @@ services:
       dockerfile: backend/Dockerfile
     expose:
       - '4000' # internal only - reached through the frontend's nginx reverse proxy
-    # Nothing but a CI deploy ever starts this stack, and CI only runs on a push, so without
-    # this a reboot or an OOM kill left the game down until a human noticed.
+    # A reboot or an OOM kill otherwise left the game down until a human redeployed.
     restart: unless-stopped
-    # Readiness, not liveness: the frontend's depends_on waits on this, so nginx never
-    # accepts traffic while aiohttp is not yet listening. `python -c` because
+    # Readiness, not liveness - the frontend's depends_on waits on it. `python -c` because
     # python:3.12-slim has neither curl nor wget. GET / is the health route in backend/app.py.
+    # Why each of these: docs/operations/docker.md#restart-policies-and-readiness
     healthcheck:
       test:
         - CMD
@@ -39,9 +38,8 @@ services:
       # Keep the self-signed cert across restarts so phones don't have to re-accept it.
       - certs:/certs
     restart: unless-stopped
-    # Checks the cert's expiry as well as nginx's liveness: an expired cert still starts nginx
-    # and still gets served on 443, and this is what catches a container that has been up long
-    # enough to outlive its own cert without ever re-running the entrypoint.
+    # Checks the cert's expiry as well as nginx's liveness - this is what catches a container
+    # up long enough to outlive its own cert without ever re-running the entrypoint.
     healthcheck:
       test:
         - CMD-SHELL
@@ -56,10 +54,9 @@ services:
         # every deploy a window where /api/ and /events/ both answered 502.
         condition: service_healthy
 
-  # Both test services are in the `test` profile, so `docker compose up` does not start them:
+  # The `test` profile, so `docker compose up` does not start these two:
   #   docker compose run --rm tests
   #   docker compose run --rm backend-tests
-  # See docs/operations/docker.md and docs/development/testing.md.
   tests:
     image: node:22-bookworm-slim
     profiles:

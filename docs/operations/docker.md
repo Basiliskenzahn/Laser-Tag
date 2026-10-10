@@ -180,9 +180,9 @@ keep them safe:
    regardless — adding `gzip_proxied any` later still cannot break them, because of (1).
 3. `proxy_buffering off` is unchanged, and the backend also sends `X-Accel-Buffering: no`.
 
-Verified end to end against the real backend: the SSE response carries **no
-`Content-Encoding`** and its first payload byte arrives in **0.68 ms** while the stream stays
-open, and `/api/poll` returns `application/json` with no `Content-Encoding`.
+Verified end to end: with `Accept-Encoding: gzip` on the request, the SSE response still carries
+**no `Content-Encoding`** and its first payload byte arrives in **0.75 ms** while the stream stays
+open for another 1.2 s, and `/api/` returns `application/json` with no `Content-Encoding`.
 `test/asset-delivery.test.js` fails if either `gzip off` or `proxy_buffering off` is removed.
 
 ### No preload hints
@@ -345,10 +345,11 @@ documents, so isolation does not apply to them.
 isolation does not take effect, `crossOriginIsolated` is false and `reid.js` falls back to one
 thread — today's behaviour. There is no path where this is slower.
 
-**Verified** with nginx 1.30.5 against the unmodified shipped configs: `nginx -t` passes, and on
-the wire `index.html`, `app.js` and `/models/*` all carry the three headers while `/api/` carries
-none. **Not verified:** the `nginx:1.27-alpine` image specifically, and the real thread count on a
-phone — `?debug` reports it.
+**Verified** with nginx 1.30.5 against the byte-identical shipped configs, served over a doc root
+mirroring the image layout: `nginx -t` passes, and on the wire `index.html`, `app.js`, every
+`/models/*` and every `/vendor/*` carries all three headers, while `/api/` carries none. A **304**
+revalidation on a model still carries them, which is what `always` is for. **Not verified:** the
+`nginx:1.27-alpine` image specifically, and the real thread count on a phone — `?debug` reports it.
 
 ## Common commands
 
