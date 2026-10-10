@@ -1,5 +1,8 @@
 # The motion-only experiment
 
+> **Branch owner: LuxKaiwalker** — `luxkaiwalker/motion-only-tracking`. An experimental
+> branch, not a candidate for `main`.
+
 **This file documents a branch, not the shipped game.** On `motion-only-tracking` the appearance
 pipeline is switched off and identity comes purely from phone motion. On `main`/`dev`, motion is
 opt-in and appearance does the work.
