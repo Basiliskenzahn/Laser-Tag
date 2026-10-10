@@ -14,7 +14,7 @@ import { send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
 import { setJoinStatus } from './join.js';
 import { hideResults } from './results.js';
-import { beginPlayerScan, exportPlayerScan, hideScanCountdown } from './scan.js';
+import { beginPlayerScan, exportPlayerScan, hideScanCountdown, importPlayerScan } from './scan.js';
 
 const GAME_LAUNCH_COUNTDOWN_MS = 3_000; // mirrors server/game.js's COUNTDOWN_MS
 
@@ -51,6 +51,15 @@ export function renderLobby() {
     if (!ownerId) {
       const actions = document.createElement('div');
       actions.className = 'lobby-player-actions';
+      const roundRunning = state.game?.status === 'countdown' || state.game?.status === 'playing';
+      if (SCAN_EXPORT) {
+        const importBtn = document.createElement('button');
+        importBtn.type = 'button';
+        importBtn.textContent = 'Import';
+        importBtn.disabled = roundRunning;
+        importBtn.addEventListener('click', () => chooseScanFile(rosterPlayer));
+        actions.append(importBtn);
+      }
       if (scanned && SCAN_EXPORT) {
         const exportBtn = document.createElement('button');
         exportBtn.type = 'button';
@@ -63,7 +72,7 @@ export function renderLobby() {
       const scanBtn = document.createElement('button');
       scanBtn.type = 'button';
       scanBtn.textContent = scanned ? 'Rescan' : 'Scan';
-      scanBtn.disabled = state.game?.status === 'countdown' || state.game?.status === 'playing';
+      scanBtn.disabled = roundRunning;
       scanBtn.addEventListener('click', () => beginPlayerScan(rosterPlayer));
       actions.append(scanBtn);
       row.append(actions);
@@ -71,6 +80,18 @@ export function renderLobby() {
     list.append(row);
   }
   $('launch-btn').disabled = !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
+}
+
+function chooseScanFile(player) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    $('lobby-status').textContent = await importPlayerScan(player, file);
+  });
+  input.click();
 }
 
 export function showLobby(message = '') {

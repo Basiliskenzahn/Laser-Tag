@@ -181,15 +181,19 @@ A cached gallery is compared against signatures extracted by whatever code is ru
 
 The current version is **11**, the version whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
 
-The cache also records `frames: {usable, total}` from the scan that produced it. Nothing reads it back except [Export](#exporting-a-scan), so it is not part of the validity check.
+The cache also records `frames: {usable, total}` from the scan that produced it. Nothing reads it back except [Export](#exporting-and-importing-a-scan), so it is not part of the validity check.
 
 Note that the required-field check does *not* include `reid`. A cache saved on a phone where OSNet failed to load is still valid — it just produces weaker matching for that player, which is the same graceful degradation the live path has.
 
-## Exporting a scan
+## Exporting and importing a scan
 
 With `?export` in the URL (`SCAN_EXPORT` in `env.js`), every scanned player's lobby row has an **Export** button. Without it the button is not shown. `exportPlayerScan()` downloads `scan-<room>-<name>-<timestamp>.json` with `format: 'laser-tag-scan'`, `version` (the cache version), `room`, `player` (`id`, `name`), `sampleCount` and `gallery`.
 
 The gallery always comes from the roster, the copy the server shares and every phone matches against. `thumbs`, `scannedAt` and `frames` exist only in the scanning phone's local cache. The export includes them only when that cache holds the same scan (its first sample's `hist` matches the roster's). Otherwise they are `[]`, `null` and `null`.
+
+The same flag adds an **Import** button to every player row, scanned or not, disabled while a round is counting down or playing. It loads an exported file into that row's player with `importPlayerScan()`. The id, name and room in the file are only a record of where it came from: ids are per session, so the scan always goes to the row you tapped. The file is rejected unless `format` is `'laser-tag-scan'`, `version` equals the current `SCAN_CACHE_VERSION`, and the gallery passes the same sample checks as the [local cache](#local-cache). An accepted import is handled like a finished scan: it is sent as `{type: 'scan', targetId, gallery}`, becomes `state.localGallery` when it is this phone's own player, and is written to the local cache along with its thumbnails, so a reload or a later export still has it.
+
+An imported scan matches only as well as the person still looks like it. Recognition leans on clothing colour, so a change of outfit, or very different lighting, means a rescan. A file exported before a `SCAN_CACHE_VERSION` bump is refused, for the reason in [Why the version exists](#why-the-version-exists).
 
 ## Server-side limits
 

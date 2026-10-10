@@ -17,7 +17,7 @@ Read once at startup in `frontend/public/env.js`:
 | Parameter | Effect |
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
-| `?export` | Sets `SCAN_EXPORT`: each scanned player's lobby row gets an **Export** button that downloads their scan as JSON. Off by default. See [Scanning → Exporting a scan](../client/scanning.md#exporting-a-scan). |
+| `?export` | Sets `SCAN_EXPORT`: each scanned player's lobby row gets an **Export** button that downloads their scan as JSON, and every row gets an **Import** button that loads one back in. Off by default. See [Scanning → Exporting and importing a scan](../client/scanning.md#exporting-and-importing-a-scan). |
 | `?room=<code>` | Pre-fills the room code on the join screen |
 | `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |

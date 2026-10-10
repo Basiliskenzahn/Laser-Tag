@@ -93,17 +93,21 @@ function scanCacheKey(name = scanPersonName()) {
   return `scan:${state.room}:${name.toLowerCase()}`;
 }
 
+function validScanGallery(gallery) {
+  return (
+    Array.isArray(gallery) &&
+    gallery.length >= SCAN_MIN_SAMPLES &&
+    gallery.length <= SCAN_TARGET_SAMPLES &&
+    gallery.every((s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape))
+  );
+}
+
 function validScanCache(cache, name = scanPersonName()) {
   return (
     cache?.version === SCAN_CACHE_VERSION &&
     cache.name === name &&
     cache.room === state.room &&
-    Array.isArray(cache.gallery) &&
-    cache.gallery.length >= SCAN_MIN_SAMPLES &&
-    cache.gallery.length <= SCAN_TARGET_SAMPLES &&
-    cache.gallery.every(
-      (s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape),
-    ) &&
+    validScanGallery(cache.gallery) &&
     Array.isArray(cache.thumbs)
   );
 }
@@ -712,6 +716,40 @@ export function exportPlayerScan(player) {
   // Some mobile browsers start the download asynchronously, so the URL has to outlive the click.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
   return true;
+}
+
+// Loads a file written by exportPlayerScan and saves it as `player`'s scan, exactly as if this
+// phone had just scanned them: sent to the server, kept as the local gallery when it is this
+// phone's own player, and cached so a reload or a later export still has it. The id and room in
+// the file are only a record of where it came from - ids are per session, so the scan goes to
+// whichever row the button was on. Returns the message for the lobby status line.
+export async function importPlayerScan(player, file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return `${file.name} is not a scan export.`;
+  }
+  if (data?.format !== 'laser-tag-scan') return `${file.name} is not a scan export.`;
+  // A signature is only comparable with one extracted by the same code - see SCAN_CACHE_VERSION.
+  if (data.version !== SCAN_CACHE_VERSION) {
+    return `That scan is from an older version of the app (v${data.version}, now v${SCAN_CACHE_VERSION}). Rescan instead.`;
+  }
+  if (!validScanGallery(data.gallery)) return `${file.name} does not contain a usable scan.`;
+
+  const gallery = data.gallery;
+  const thumbs = Array.isArray(data.thumbs) && data.thumbs.length === gallery.length ? data.thumbs : [];
+  if (player.id === localSelfId()) state.localGallery = gallery;
+  send({ type: 'scan', targetId: player.id, gallery });
+  try {
+    const name = player.name || 'Player';
+    const cache = { version: SCAN_CACHE_VERSION, name, room: state.room, savedAt: Date.now(), frames: data.frames ?? null, gallery, thumbs };
+    localStorage.setItem(`laser-tag:${scanCacheKey(name)}`, JSON.stringify(cache));
+  } catch {
+    // Same as saveScanCache: the cache is a convenience, the server already has the scan.
+  }
+  const from = data.player?.name && data.player.name !== player.name ? ` (exported from ${data.player.name})` : '';
+  return `Imported ${gallery.length}-angle scan for ${player.name}${from}.`;
 }
 
 function cosine(a, b) {
