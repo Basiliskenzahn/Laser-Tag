@@ -126,6 +126,7 @@ export class FakeCanvas {
   #resize() {
     this.pixels = new Uint8ClampedArray(Math.max(0, this._width * this._height * 4));
     this.discarded = false;
+    this.peakBytes = Math.max(this.peakBytes ?? 0, this.pixels.length);
   }
 
   getContext() {
@@ -306,6 +307,24 @@ export function installFakeDom({ videoWidth = 640, videoHeight = 360 } = {}) {
     throw new Error('flush() did not settle');
   };
 
+  // At most `steps` turns of the queues, without caring whether anything is left - for stopping
+  // part-way through a scan, which is what cancelling is.
+  const pump = async (steps) => {
+    for (let i = 0; i < steps; i++) {
+      await Promise.resolve();
+      await new Promise((resolve) => process.nextTick(resolve));
+      step();
+    }
+  };
+
+  // Tests wrap requestAnimationFrame to drive the camera or to take frames away, and a wrapper
+  // left behind would silently rig every test after it (which is how an early version of
+  // scan-enrolment.test.js had four tests passing for the wrong reason).
+  const pristineFrameHook = globalThis.requestAnimationFrame;
+  const resetFrameHook = () => {
+    globalThis.requestAnimationFrame = pristineFrameHook;
+  };
+
   return {
     video,
     overlay,
@@ -313,6 +332,8 @@ export function installFakeDom({ videoWidth = 640, videoHeight = 360 } = {}) {
     element,
     store,
     flush,
+    pump,
+    resetFrameHook,
     advance: (ms) => {
       now += ms;
     },
