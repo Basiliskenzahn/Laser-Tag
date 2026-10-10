@@ -1,4 +1,26 @@
 // Person detection with MediaPipe's object detector, running on the phone.
+//
+// This module only finds *where* the people are; identify.js decides who they are. It also owns
+// the gameplay hitboxes, because they are derived from the same boxes.
+//
+// There are three detection entry points because the phone cannot afford the good one every
+// frame, and the three jobs want different trade-offs:
+//
+//   detectScanPeople        - enrolment. One cooperative person, posed, and a missed frame just
+//                             means a slower scan. Takes the union of the object detector and
+//                             the pose landmarker so an unusual pose still gets a box, and only
+//                             drops near-identical duplicates.
+//   detectTrackedPeople     - gameplay, the thorough pass. Adds the pose landmarker to do the
+//                             two things the object detector gets wrong with people close
+//                             together: it splits a single box that actually holds two people,
+//                             and it recovers a person the object detector missed entirely.
+//                             app.js runs it only every few hundred ms, and only once more than
+//                             one player is enrolled (nothing to confuse before that).
+//   detectTrackedPeopleFast - gameplay, every other frame. The object detector alone, which is
+//                             several times cheaper. Identity rides along on the tracker between
+//                             thorough passes, so the cheap boxes are enough most of the time.
+//
+// detectPeople is the shared raw object-detector pass underneath all three.
 
 import { FilesetResolver, ImageEmbedder, ObjectDetector, PoseLandmarker } from '/vendor/tasks-vision/vision_bundle.mjs';
 
@@ -19,6 +41,10 @@ const BODY_TOP = 0.22;
 const BODY_HEIGHT = 0.72;
 const BODY_WIDTH = 0.56;
 
+// Loads the three models this phone can get. Only the object detector is required: the pose
+// landmarker and the image embedder are both best-effort, and the caller gets null for whichever
+// one this device could not manage (identify.js blends in the embedder only when it exists, and
+// the detect* functions below tolerate a null poseDetector). `delegate` is for the debug overlay.
 export async function createDetector() {
   const fileset = await FilesetResolver.forVisionTasks('/vendor/tasks-vision/wasm');
   const objectOptions = (delegate) => ({
@@ -94,6 +120,10 @@ function sourceHeight(source) {
   return source.videoHeight || source.height || 1;
 }
 
+// Boxes around whatever bodies the pose landmarker found, padded out from the visible landmarks
+// to roughly what the object detector would have drawn (landmarks stop at the skin, and limbs
+// out of frame pull the bounds in). `score` here is the fraction of landmarks it could see, so it
+// doubles as a confidence: a half-occluded person scores low.
 function poseBoxes(poseDetector, source, timestamp) {
   if (!poseDetector) return [];
   const result = poseDetector.detectForVideo(source, timestamp);
@@ -154,6 +184,8 @@ function centerDistanceRatio(a, b) {
   return Math.hypot(ax - bx, ay - by) / scale;
 }
 
+// Highest-confidence-first greedy suppression: keep a box only if it is distinct from every box
+// already kept. Sorts `boxes` in place, so callers pass an array they own.
 function keepDistinct(boxes, isDistinct) {
   boxes.sort((a, b) => b.score - a.score);
   const kept = [];
@@ -161,6 +193,8 @@ function keepDistinct(boxes, isDistinct) {
   return kept;
 }
 
+// Enrolment: cast the widest net. Both detectors' boxes, and only near-duplicates removed - the
+// caller picks the best usable box out of the result (identify.js usableScanBox).
 export function detectScanPeople(detector, poseDetector, source, timestamp) {
   return keepDistinct(
     [...detectPeople(detector, source, timestamp), ...poseBoxes(poseDetector, source, timestamp)],
@@ -168,9 +202,13 @@ export function detectScanPeople(detector, poseDetector, source, timestamp) {
   );
 }
 
+// Gameplay, thorough pass. Two people standing close together are the case that matters most
+// here, because one box over two people gets one identity and the wrong player takes the hit.
 export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
   const objectBoxes = detectPeople(detector, source, timestamp);
   const poses = poseBoxes(poseDetector, source, timestamp).filter((poseBox) => poseBox.score >= TRACKED_POSE_MIN_SCORE);
+  // An object box that two separate, well-separated poses both sit inside is one box over two
+  // people: throw it away and let the poses stand in for it.
   const splitObjects = new Set(
     objectBoxes.filter(
       (objectBox) =>
@@ -178,8 +216,8 @@ export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
     ),
   );
   const keptObjects = objectBoxes.filter((objectBox) => !splitObjects.has(objectBox));
+  // ...and a pose nowhere near any surviving object box is a person the object detector missed.
   const poseFallbacks = poses.filter((poseBox) =>
-    poseBox.score >= TRACKED_POSE_MIN_SCORE &&
     keptObjects.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
   );
   return keepDistinct(
@@ -188,6 +226,8 @@ export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
   );
 }
 
+// Gameplay, cheap pass: the object detector alone, suppressed the same way as the thorough pass
+// so the two produce comparable boxes and the tracker can associate across a switch between them.
 export function detectTrackedPeopleFast(detector, source, timestamp) {
   return keepDistinct(
     detectPeople(detector, source, timestamp),
@@ -195,6 +235,8 @@ export function detectTrackedPeopleFast(detector, source, timestamp) {
   );
 }
 
+// Head and body hitboxes, both centred horizontally in the detector box (see the HEAD_*/BODY_*
+// constants above for why they are tighter than it).
 export function headBox(box) {
   const w = box.w * HEAD_WIDTH;
   return { x: box.x + (box.w - w) / 2, y: box.y + box.h * HEAD_TOP, w, h: box.h * HEAD_HEIGHT };
@@ -209,7 +251,8 @@ export function contains(box, px, py) {
   return px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h;
 }
 
-// 'head', 'body' or null for whatever is under the point (px, py).
+// 'head', 'body' or null for whatever is under the point (px, py). A head hit anywhere in the
+// list wins over a body hit, so overlapping people cannot cost someone a headshot.
 export function hitTest(boxes, px, py) {
   let zone = null;
   for (const box of boxes) {
