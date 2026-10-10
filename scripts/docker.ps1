@@ -1,1 +1,16 @@
-docker compose up --build --force-recreate
+$ErrorActionPreference = 'Stop'
+
+$root = Split-Path -Parent $PSScriptRoot
+
+. "$PSScriptRoot\Resolve-Docker.ps1"
+$docker = Resolve-Docker
+
+Push-Location $root
+try {
+  & $docker compose up --build --force-recreate
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+} finally {
+  Pop-Location
+}
