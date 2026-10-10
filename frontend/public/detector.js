@@ -191,6 +191,26 @@ function coveredBy(inner, outer) {
   return inter / Math.max(1, inner.w * inner.h);
 }
 
+// How much of a region has to sit inside a box before the box is said to account for it, and how
+// far outside the box still counts as inside it. The padding is not slack for its own sake: a
+// detector box is drawn round a torso, and the arms and legs doing the moving swing past its edge,
+// so without it a known person's own movement reads as movement nobody has accounted for.
+const REGION_COVER_PAD = 0.15;
+const REGION_COVER_SHARE = 0.5;
+
+// Does any of `boxes` account for `region`? Used by frame-motion.js to tell movement we have
+// already found from movement we have not. Same coordinates for both, and `boxes` is normally
+// short (maxResults is 8), so this is a handful of rectangle intersections.
+export function regionCovered(region, boxes, pad = REGION_COVER_PAD, minShare = REGION_COVER_SHARE) {
+  for (const box of boxes) {
+    const padX = box.w * pad;
+    const padY = box.h * pad;
+    const padded = { x: box.x - padX, y: box.y - padY, w: box.w + 2 * padX, h: box.h + 2 * padY };
+    if (coveredBy(region, padded) >= minShare) return true;
+  }
+  return false;
+}
+
 function centerDistanceRatio(a, b) {
   const ax = a.x + a.w / 2;
   const ay = a.y + a.h / 2;
