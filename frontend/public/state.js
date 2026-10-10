@@ -101,10 +101,16 @@ export function saveActiveLobby() {
   );
 }
 
-export function clearActiveLobby() {
+// Not exported: `clearActiveLobby` below is the only caller, and keeping the `laser-tag:` prefix
+// in one place with load/save above is the point of it.
+function removeSaved(key) {
   try {
-    localStorage.removeItem('laser-tag:activeLobby');
+    localStorage.removeItem(`laser-tag:${key}`);
   } catch {
     // Private mode etc.; this is only a convenience.
   }
+}
+
+export function clearActiveLobby() {
+  removeSaved('activeLobby');
 }

@@ -93,11 +93,9 @@ export function connect() {
 // `pagehide` and not `beforeunload`: iOS Safari does not reliably fire beforeunload. Deliberately
 // not `visibilitychange` either - the page goes hidden every time the player glances at a
 // notification or answers a message, and a round has to survive that.
-export function notifyLeaving() {
-  leaveRoom({ notify: true });
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', () => leaveRoom({ notify: true }));
 }
-
-if (typeof window !== 'undefined') window.addEventListener('pagehide', notifyLeaving);
 
 function sendJoin() {
   if (state.name && state.room) {
