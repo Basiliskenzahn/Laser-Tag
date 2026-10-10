@@ -47,7 +47,7 @@ function detectionFor(source) {
  * camera on every animation frame so the twelve seconds of recording produce frames that differ
  * from each other, as a real rotation does.
  */
-function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null, detector = detectionFor } = {}) {
+function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null, detector = detectionFor, paint = {} } = {}) {
   const sent = [];
   dom.store.clear();
   dom.canvases.length = 0;
@@ -83,10 +83,10 @@ function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null,
   const rAF = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (callback) =>
     rAF((timestamp) => {
-      paintPerson(dom.video, { hue: (angle++ % 16) / 16 });
+      paintPerson(dom.video, { ...paint, hue: (angle++ % 16) / 16 });
       callback(timestamp);
     });
-  paintPerson(dom.video, { hue: 0 });
+  paintPerson(dom.video, { ...paint, hue: 0 });
   return { sent };
 }
 
@@ -209,6 +209,76 @@ test('a frame lost between selection and the embedding pass fails the scan loudl
   assert.deepEqual([...dom.store.keys()].filter((key) => key.includes('scan')), [], 'and must not be cached');
   assert.match(dom.element('lobby-status').textContent, /could not process the rotation video/i);
   assert.match(dom.element('lobby-status').textContent, /discarded a recorded frame/i);
+});
+
+test('a frame with no red in it is not mistaken for a lost one', async () => {
+  // "Is this frame still here?" has to be a question about alpha, not about colour. A recorded
+  // frame is drawn from an opaque video frame, so a live one is alpha 255 everywhere whatever it
+  // looks like; a discarded backing store is alpha 0. Anything that reads a colour channel
+  // instead would call this cyan body - red 0 in every pixel, and a perfectly good scan - a frame
+  // the browser had taken away, and fail the scan on a phone that is working fine.
+  const reid = { embed: async () => [1, 0, 0, 0, 0, 0, 0, 0] };
+  const { sent } = arrangeScan({ reid, paint: { channelScale: [0, 1, 1] } });
+  await runScan(selfPlayer);
+
+  const scanMessage = sent.find((msg) => msg.type === 'scan');
+  assert.ok(
+    scanMessage,
+    `a red-free scan must still enrol; lobby said "${dom.element('lobby-status').textContent}"`,
+  );
+  assert.ok(scanMessage.gallery.length >= 12);
+});
+
+test('only the frames behind the chosen samples are still alive during the embedding pass', async () => {
+  // The memory half of the same bug, measured where it matters. ~60 recorded canvases are ~140 MB
+  // at phone resolutions, and the embedding pass is the longest phase of the scan and the one
+  // running under the most pressure - so what counts is not how much is freed by the end but how
+  // much is still resident *then*. Selection has to keep the frames behind the chosen samples
+  // (that is the whole point of deferring OSNet) and nothing else.
+  let liveDuringEmbed = 0;
+  const reid = {
+    embed: async () => {
+      liveDuringEmbed = Math.max(liveDuringEmbed, dom.canvases.reduce((bytes, canvas) => bytes + canvas.byteLength, 0));
+      return [1, 0, 0, 0, 0, 0, 0, 0];
+    },
+  };
+  const { sent } = arrangeScan({ reid });
+  await runScan(selfPlayer);
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the scan has to have succeeded for this to mean anything');
+
+  const fullFrameBytes = 640 * 360 * 4;
+  const recordedBytes = dom.canvases.filter((canvas) => canvas.peakBytes === fullFrameBytes).length * fullFrameBytes;
+  assert.ok(recordedBytes >= 12 * fullFrameBytes, 'expected a real recording');
+  assert.ok(liveDuringEmbed > 0, 'the embedding pass never ran, so this measured nothing');
+  // A quarter is a deliberately loose ceiling - the point is an order of magnitude, not a
+  // tuning. Holding every recorded frame to the end of the pass, which is what this used to do,
+  // puts the ratio at 1.0.
+  assert.ok(
+    liveDuringEmbed < recordedBytes / 4,
+    `${(liveDuringEmbed / 1e6).toFixed(2)} MB still live during the embedding pass, out of ${(recordedBytes / 1e6).toFixed(1)} MB recorded`,
+  );
+});
+
+test('starting a second scan mid-flight enrols exactly one gallery, under the right id', async () => {
+  // The run-token discipline, driven rather than asserted about. test/scan-run-token.test.js pins
+  // the shape of the fix in the source and says plainly that it cannot do this; now something
+  // can. A run superseded part-way through must send nothing - not its own gallery, and above all
+  // not its gallery under the id of the player who replaced it, which is what this cost before
+  // the token (a whole round of every phone labelling one player as another).
+  const { sent } = arrangeScan();
+  scan.beginPlayerScan(selfPlayer);
+  await dom.pump(30);
+  scan.beginPlayerScan(otherSam);
+  await dom.flush();
+
+  const scans = sent.filter((msg) => msg.type === 'scan');
+  assert.equal(scans.length, 1, `expected one gallery, got ${scans.length}`);
+  assert.equal(scans[0].targetId, OTHER_ID, 'the live run owns the scan');
+  // The superseded run was scanning the local player, so a gallery leaking out of it would also
+  // have left its mark here.
+  assert.equal(state.localGallery.length, 0, 'the abandoned run must not have set a self gallery');
+  state.scanTargetName = '';
+  assert.equal(scan.loadScanCache(), null, 'and must not have cached one either');
 });
 
 test('every gallery sample carries real, non-degenerate vectors', async () => {

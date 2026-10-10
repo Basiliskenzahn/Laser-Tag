@@ -27,8 +27,8 @@ flowchart TD
   I --> J[Order samples by view]
   J --> K{At least 12?}
   K -- no --> L[Back to lobby with<br/>the most common problem]
-  K -- yes --> M[Thumbnails + OSNet embedding<br/>for the chosen samples only]
-  M --> N[Cache locally, send scan<br/>to server, back to lobby]
+  K -- yes --> M[OSNet embedding for the<br/>chosen samples only]
+  M --> N[Check no vector is blank,<br/>send scan, cache own scan,<br/>back to lobby]
 ```
 
 The phases and roughly what each costs:

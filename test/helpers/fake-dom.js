@@ -349,13 +349,16 @@ export function installFakeDom({ videoWidth = 640, videoHeight = 360 } = {}) {
  * stubbed out. `hue` shifts the body colour, which is what makes two frames look like different
  * angles (or two scans look like different people).
  */
-export function paintPerson(canvas, { hue = 0, bright = 1 } = {}) {
+export function paintPerson(canvas, { hue = 0, bright = 1, channelScale = [1, 1, 1] } = {}) {
   const { width: w, height: h, pixels } = canvas;
   const boxX = Math.round(w * 0.35);
   const boxW = Math.round(w * 0.3);
   const boxY = Math.round(h * 0.1);
   const boxH = Math.round(h * 0.8);
-  const clamp = (value) => Math.max(0, Math.min(255, value * bright));
+  // `channelScale` lets a test paint a colour with a channel missing entirely - a body with no
+  // red in it, say. That is how "is this frame still here?" is held to looking at *alpha*: a
+  // check that read any colour channel would call a red-free frame a lost one.
+  const clamp = (value, channel) => Math.max(0, Math.min(255, value * bright * channelScale[channel]));
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
@@ -367,13 +370,13 @@ export function paintPerson(canvas, { hue = 0, bright = 1 } = {}) {
       const n = Math.sin((x * 12.9898 + y * 78.233) * (1 + hue)) * 43_758.545;
       const noise = (n - Math.floor(n)) * 70 - 35;
       if (inBody) {
-        pixels[i] = clamp(100 + hue * 70 + noise);
-        pixels[i + 1] = clamp(150 - hue * 40 + noise);
-        pixels[i + 2] = clamp(190 - hue * 20 - noise);
+        pixels[i] = clamp(100 + hue * 70 + noise, 0);
+        pixels[i + 1] = clamp(150 - hue * 40 + noise, 1);
+        pixels[i + 2] = clamp(190 - hue * 20 - noise, 2);
       } else {
-        pixels[i] = clamp(40 + noise);
-        pixels[i + 1] = clamp(60 - noise);
-        pixels[i + 2] = clamp(80 + noise);
+        pixels[i] = clamp(40 + noise, 0);
+        pixels[i + 1] = clamp(60 - noise, 1);
+        pixels[i + 2] = clamp(80 + noise, 2);
       }
       pixels[i + 3] = 255;
     }
