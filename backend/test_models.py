@@ -207,6 +207,26 @@ class RoomTests(unittest.TestCase):
         self.assertFalse(room.set_gallery("a", [])["ok"])
         self.assertEqual(room.players["a"].gallery_rev, second)
 
+    def test_reseating_an_id_is_refused_so_a_revision_can_never_go_backwards(self):
+        # The revision only ever counts up, which is what lets the transport treat
+        # "same number" as "this phone still holds that scan". Reseating an id
+        # handed it a brand new Player with the count back at 0, so every phone
+        # that had been told revision 0 would be told to keep what it held about a
+        # completely different gallery. Reconnects go through the adoption path in
+        # transport.Session._join, so nothing should reach this.
+        room, _ = make_room()
+        room.join("a", "Alice", [])
+        room.set_gallery("a", GALLERY)
+        seated = room.players["a"]
+        revision = seated.gallery_rev
+        self.assertNotEqual(revision, 0)
+
+        again = room.join("a", "Alice on a new phone", [])
+        self.assertFalse(again["ok"])
+        self.assertIs(room.players["a"], seated, "the seated player must not be replaced")
+        self.assertEqual(room.players["a"].gallery_rev, revision)
+        self.assertEqual(room.players["a"].gallery, GALLERY)
+
     def test_a_clones_revision_follows_the_owner_it_borrows_from(self):
         # mirrored_gallery_rev has to move exactly when mirrored_gallery does, or a phone would
         # keep matching the clone against a scan that has since been replaced.
