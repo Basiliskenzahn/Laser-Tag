@@ -219,7 +219,20 @@ const reidInitialLock = () => Math.max(0.8, reidMatchThreshold + 0.08);
 const REID_HISTORY_MS = 3000;
 
 // -- tracker association and lifecycle: matching boxes to tracks frame to frame --
-const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
+// Minimum association score to call a box the same person. A faster detection rate raises every
+// correct pair's score - boxes move less between frames, so overlap is higher - which looks like
+// an argument for tightening this to keep two people crossing from being mixed up. It is not,
+// for two reasons. The threshold does not decide a crossing: pairs are scored, sorted and taken
+// best-first, so when both candidates clear 0.3 comfortably - which they do, two people close
+// enough to confuse are close enough to score well above it - the *order* decides and the gate is
+// never consulted. All raising it can do is reject a pair that was the best available, which costs
+// a real track its identity and spawns a stranger in its place. And the margin it would be
+// defending improved anyway: a wrong pair's score is set by how far apart the two people are, not
+// by the detection interval, so shortening the interval lifts the right pair and leaves the wrong
+// one where it was. test/track-motion.test.js has both halves of that: raising this to 0.45
+// leaves a crossing resolved exactly as it was and loses a correct re-association after a 300 ms
+// occlusion, while taking the velocity prediction away swaps the crossing outright. 0.3 stays.
+const ASSOCIATION_MATCH = 0.3;
 const TRACK_TIMEOUT_MS = 900;
 // How often an established track's identity is recomputed: 100 ms is 10 Hz, the identification
 // floor the game aims for. Exported so the ?debug readout can print the achieved rate against the
@@ -250,20 +263,27 @@ const REID_REQUEST_MS = 220;
 // Box position and velocity are filtered separately, and both are specified as time constants
 // rather than as a per-detection blend factor. A blend factor only means something at a fixed
 // detection interval, and the interval here is neither fixed nor the same on every phone: it is
-// 80-180 ms by schedule, longer on a slow device, and longer again whenever a detection is missed
+// 50-100 ms by schedule, longer on a slow device, and longer again whenever a detection is missed
 // and the track coasts. With a time constant, both filters behave the same in seconds everywhere,
 // a long gap is correctly weighted more than a short one, and a burst of two detections 10 ms
 // apart cannot yank the estimate (small dt -> small blend), which is what kept the old fixed
 // 0.68 from being safe to raise.
 //
-// Position: how far the drawn box trails a target moving at v px/s. For dt << tau the steady
-// state lag is v * tau; for larger dt it is less, so tau is the worst case. Measured against the
-// detector jitter model in test/motion.test.js (sigma = 0.87% of box height) at dt = 120 ms and
-// v = 400 px/s: the old 0.68 was tau = 105 ms and trailed 22.6 px, with 1.9 px of visible box
-// noise. 60 ms trails 7.5 px for 2.3 px of noise - a 3x lag cut for 22% more jitter. Going lower
-// buys little: tau = 40 ms removes only another 5 px and takes the noise to 2.5 px, most of the
-// detector's raw 2.6 px.
-const BOX_SMOOTHING_TAU_MS = 60;
+// Position: how far the drawn box trails a target moving at v px/s. Sampled every dt the steady
+// state lag is v * dt * (1 - a) / a with a = 1 - exp(-dt / tau), which *grows* as dt shrinks,
+// toward the worst case v * tau. This is the one way a time constant is not free of the detection
+// rate: it fixes the filter's behaviour in seconds, and a faster rate spends more of the tau it
+// was given. Measured against the detector jitter model in test/motion.test.js (sigma = 0.87% of
+// box height) at v = 400 px/s, tau = 60 trailed 7.5 px at the 120 ms interval it was chosen at -
+// where a = 0.86 and the filter was barely filtering - against 22.6 px for the old 0.68 blend
+// (tau = 105 ms) it replaced. At the 50 ms searching tier a = 0.57 and the same tau = 60 trails
+// 15.4 px: double the figure it was accepted on, and the drawn box is also the shot box, so that
+// lag lands on the aim. 38.5 ms reproduces 7.5 px exactly at 50 ms. 40 - the next value down,
+// already bracketed here when it bought only 5 px at 120 ms - gives 8.0 px at the searching tier
+// and 3.6 px at the 100 ms settled one, for 14% *less* box noise than the 120 ms / tau = 60
+// operating point (1.16 px rms against 1.36 over the same jitter series): both halves of the
+// trade improve, so there is nothing to weigh.
+const BOX_SMOOTHING_TAU_MS = 40;
 // Velocity: deliberately slower than the position filter, and measured from the *raw* detection
 // centres rather than from the smoothed box (see updateTrackBox). Keeping the two separate is the
 // point - track.vx/vy decide box-to-track association (predictedBox), where a noisy velocity
@@ -273,14 +293,50 @@ const BOX_SMOOTHING_TAU_MS = 60;
 // merely raising the old factor to 0.85 would have taken it to 24 px/s. 250 ms would halve it
 // again, but velocity then needs a quarter second to notice someone reversing direction, which
 // is the whole window the overlay projects over.
+//
+// Unlike the position filter above, this one really is free of the detection rate, and the reason
+// is worth writing down because it is why only one of the two needed retuning: the noise of a
+// filtered difference quotient is (a / dt) * sigma * sqrt(2 / (2 - a)), and a / dt -> 1 / tau as
+// dt shrinks, so the extra differencing noise at a shorter interval is paid for exactly by the
+// extra averaging. Going from 120 ms to 50 ms costs 11% more velocity noise by that formula and
+// 9.5% measured over the same jitter series, against a 19% asymptote as dt -> 0. Position is a
+// level and velocity is a derivative: a shorter interval quiets the first and costs the second
+// nothing, which is why only one of the two needed a new number. 180 ms is left alone.
 const VELOCITY_SMOOTHING_TAU_MS = 180;
 // Over a longer gap than this, the straight line between two detections is not a velocity: a
 // person can turn around within it. Keep the coasted estimate instead of inventing a confident
 // wrong one. TRACK_TIMEOUT_MS lets a track coast more than twice this long.
+//
+// Left alone at the new cadence on purpose. This is a bound on human dynamics - how long it takes
+// someone to reverse - not on the detector, so it is already in the units it should be in and a
+// faster detection rate does not change it. What changed is only how often it fires: eight missed
+// detections in a row at 50 ms is rarer than the three it took at 120 ms. The cases past it are
+// another gate's: further away than the association score tolerates and the box starts a new
+// track instead.
 const VELOCITY_MAX_GAP_MS = 400;
-const MIN_FRAME_DT_S = 0.016; // never divide a displacement by less than about one frame
-const PREDICT_MAX_AHEAD_S = 0.5; // how far association may extrapolate a track along its velocity
-const COAST_VELOCITY_DECAY = 0.82; // velocity damping while a track is briefly unseen
+// One video frame at 60 Hz, and still the shortest real gap there is: the shot path can force a
+// detection a millisecond after a scheduled one, and 1 ms of displacement divided by 1 ms is not
+// a speed. 50 ms is well clear of it, so at the normal cadence it never binds - it is purely the
+// guard on that forced detection, which is why the new rates do not touch it.
+const MIN_FRAME_DT_S = 0.016;
+// How far association may extrapolate a track along its velocity. Kept at 0.5 s, and the reason
+// is the coast decay below rather than this number: the projection is a decaying velocity times a
+// growing elapsed time, so it peaks and then falls, and with COAST_VELOCITY_TAU_MS the peak sits
+// at 87 px (v = 400 px/s) around 500-600 ms of coasting whatever the detection rate is. The clamp
+// caps the worst case right at that peak. Note this feeds associationScore only - game.js's
+// liveBox(), which is what the overlay and the shot actually use, caps its own projection at
+// 0.25 s and never reads this.
+const PREDICT_MAX_AHEAD_S = 0.5;
+// Velocity damping while a track is briefly unseen, as a time constant for the same reason the
+// two filters above are: it used to be 0.82 applied once per update, and a per-update factor is a
+// different thing at every detection rate. At the 120 ms interval it was tuned at, 0.82/update is
+// a 419 ms half-life; at the 50 ms searching tier - which is exactly the tier a coasting track
+// forces, since missedFrames > 0 picks it - the same 0.82 is a 175 ms half-life. A person who
+// stepped behind a pillar used to come out the far side with 61% of their velocity after 300 ms
+// and now has 30%, so predictedBox under-shoots and the track is likelier to be dropped and
+// re-created as a stranger. -120 / ln(0.82) = 605 ms; 600 reproduces 0.8187 per 120 ms, within
+// 0.2% of the tuned factor, and now means the same thing at 50, 71 or 100 ms.
+const COAST_VELOCITY_TAU_MS = 600;
 
 // -- identity hysteresis: how reluctant a track is to take or change a name --
 // Both of these are counts of checks standing in for a duration, and both were calibrated at the
@@ -1266,6 +1322,10 @@ export class Tracker {
   constructor() {
     this.tracks = [];
     this.nextId = 1;
+    // When update() last ran, so the coast damping below can be measured in seconds instead of
+    // counted in updates. One field on the tracker rather than one per track: every track coasts
+    // in the same call, so the gap is the same for all of them.
+    this.lastUpdateAt = null;
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
@@ -1300,16 +1360,22 @@ export class Tracker {
     }
 
     // Tracks the detector missed this frame coast on their last velocity for a moment: a person
-    // the detector drops for two frames should not become a new, unidentified person.
+    // the detector drops for two frames should not become a new, unidentified person. The damping
+    // is per second, not per update (COAST_VELOCITY_TAU_MS), so it is measured over the gap since
+    // the previous update rather than counted in updates. The first update has no previous one to
+    // measure from, so nothing has coasted yet and the factor is 1.
+    const coastStep = Math.max(0, now - (this.lastUpdateAt ?? now)) / 1000;
+    const coastFactor = 1 - smoothingAlpha(coastStep, COAST_VELOCITY_TAU_MS);
     for (const track of this.tracks) {
       if (track.seenThisFrame) continue;
       const age = now - track.lastSeen;
       if (age < TRACK_TIMEOUT_MS) {
-        track.vx = (track.vx ?? 0) * COAST_VELOCITY_DECAY;
-        track.vy = (track.vy ?? 0) * COAST_VELOCITY_DECAY;
+        track.vx = (track.vx ?? 0) * coastFactor;
+        track.vy = (track.vy ?? 0) * coastFactor;
         track.missedFrames = (track.missedFrames ?? 0) + 1;
       }
     }
+    this.lastUpdateAt = now;
 
     for (let i = 0; i < boxes.length; i++) {
       if (matchedBoxes.has(i)) continue;
