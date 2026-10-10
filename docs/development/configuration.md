@@ -19,13 +19,6 @@ Read once at startup in `frontend/public/env.js`:
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
 | `?reid=<0-1>` | Overrides the re-identification accept threshold for this device (`REID_THRESHOLD` in `env.js`, applied by `setReidThreshold()` in `identify.js`). Defaults to `REID_DEFAULT_THRESHOLD` (0.65). See the re-identification table below. |
-| `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
-| `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
-| `?motion=off` or no motion parameter | The default. `identity.js` installs the appearance-only provider instead, so there is no motion permission prompt, no sample sharing and no motion fusion: targeting uses appearance identity + `isStableTarget()` only. |
-| `?zoom=<1-10>` or `?zoom=on` | Magnifies the camera sensor **during gameplay only**, so far-away players are big enough to detect and recognise (`CAMERA_ZOOM` in `env.js`, applied by `camera-zoom.js`). `?zoom=on` means 2×. See [Camera zoom](#camera-zoom) below. |
-| `?zoom=off` or no zoom parameter | The default: no zoom, and the camera track is never touched. |
-
-Any value that cannot be read — `?zoom=abc`, `?zoom=0.5`, `?zoom=99` — is treated as off, so a typo in the address bar cannot stop the camera.
 
 ## Game rules
 
@@ -104,31 +97,9 @@ Model options that aren't separate constants but are worth knowing about, in `de
 | `WARMUP_TIMESTAMP_MS` | 1 | Timestamp handed to the MediaPipe tasks. Must stay **below** every timestamp the game can pass, since VIDEO mode requires strictly increasing values per task; every real call derives one from `performance.now()`, already in the thousands by the time a model loads. Raising this is how you'd silently break detection later. |
 | `WARMUP_REGION` | 0.3–0.7 × 0.08–0.95 | Where a person roughly stands in frame, so the embedder and re-identification warm their crop paths instead of being handed the whole frame |
 
-### Camera zoom
-
-`frontend/public/camera-zoom.js`, enabled with `?zoom=` (off by default).
-
-Players beyond roughly 10–12 m are detected rarely and identified almost never, for two separate reasons: the object detector sees every frame at 320×320, so a person that far away is a few dozen pixels tall in the tensor; and OSNet's input is 128×256, so a distant player's crop is upscaled about 5× and the embedding is computed mostly from interpolation. Asking the `MediaStreamTrack` to zoom addresses both at once, and is the only option here with **no per-frame cost** — the frame arrives already magnified at the same resolution, so no stage downstream does any extra work.
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `ZOOM_WHEN_ON` | 2 | What `?zoom=on` means. Zoom narrows the field of view, which makes a target harder to find and aiming twitchier, so this stays conservative. |
-| `ZOOM_PARAM_MAX` | 10 | Sanity bound on `?zoom=`, before the device's own range is consulted. Beyond this is a typo, not an intent. |
-| `ZOOM_POLL_MS` (`camera.js`) | 250 | How often the screen the player is on is compared with the zoom the track is at. A string comparison off the render path, not per-frame work. |
-
-Three properties are deliberate and worth not undoing:
-
-- **Enrolment always runs at 1×, whatever `?zoom=` says.** The scan builds the gallery every phone in the room matches against for the whole round, so a gallery captured zoomed and matched un-zoomed is a domain mismatch that would *cost* accuracy rather than buy it. "Use the same zoom for both" is not actually available: galleries are shared between phones, and each phone has its own zoom capability and its own URL, so the scanning phone's zoom is not the matching phone's. 1× is the one level they all agree on. Zooming the scan would also narrow its field of view, which its own gates (`MIN_SCAN_HEIGHT_RATIO`, the aspect bounds, `boxScanQuality`'s centring term) assume is wide enough for a whole person at arm's length. `SCAN_CACHE_VERSION` is therefore unchanged — what the scan captures is exactly what it captured before.
-- **An unsupported device is unaffected.** `getCapabilities` may be absent, may not list `zoom`, and `applyConstraints` may reject; zoom was missing from iOS Safari for most of its life. Every probe is wrapped and nothing throws, the constraint goes inside `advanced` so it is best-effort rather than a required constraint that would fail the whole call, and a device that answers "unsupported" is asked once and never again. With zoom off the track is not touched at all.
-- **Zoom cannot delay the lobby.** It is applied with a follow-up `applyConstraints` after the stream exists — not in the `getUserMedia` constraints, where a `zoom` entry would be a *required* constraint on a property most phones lack, i.e. an `OverconstrainedError` and a camera that never starts. `startCamera()` does not await it, so it never reaches `startup.js`'s camera promise, and nothing is sent while the lobby or scan screen is up, so it cannot renegotiate the stream underneath a model warm-up frame either.
-
-What the sensor actually did is read back from `track.getSettings().zoom` rather than echoed from the request, and appended to the delegate string the `?debug` overlay already shows, so the field can tell `GPU+ReID zoom 2x` from `GPU+ReID zoom n/a`.
-
-Tuning it in the field: start at `?zoom=2`. If players are found but lost as soon as they move off centre, the field of view is too narrow — drop to `1.5` or off. If far players are outlined but rarely shootable, that is recognition rather than detection, so a slightly lower `?reid=` helps more than more zoom. Every phone in a game should use the same value.
-
 ## Targeting
 
-`frontend/public/appearance-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
+`frontend/public/appearance-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot, and are the main guard against crediting the wrong player.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -138,7 +109,7 @@ Tuning it in the field: start at `?zoom=2`. If players are found but lost as soo
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
 | `reidTargetMinScore()` (identify.js) | threshold | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
 
-All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own". A track whose motion is confirmed by the target's own phone is targetable without it — only liveness (`LIVE_TRACK_MS`) still applies. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
+All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own".
 
 ## Scanning
 
@@ -163,7 +134,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `ROTATION_SAMPLE_AVERAGE_COUNT` | 4 | Frames averaged per sample |
 | `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
 | `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
-| `SCAN_CACHE_VERSION` | 12 | Bump when the signature format changes (11 = samples carry a re-identification embedding; 12 = `shape` is stored raw rather than L2-normalised) |
+| `SCAN_CACHE_VERSION` (`scan-cache.js`) | see source | Bump when the signature format or the cache key changes, so phones discard caches that would be silently wrong rather than merely stale. [Why the version exists](../client/scanning.md#why-the-version-exists) |
 
 `frontend/public/scan-reid.js` — the deferred OSNet pass:
 
@@ -213,19 +184,15 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 | `MIN_SHAPE_SCORE` | 0.36 — **deliberately unchanged**, see below |
 
 `MIN_SHAPE_SCORE` is worth a paragraph, because its value does not mean what the others' do. Until
-[the normalisation fix](../shape-feature-bug.md), `shape` returned 0 for everyone, so 0.36 had
+the normalisation fix, `shape` returned 0 for everyone, so 0.36 had
 never gated anything and was chosen against a dead feature. The fix made the gate *reachable*
 without retuning it: that is the conservative state to leave it in, since lowering or raising it
 both need a real distribution of colour-only `s` scores, and the only numbers that exist are
-[synthetic](../shape-normalisation-evaluation.md) (on which 0.36 rejects 0% of correct pairs and
-0% of wrong-person ones). Collect real values with `?debug` on a device where OSNet does not load
-before moving it. The same applies to `EVIDENCE_MIN_PART` below.
+synthetic. Collect real values with `?debug` on a device where OSNet does not load before moving
+it. The same applies to `EVIDENCE_MIN_PART` below. See [Open items](../open-items.md).
 
 `MIN_SHAPE_SCORE`, `EVIDENCE_MIN_PART` and `EVIDENCE_MIN_SCORE` are **exported** from
-`identify.js`. `tools/shape-evaluation.mjs` used to re-declare all three by value, with a comment
-saying it had to, so retuning one here silently left the harness measuring a gate the game no
-longer used. They are exported so it can read the live value — which is not permission to change
-them.
+`identify.js`, so anything measuring against them reads the live value rather than a copy.
 
 **Acceptance, re-identification embedding.** These replace all of the above whenever both sides have a `reid` vector. The source comments record the measurement behind them:
 
@@ -233,7 +200,6 @@ them.
 | --- | --- | --- |
 | re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.65 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 and 0.68 had no false positives. Go back to `?reid=0.68` if bystanders get named. |
 | `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
-| `MOTION_SCORE_BONUS` / `MOTION_SCORE_PENALTY` (motion-identity.js) | +0.06 / −0.08 | Added to a track's typical score for a player when that player's phone motion is consistent / inconsistent with the person on screen. 0 unless `?motion=on`/`?motion=strict` installed the motion provider, and 0 while nobody moves. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
 | `reidEvidenceMinScore()` | threshold | Below this a check contributes no evidence. Was fixed at 0.62, then threshold − 0.03, which at 0.65 let people who usually score 0.62–0.64 build up evidence and get named; the 3 s median bridges bad checks instead. |
 | `reidSoftLabelScore()` | threshold | A rejected match this good can still be the track's candidate |
@@ -279,7 +245,7 @@ try — see [Box range and the far band](../client/identification.md#box-range-a
 These are the only range numbers that are open to tuning. `MIN_MATCH_HEIGHT_RATIO` is not: the
 whole point of the band is that at or above 0.18 nothing changed, and that property is what makes
 it safe at the ranges that already worked (`test/range-reid-gate.test.js` asserts the match object
-is identical to a pre-band one, and `npm run eval:shape` is byte-identical). Both floors are
+is identical to a pre-band one). Both floors are
 derived from OSNet's 128 × 256 input rather than picked, so if you move them, move them by changing
 the upscale factor you are willing to accept and say so — the arithmetic is in the comment beside
 them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0
@@ -310,42 +276,9 @@ Two more behaviours are set inline rather than as named constants:
 
 Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degrade accuracy rather than fail.
 
-## Motion
-
-`frontend/public/motion/sensor.js` (what this phone shares):
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `PANNING_DEG_PER_S` | 10 | Own rotation rate above which camera-image motion isn't trusted for that 100 ms bin |
-| `HISTORY_MS` | 12 000 | How much of this phone's own history is kept |
-
-`frontend/public/motion/matching.js` (the comparison). `SAMPLE_MS` is exported; the rest are the `DEFAULTS` object, overridable per call:
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `SAMPLE_MS` | 100 | Grid both series are resampled onto (10 Hz). Also the sensor's bin size. |
-| `windowMs` | 6000 | How much history is correlated. 4 s windows let 10–20% of bystanders match by coincidence. |
-| `maxLagMs` | 400 | Clock offset between phones that the search tolerates |
-| `minValidFraction` | 0.6 | Share of the window that must be usable (data present, shooter not panning) |
-| `minVisualSpread` | 0.08 | Box heights/s the person must actually vary by, or the answer is `unknown` |
-| `minRemoteSpread` | 0.25 | m/s² the player's phone must actually vary by, or the answer is `unknown` |
-| `consistentAt` | 0.75 | Correlation from which motion confirms the identity |
-| `inconsistentAt` | 0.30 | Correlation at or below which an active pair contradicts it |
-| `gapMs` (in `resample`) | 350 | How far a sample may be from a grid point and still be interpolated |
-
-`frontend/public/motion-identity.js`:
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `MOTION_SEND_INTERVAL_MS` | 500 | How often this phone's new samples are sent to the room |
-| `MOTION_CHECK_MS` | 300 | How often a track's motion checks are recomputed |
-| `MOTION_HISTORY_MS` | 12 000 | History kept per remote player and per track |
-
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or require motion confirmation with `?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
-- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict` — with motion off the debug overlay has no `motion` line at all, because the provider isn't installed. Once it is there, `off` means permission was never granted, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
-- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which installs the appearance-only provider instead, restoring the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

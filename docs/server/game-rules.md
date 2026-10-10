@@ -1,8 +1,6 @@
 # Game rules and room lifecycle
 
-The rules live in a `Room` class with no networking, in `backend/models.py` (Python - the only
-backend; see [Streamlining → Two complete backend implementations](../streamlining.md) for the
-Node implementation this replaced, archived under `deprecated/server/`).
+The rules live in a `Room` class with no networking, in `backend/models.py` - the only backend.
 
 ## Constants
 

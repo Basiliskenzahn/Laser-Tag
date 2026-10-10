@@ -5,9 +5,8 @@ Detection only says "there's a person here". With more than two players, a phone
 1. **Signatures**: a compact description of how a person looks in one frame (`identify.js`, plus the re-identification embedding from `reid.js`).
 2. **Gallery matching**: compare a signature against every player's scanned gallery (`identify.js`).
 3. **The tracker**: follow people across frames so identity is stable and matching doesn't run on every frame (`identify.js`).
-4. **Motion confirmation**: check the person's on-screen movement against what each player's own phone reports, and confirm or veto the answer (`motion/matching.js`, `motion/sensor.js`).
 
-Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once. Their motion comes from the server's `motion` relay.
+Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once.
 
 ## The signals, in order of strength
 
@@ -18,8 +17,6 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Re-identification embedding** (`reid`) | OSNet x0.25 in `reid.js` | Both the live signature and the gallery sample have one. It then **decides alone**: the colour parts are computed but not mixed in. | ~77% of players recognised at a 5% bystander-acceptance rate (Market-1501, 2–4 enrolled players + 20 bystanders) |
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
-
-Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It isn't part of the per-check appearance score, but it nudges a track's typical score for a player: +0.06 when that player's phone moves with the person on screen, −0.08 when it clearly doesn't (`motionScoreAdjustment()` in `motion-identity.js`). Real games put players at 0.70–0.80+ and non-players at 0.60–0.65, so this widens the gap whenever people move.
 
 Both models are optional. `createReid()` failures and `createEmbedder()` failures are both caught in [`startup.js`](app-flow.md#what-continue-actually-waits-for), which lands `null` in the corresponding `state` slot (the delegate label simply loses its `+ReID` or `+Embed` suffix), so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
 
@@ -47,7 +44,7 @@ A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. B
 
 Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap.
 
-**`shape` is the one exception to normalisation.** `hist`, `lower`, `grid`, `embed` and `reid` are all L2-normalised, on both the live and the gallery side (`averageVectors`), which costs nothing because they are compared with cosine similarity — it divides by the magnitudes anyway. `shape` is compared as a **log ratio of aspects**, which is scale-*sensitive*, so it is averaged raw (`meanVector`) and an enrolled `shape[0]` is a genuine aspect ratio you can read. Normalising it, as the code used to, divided each aspect by its own vector's magnitude; since the second component is just the aspect times the frame's aspect ratio, that cancelled the aspect out entirely and every enrolled person ended up with the same value — 0.600 in a 4:3 frame — so the correct person scored 0. Fixed; the whole story is in [the bug report](../shape-feature-bug.md), and the gallery format change is why `SCAN_CACHE_VERSION` is 12.
+**`shape` is the one exception to normalisation.** `hist`, `lower`, `grid`, `embed` and `reid` are all L2-normalised, on both the live and the gallery side (`averageVectors`), which costs nothing because they are compared with cosine similarity — it divides by the magnitudes anyway. `shape` is compared as a **log ratio of aspects**, which is scale-*sensitive*, so it is averaged raw (`meanVector`) and an enrolled `shape[0]` is a genuine aspect ratio you can read. Normalising it, as the code used to, divided each aspect by its own vector's magnitude; since the second component is just the aspect times the frame's aspect ratio, that cancelled the aspect out entirely and every enrolled person ended up with the same value — 0.600 in a 4:3 frame — so the correct person scored 0. Fixed; the tuning question it left open is in [Open items](../open-items.md), and the gallery format change is one of the reasons `SCAN_CACHE_VERSION` has been bumped.
 
 `averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning attaches `reid` *after* averaging, `scan-reid.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
 
@@ -93,7 +90,7 @@ at 0.18: a detector box jittering across the line behaves the same on both sides
 Two consequences are worth stating plainly, because they are what makes the band safe:
 
 - **At or above 0.18, behaviour is unchanged.** The penalty is 0 and `rangePenalty` is absent from
-  the match object entirely. `npm run eval:shape` is byte-identical over its 2880 sightings.
+  the match object entirely.
 - **A band box that can't clear its bar produces no ranking at all** — not a rejected one. That is
   byte for byte what it produced before, so evidence accumulation, soft labels, the closed-set
   assignment and a latched name all carry on behaving exactly as they did.
@@ -171,7 +168,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.65 by default (`?reid=` to tune), plus the box's [range penalty](#box-range-and-the-far-band) if it was in the far band; inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune), plus the box's [range penalty](#box-range-and-the-far-band) if it was in the far band; inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`) | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -290,7 +287,7 @@ Separately from the switch above, a named track can have its name *revoked* — 
 - the **raw** score for the track's own player is below `REID_REVOKE_SCORE` (0.6) on `REID_REVOKE_CHECKS` (3) consecutive checks — the fast trigger, and nothing is revoked without it;
 - **and** the median has stopped clearing the accept floor — the authority, since the median is what granted the name and what [grants the shot](app-flow.md#shooting).
 
-Revocation used to read the raw score alone, which overrode the median in exactly the case the median exists for. Three consecutive checks is 750–900 ms at `RECHECK_MS`: an ordinary side view or motion-blur burst, not a substitution. A player holding 0.84–0.87 with a three-check burst at 0.55 lost their name, their evidence **and** the whole history the median was built from, then spent ~600 ms unidentified while it refilled from a single sample. Under `?motion=on` the two were further apart still, since acceptance saw `median + motionAdjust` and revocation saw neither.
+Revocation used to read the raw score alone, which overrode the median in exactly the case the median exists for. Three consecutive checks is 750–900 ms at `RECHECK_MS`: an ordinary side view or motion-blur burst, not a substitution. A player holding 0.84–0.87 with a three-check burst at 0.55 lost their name, their evidence **and** the whole history the median was built from, then spent ~600 ms unidentified while it refilled from a single sample.
 
 Tying them together costs one check of latency on a genuine substitution (a 0.95 player replaced by a 0.30 stranger loses the name on the fourth bad check rather than the third). That check is also the first on which the median falls under the shot floor, so the substitute was never shootable any earlier either: the extra latency is in the displayed name only, and the name and the shot are now lost together instead of one to two checks apart.
 
@@ -316,84 +313,6 @@ The bound on the third rule is worth being precise about: it governs *when* a na
 
 Finally, if two tracks still carry the same player, the one seen this frame (then the higher-scoring one) keeps it and the others are cleared.
 
-## Motion confirmation (`motion/`)
-
-Motion tracking is on by default. The code below is skipped when the page is opened with `?motion=off`.
-
-Appearance alone can't tell apart two people in similar clothes, and it can put a player's name on a bystander who happens to look like them. Motion matching adds a signal that has nothing to do with appearance: **every phone knows how much it is being moved, and the camera can see how much each person on screen is moving.** They should rise and fall together for the right pairing, and be unrelated for a wrong one.
-
-```mermaid
-flowchart LR
-  subgraph Target["Each player's phone"]
-    ACC["accelerometer<br/>motion/sensor.js"] --> ACT["activity, 10 Hz<br/>RMS m/s²"]
-  end
-  ACT -- "{type: 'motion'} relayed by the server" --> SH
-  subgraph SH["Shooter's phone"]
-    TRK["track boxes over time"] --> VIS["visualActivity()<br/>box heights/s"]
-    VIS --> MC["motionCheck()<br/>lagged correlation"]
-    MC --> FUSE["fuseMotion()"]
-    CLS["classifier identity<br/>(identify.js)"] --> FUSE
-    GYRO["own gyroscope<br/>→ ego/panning mask"] --> MC
-  end
-  FUSE --> OUT["who this person is,<br/>and how sure"]
-```
-
-### What each phone shares (`motion/sensor.js`)
-
-`MotionSensor` listens to `devicemotion` and condenses it into one number per 100 ms bin:
-
-- **activity**: the RMS of linear acceleration (gravity removed) over the bin, in m/s². Walking or dodging shows up clearly; holding the phone still to aim barely does. If the device gives no gravity-free `acceleration`, gravity is removed with a slow low-pass filter over `accelerationIncludingGravity`.
-- **ego**: `1` if the phone's rotation rate exceeded 10 °/s anywhere in the bin, else `0`. This is the *shooter's* own panning flag — while you swing the camera to follow someone, image motion says nothing about how they are moving, so those bins are masked out of the correlation.
-
-Timestamps are `Date.now()` so they line up across phones. 12 seconds of history is kept.
-
-`MotionSensor.requestPermission()` must run inside a user gesture on iOS; when motion is enabled, the client calls it from the join-form submit handler and again on the first FIRE press, in case the player arrived by automatic rejoin. If permission is refused, nothing breaks: motion checks simply all return `unknown` and appearance decides on its own.
-
-`takeOutgoing()` returns the bins recorded since the last call; when enabled, `motion-identity.js` flushes them to the server every 500 ms as `{type: 'motion', s: [[t, v], ...]}`, and the server relays each phone's samples to everyone else in the room.
-
-### The person on screen
-
-`visualActivity(observations)` turns a track's box history (`[{t, box}]`, recorded every detection) into the same kind of series: how fast the box centre moves, **in box heights per second**. Dividing by box height makes it independent of how far away the person is, so it's comparable with an accelerometer magnitude.
-
-### The check (`motionCheck`)
-
-`motionCheck({visual, remote, ego, now, ...options})` resamples both series onto a 100 ms grid over the last 6 seconds, then searches clock offsets from −400 ms to +400 ms for the best Pearson correlation, skipping bins where either series has no data or the shooter was panning.
-
-| Outcome | When |
-| --- | --- |
-| `consistent` | correlation ≥ 0.75 |
-| `inconsistent` | correlation ≤ 0.30 |
-| `unknown` | in between, or not enough usable bins (< 60% of the window), or the person barely moved (visual spread < 0.08 box heights/s), or the phone barely moved (remote spread < 0.25 m/s²) |
-
-The 6-second window and the 0.75 threshold come from simulation (random walk/stand patterns with detector jitter): the real player matched every time and a bystander in about 1% of cases, while 4-second windows let 10–20% of bystanders match by coincidence. About 60% of bystanders land in `inconsistent`, and no players did.
-
-`motion/matching.js` is deliberately free of browser APIs, so all of this is unit-tested in Node (`test/motion.test.js`).
-
-### Fusing it with the classifier (`fuseMotion`)
-
-`fuseMotion({classifier, opponents, checks, requireMotion})` combines the appearance answer with one `motionCheck` per living opponent:
-
-| Classifier says | Motion says | Result | `source` / `reason` |
-| --- | --- | --- | --- |
-| player P | P's phone moves with them | **P** | `both` / `confirmed` |
-| player P | no usable data | **P**, if the classifier is confident on its own | `classifier` / `classifier-only` |
-| player P | no usable data, classifier not confident | nobody | `unconfirmed` |
-| player P | P's phone clearly doesn't match, and exactly one other candidate's does | **that other player** | `both` / `corrected` |
-| player P | P's phone clearly doesn't match, no single alternative | nobody | `vetoed` |
-| nobody | exactly one player's phone matches | **that player** | `motion` / `motion-only` |
-| nobody | several or no phones match | nobody | `ambiguous` / `unrecognised` |
-| self-match | — | nobody | `self` |
-
-"Confident on its own" is `isStableTarget()` in `appearance-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
-
-With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Without `?motion=on` or `?motion=strict`, `motion-identity.js` is never installed at all: `identity.js` installs `appearance-identity.js` instead, whose `resolve()` is the appearance gate (`isStableTarget()` alone) and nothing else.
-
-### How the client drives it
-
-`identity.js` is the only seam. The game loop holds one identity provider, hands it each frame's tracks (`identity.observe()`) and asks it who a track is (`identity.resolve()`); `net.js` hands it every server message no screen claims (`identity.onServerMessage()`); `app.js` asks it, inside a tap, for whatever permission it needs (`identity.start()`). Nothing outside `identity.js` names a signal, so deleting motion identification or swapping it for a different confirming signal is a one-line change there.
-
-When motion is enabled, `motion-identity.js` keeps all of its own state privately — this phone's sensor, a player id → activity series map, and two `WeakMap`s from track to box observations and to the last checks, all trimmed to 12 seconds. None of it is on the shared `state` object and none of it is written onto the tracker's track objects. `resolve(track)` re-runs the checks for a track at most every 300 ms and caches them, so the fused identity is cheap to ask for from both the draw loop and the hit test. It also tags the result with `confirmedBy`/`vetoedBy`, which is how the overlay can show a confirmed identity as *"Name (moves)"* and, in debug mode, a vetoed one as *"not Name (motion)"* without `screens/game.js` knowing that motion is what decided.
-
 ## Swapping in a better model
 
 `extractSignature()` and `matchGallery()` are the only boundary the rest of the code depends on. `reid` was added exactly this way — as another signature field, without touching the tracker, scanning or game code — and a future model can be too. Remember to:
@@ -401,10 +320,10 @@ When motion is enabled, `motion-identity.js` keeps all of its own state privatel
 - add the field to `GALLERY_FIELDS` in `backend/sanitize.py` (see [Protocol → Gallery format](../server/protocol.md#gallery-format));
 - decide how it combines with the existing score in `similarityParts()` (`reid` overrides rather than blends, because blending measured worse);
 - give it its own thresholds if its scores aren't on the same scale as the colour score — `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` all branch on `hasReid` for this reason;
-- bump `SCAN_CACHE_VERSION` in `screens/scan.js` so stale cached scans are ignored (see [Scanning → Why the version exists](scanning.md#why-the-version-exists));
+- bump `SCAN_CACHE_VERSION` in `scan-cache.js` so stale cached scans are ignored (see [Scanning → Why the version exists](scanning.md#why-the-version-exists));
 - check whether [sample selection](scanning.md#4-sample-selection) should use it. `signatureSimilarity()` in `scan.js` deliberately uses the colour fields only, which is both why a view-invariant field like `reid` must stay out of it and why such a field can be computed after selection instead of during it;
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES`.
 
 ## Tuning
 
-All thresholds and weights are module constants in `identify.js`, `reid.js` and `motion/`. See [Configuration → Identification](../development/configuration.md#identification) and [Configuration → Motion](../development/configuration.md#motion). Use [debug mode](../development/debug-mode.md) to see live scores, rejection reasons and motion correlations while tuning.
+All thresholds and weights are module constants in `identify.js` and `reid.js`. See [Configuration → Identification](../development/configuration.md#identification). Use [debug mode](../development/debug-mode.md) to see live scores and rejection reasons while tuning.

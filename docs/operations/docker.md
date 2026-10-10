@@ -275,7 +275,7 @@ Both images build from the repo root (`context: .`).
 
 None of that stops anyone running the tests: both test services bind-mount the repo (`.:/app`), and `.dockerignore` does not apply to bind mounts.
 
-What is deliberately *not* excluded is `test/`, `tools/`, `docs/`, `scripts/` and `.github/`. They are a few MB next to the entries above, and a blanket exclusion is exactly the kind of thing that makes a future `COPY test/ ...` copy nothing at all with no error.
+What is deliberately *not* excluded is `test/`, `docs/`, `scripts/` and `.github/`. They are a few MB next to the entries above, and a blanket exclusion is exactly the kind of thing that makes a future `COPY test/ ...` copy nothing at all with no error.
 
 
 ## Cross-origin isolation

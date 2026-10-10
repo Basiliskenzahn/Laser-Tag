@@ -14,16 +14,14 @@ The countdown is drawn every frame by `updateCountdown()`: **3, 2, 1, GO!** (the
 
 ## Track outlines
 
-`drawGame()` draws every track seen in the last 520 ms. The label and colour come from the **fused** identity — the appearance classifier after [motion confirmation](identification.md#fusing-it-with-the-classifier-fusemotion) — so a guess that motion contradicts is drawn as an unidentified person:
+`drawGame()` draws every track seen in the last 520 ms. The label and colour come from the identity the provider resolved:
 
 | Look | Meaning |
 | --- | --- |
 | Solid green outline, name label | Identified player, alive |
-| Solid green, "*name* (moves)" | Identified **and** confirmed by that player's own phone motion |
 | Red | The targetable player under the crosshair |
 | Grey, sparse dashes, "*name* down" | Identified player who is knocked out |
-| Grey, dashed, "Person" | Not identified — including a name that motion vetoed |
-| Grey, dashed, "not *name* (motion)" | Debug mode only: appearance said *name*, that player's phone motion disagreed |
+| Grey, dashed, "Person" | Not identified |
 | Yellow, long dashes, "*name*? 0.51" | Debug mode only: the best rejected match and its score |
 
 Alive and unidentified tracks also show the **body** hitbox (solid) and **head** hitbox (dashed). The crosshair element gets the `on-target` class whenever a targetable player is under it.

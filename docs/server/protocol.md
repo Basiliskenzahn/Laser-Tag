@@ -57,7 +57,7 @@ The server cannot tell a genuine reconnect from a second tab — both are "a pho
 
 On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if neither room nor shooter is found. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
 
-A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message; see [Streamlining](../streamlining.md) for why one briefly existed in the protocol and why it was removed.
+A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message.
 
 ### `GET /events/<room>` (Server-Sent Events)
 
@@ -115,7 +115,7 @@ Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
 { "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
 ```
 
-This phone's own motion activity, for [motion-based identity confirmation](../client/identification.md#motion-confirmation-motion). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
+This phone's own motion activity. The server relays it, but no client ships code that sends it - see [Open items](../open-items.md). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
 
 The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `v >= 0`, `t` truncated to an integer and `v` rounded to 2 decimals. An empty result is dropped, not relayed.
 

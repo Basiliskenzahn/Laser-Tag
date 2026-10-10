@@ -304,7 +304,7 @@ A cached gallery is compared against signatures extracted by whatever code is ru
 
 The current version is **13**, and it exists for an identity change rather than a format one: a version-12 entry is keyed by name, so it may have been written by a scan of a *different* player who happened to share it. That is the silent failure above in its worst form — the cache does not merely degrade matching, it labels the wrong body with your name — so those entries are discarded rather than migrated.
 
-Version 12 stored `shape` raw instead of L2-normalised: a version-11 `shape` is a unit vector, and the corrected comparison reads it as a wildly wrong aspect ratio rather than failing ([the bug report](../shape-feature-bug.md)). Version 11 was the one whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
+Version 12 stored `shape` raw instead of L2-normalised: a version-11 `shape` is a unit vector, and the corrected comparison reads it as a wildly wrong aspect ratio rather than failing. Version 11 was the one whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
 
 Note that the required-field check does *not* include `reid`. A cache saved on a phone where OSNet failed to load is still valid — it just produces weaker matching for that player, which is the same graceful degradation the live path has.
 

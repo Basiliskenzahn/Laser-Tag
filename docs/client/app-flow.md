@@ -4,7 +4,7 @@
 
 | Module | Used for |
 | --- | --- |
-| `env.js` | URL-parameter flags (`DEBUG`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
+| `env.js` | URL-parameter flags (`DEBUG` and the tuning overrides), `$()`, and the shared `video`/`canvas`/`ctx` |
 | `state.js` | The one shared `state` object and the `localStorage` helpers |
 | `roster.js` | Read-only lookups over the server's roster/game snapshot, plus `mergeRoster()` which folds in each roster delta |
 | `camera.js` | Starting the camera and the on-device models, once, plus the first-inference warm-up |
@@ -12,7 +12,6 @@
 | `scan-reid.js` | The deferred OSNet pass at the end of a scan: which frames get embedded, and the averaging |
 | `identity.js` | The one seam for "who is that person?": it installs a single identity provider at load and nothing else in the app knows which signals answer the question (see [Shooting](#who-counts-as-a-target) below) |
 | `appearance-identity.js` | The provider installed by default: `isStableTarget()` and an appearance-only `resolve()` |
-| `motion-identity.js` | The provider installed by `?motion=on`/`?motion=strict`: all phone-motion plumbing, sealed behind the provider it exports |
 | `net.js` | Reconnect/resume and what each server message does to the screens, built on `transport.js`'s long-polling connection |
 | `screens/join.js` | The join form and camera/model startup |
 | `screens/lobby.js` | Lobby list, launch, leave |
@@ -21,8 +20,6 @@
 | [`detector.js`](detection.md) | Creating the MediaPipe models and finding people in frames |
 | [`identify.js`](identification.md) | Signatures, matching and the `Tracker` |
 | [`reid.js`](identification.md#the-re-identification-embedding-reidjs) | The OSNet person re-identification embedding, the strongest identification signal when it loads |
-| [`motion/sensor.js`](identification.md#what-each-phone-shares-motionsensorjs) | This phone's own accelerometer/gyroscope activity |
-| [`motion/matching.js`](identification.md#motion-confirmation-motion) | Checking a tracked person's on-screen motion against each player's phone, and fusing that with the classifier |
 | [`sound.js`](feedback.md) | Sound effects |
 
 `frontend/public/index.html` contains all four screens as sibling `<main>` elements; only one is visible at a time. A single `<video>` element and an overlay `<canvas>` are shared by the scan and game screens, so the camera is only requested once.
@@ -47,7 +44,7 @@ stateDiagram-v2
 ### Join (`#join-screen`)
 
 - Pre-fills name and room from `localStorage`, or the room from a `?room=` URL parameter. The default room is `demo`.
-- On **Continue**: unlocks audio, calls `identity.start()` — a no-op unless `?motion=on` or `?motion=strict` installed the motion provider, and inside the tap because that's the only place iOS will show a sensor prompt — then opens the connection to the room and starts the camera and the models.
+- On **Continue**: unlocks audio, then opens the connection to the room and starts the camera and the models.
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error. A camera failure also leaves the room again, rather than parking a player in everyone else's roster who can never be scanned or shot.
 - On success: switches to the lobby, requests a screen wake lock and starts the render loop.
 
@@ -79,8 +76,6 @@ With `?debug`, the overlay gets a `Startup` line with each step's duration and t
 - **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So every freshly loaded model gets one throwaway inference (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, so the join screen never waits for it. A warm-up that fails is only logged — the models still work cold, which is where this started.
 
   Since the models no longer finish together, the warm-up is now **per model, as each one arrives**, rather than one batch at the end. That needed one subtlety spelling out. `warmUpStep` normally stands down once a screen that infers is up, because the warm-up's deliberately-low timestamp would be a step backwards for a model the scan or game loop has already fed a `performance.now()` value. A model created a moment ago is exempt (`fresh`): MediaPipe's monotonic-timestamp rule is **per task instance**, so a brand-new task has never been handed a timestamp by anyone — and "the first inference has been paid anyway" is simply untrue of a model that did not exist when those loops started. Without the exemption, a late embedder would pay its first inference in the middle of processing a rotation, which is the exact cost the warm-up exists to move.
-- **Camera zoom** (`?zoom=`, off by default) is the one thing the camera does beyond starting. It asks the `MediaStreamTrack` to magnify the sensor so far-away players are big enough to detect and recognise, and it is wired so that it cannot affect anything above: it is a follow-up `applyConstraints` *after* the stream exists rather than part of the `getUserMedia` constraints (where a `zoom` entry would be a required constraint on a property most phones lack — an `OverconstrainedError`, and a camera that never starts), `startCamera()` does not await it, so it never reaches the `camera` promise in the table, and nothing is sent to the camera while the join, lobby or scan screen is up, so it cannot renegotiate the stream underneath a warm-up frame either. It only engages on the game screen — **enrolment always runs at 1×**, because the gallery it builds is matched by every phone in the room and a gallery captured at one zoom and matched at another is a domain mismatch. A device with no zoom support is probed once and then behaves exactly as it does today. See [Configuration → Camera zoom](../development/configuration.md#camera-zoom).
-- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on the first **FIRE** press, which also covers an automatic rejoin where there was no join tap.
 
 ### Lobby (`#lobby-screen`)
 
@@ -116,9 +111,7 @@ A round that starts **during** a scan cancels it and takes the phone into the ga
 3. In game mode, update the countdown display.
 4. In debug mode, update the debug overlay.
 
-`refreshGameDetection()` downscales the frame to at most 512 px wide, detects people, scales the boxes back up, and passes them to `Tracker.update()` in closed-set mode along with the embedder and the re-identification handle (see [Identification](identification.md#5-closed-set-assignment)). It then hands the frame's tracks to `identity.observe()`, which does nothing by default; the motion provider uses it to keep each visible track's box, which is the history [motion matching](identification.md#motion-confirmation-motion) correlates against the other phones' accelerometer data. The loop never names the signal, so there is nothing to remove from it if motion goes away.
-
-When enabled, motion itself runs on its own timers rather than in the loop: this phone's new samples are sent every 500 ms (`MOTION_SEND_INTERVAL_MS`), and a track's motion checks are recomputed at most every 300 ms (`MOTION_CHECK_MS`), lazily, the first time something asks for that track's identity.
+`refreshGameDetection()` downscales the frame to at most 512 px wide, detects people, scales the boxes back up, and passes them to `Tracker.update()` in closed-set mode along with the embedder and the re-identification handle (see [Identification](identification.md#5-closed-set-assignment)). It then hands the frame's tracks to `identity.observe()`. The loop never names the signal that identifies anyone, so a provider can be swapped without touching it.
 
 ### Not detecting while input is pending
 
@@ -182,23 +175,20 @@ It was also not an edge case. The detection interval is 120 ms at its fastest an
 
 ### Who counts as a target
 
-`targetUnderCrosshair()` (in `screens/game.js`) walks the live tracks and asks `identity.resolve(track)` (the provider installed by `identity.js`) who each one is. By default that is `appearance-identity.js`, which applies the appearance-only gate below. With `?motion=on` or `?motion=strict` it is `motion-identity.js`, which takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `identity.resolve()` returns a `playerId` the server says is alive.
+`targetUnderCrosshair()` (in `screens/game.js`) walks the live tracks and asks `identity.resolve(track)` (the provider installed by `identity.js`, `appearance-identity.js`) who each one is, and it applies the gate below. A track is shootable when `identity.resolve()` returns a `playerId` the server says is alive.
 
-A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Beyond that, the usual route is classifier-only; motion-confirmed identities are available only when motion is enabled:
+A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Beyond that:
 
 | Route | Requirements |
 | --- | --- |
-| **Motion-confirmed** | Only with `?motion=on` or `?motion=strict`: the target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
-| **Classifier-only** | No usable motion data, and the appearance identity is "confident on its own": `isStableTarget()` below. Unavailable with `?motion=strict`. |
+| **Classifier-only** | The appearance identity is "confident on its own": `isStableTarget()` below. |
 
-With motion enabled, a motion-confirmed identity is targetable immediately, with no lock-time requirement - only liveness (`LIVE_TRACK_MS`) applies. `isStableTarget(track)` (in `appearance-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 150 ms when re-identification decided (`TARGET_LOCK_REID_MS`) or 350 ms on the colour signature (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
+`isStableTarget(track)` (in `appearance-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 150 ms when re-identification decided (`TARGET_LOCK_REID_MS`) or 350 ms on the colour signature (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
 
 | | Score floor | Per-part floors |
 | --- | --- | --- |
 | Re-identification embedding decided (`track.hasReid`) | the accept threshold itself (`reidTargetMinScore()`, in `identify.js`), so `?reid=` moves the shot gate with it | none — the embedding has already cleared its own threshold, and lighting can push the colour parts down for the right person |
 | Colour signature decided | 0.48 (`TARGET_MIN_SCORE`) | upper, lower and grid each ≥ 0.22 (`TARGET_MIN_PART`) |
-
-When enabled, motion can also actively *remove* a target: if the appearance classifier names a player but that player's phone clearly isn't moving with the person on screen, the identity is vetoed and the track draws as an unnamed "Person" (in debug mode, *"not Name (motion)"*). If exactly one other ranked candidate's phone does match, the identity is corrected to them instead.
 
 Head hitboxes are checked before body hitboxes across all tracks, so a headshot wins if boxes overlap.
 

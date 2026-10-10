@@ -39,12 +39,12 @@ On its own it serves no client. To play against it locally, put something in fro
 | Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
 | Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `SWEEP_INTERVAL_S`, `MAX_QUEUED_MOTION`, `MAX_QUEUED_MESSAGES`, `MAX_SSE_BACKLOG`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
 | `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time, gallery revision |
-| `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
+| `Room` | `models.py` | The game rules. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: its token, a capped message queue, last-seen time, a future per parked poll, an eviction reason, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
 | `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
 | `broadcast_*`, `roster_for`, `process_hit` | `transport.py` | Fan-out of `state`, `roster`, SSE events and hit messages. `roster_for()` is the per-connection roster [delta](protocol.md#the-roster-delta) |
-| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead - see [Streamlining](../streamlining.md). Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
+| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead. Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
 | `evict`, `displace`, `poller_for` | `transport.py` | Ending one conversation without touching the room: marks a mailbox, drops its queue and delivery record, and wakes its parked poll so the phone is told `410`. See [Seat handover](protocol.md#seat-handover) |
 | `api_*`, `events`, `health`, `create_app` | `app.py` | HTTP handlers and app assembly - the entrypoint |
 | `sweep_once` / `sweep_pollers` | `transport.py` | One reaping pass, and the loop that runs it every 5 s: closes sessions not seen for 30 s |
@@ -99,10 +99,10 @@ All state is in process memory. Restarting the container ends every game and dro
 
 ## Tests
 
-`backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the archived
-Node suites (`deprecated/server/game.test.js`, `deprecated/server/realtime.test.js`) against this
-backend - no new dependency, since `unittest` is stdlib and `aiohttp.test_utils` ships with
-`aiohttp`, which is already required. `backend/test_transport.py` covers what HTTP cannot reach:
+`backend/test_models.py` covers the game rules and `backend/test_protocol.py` the HTTP/SSE
+protocol - no dependency beyond the backend's own, since `unittest` is stdlib and
+`aiohttp.test_utils` ships with `aiohttp`. `backend/test_transport.py` covers what HTTP cannot
+reach:
 the reaper (its eviction, the fan-out it triggers, what a parked poll sees, and a `close()` that
 raises), the mailbox caps, the countdown timer's cancellation window, and a session holding a room
 it is no longer a player in. See [Testing](../development/testing.md) for what they cover and how

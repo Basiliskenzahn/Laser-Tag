@@ -12,10 +12,10 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 ## Client (`frontend/public/`)
 
 - [App flow and screens](client/app-flow.md): join → lobby → scan → game, and which module owns each
-- [Networking](client/networking.md): long polling, hit posts, motion sharing, SSE, reconnect and resume
+- [Networking](client/networking.md): long polling, hit posts, SSE, reconnect and resume
 - [Person detection and hitboxes](client/detection.md): MediaPipe models and `detector.js`
 - [Scanning (enrolment)](client/scanning.md): how a player's appearance is recorded
-- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`, the re-identification model in `reid.js`, and motion confirmation in `motion/`
+- [Player identification](client/identification.md): signatures, matching and the tracker in `identify.js`, and the re-identification model in `reid.js`
 - [HUD, sound and feedback](client/feedback.md): what players see and hear
 
 ## Server
@@ -36,9 +36,4 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Debug mode](development/debug-mode.md)
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
-- [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting
-- [How the vision pipeline came to be](vision-pipeline-history.md): what each model was added to fix, and what each one earns for its download size
-- [Detection pipeline audit](detection-pipeline-audit.md): per-signal cost and accuracy across the identification pipeline, and which numbers are measured vs simulated
-- [The `shape` feature was inert](shape-feature-bug.md): one identification guard that scored 0 for the correct person, how it was fixed, and why its thresholds were left alone
-- [`shape` normalisation evaluation](shape-normalisation-evaluation.md): what fixing it measured, on synthetic fixtures through the real matcher (`npm run eval:shape`)
-- [Box scale and range](box-scale-evaluation.md): what admitting smaller detection boxes would cost, why the synthetic answer is flat, and why the `?debug` range readout is what should decide the fix
+- [Open items](open-items.md): the decisions and risks that are still open on purpose, and what each one is waiting for
