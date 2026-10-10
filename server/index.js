@@ -23,6 +23,7 @@ const CERT_DIR = path.join(ROOT, '.certs');
 // URL prefix -> directory on disk.
 const STATIC_DIRS = [
   ['/vendor/tasks-vision/', path.join(ROOT, 'node_modules/@mediapipe/tasks-vision/')],
+  ['/vendor/ort/', path.join(ROOT, 'node_modules/onnxruntime-web/dist/')],
   ['/', path.join(ROOT, 'public/')],
 ];
 

@@ -328,3 +328,21 @@ test('debug sessions get a targetable clone instead of self hits', async () => {
 
   debug.stop();
 });
+
+test('motion samples are cleaned and relayed to the other players only', async () => {
+  const room = 'motion-relay';
+  const [a, b] = await Promise.all([pollingClient(), pollingClient()]);
+  await a.send({ type: 'join', name: 'A', room });
+  await b.send({ type: 'join', name: 'B', room });
+  await waitFor(() => a.messages.some((m) => m.type === 'welcome') && b.messages.some((m) => m.type === 'welcome'));
+  const aId = a.messages.find((m) => m.type === 'welcome').id;
+  await a.send({ type: 'motion', s: [[1000, 1.234], [1100, 'x'], [1200, -1], 'bad', [1300, 0.5]] });
+  await waitFor(() => b.messages.some((m) => m.type === 'motion'));
+  const relay = b.messages.find((m) => m.type === 'motion');
+  assert.equal(relay.from, aId);
+  assert.deepEqual(relay.s, [[1000, 1.23], [1300, 0.5]]);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(a.messages.some((m) => m.type === 'motion'), false);
+  a.stop();
+  b.stop();
+});

@@ -1,16 +1,24 @@
 import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
+import { createReid } from './reid.js';
+import { fuseMotion, motionCheck, visualActivity } from './motion/matching.js';
+import { MotionSensor } from './motion/sensor.js';
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 
 const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
+// ?motion=strict: a shot only counts when the target's phone motion confirms who it is.
+const REQUIRE_MOTION = params.get('motion') === 'strict';
+const MOTION_SEND_INTERVAL_MS = 500;
+const MOTION_CHECK_MS = 300;
+const MOTION_HISTORY_MS = 12_000;
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 10;
+const SCAN_CACHE_VERSION = 11; // 11: samples carry a re-identification embedding
 const SCAN_MIN_SAMPLES = 12;
 const SCAN_TARGET_SAMPLES = 24;
 const SCAN_MIN_DETECTION_SCORE = 0.16;
@@ -36,6 +44,9 @@ const GAME_DETECT_MAX_WIDTH = 512;
 const TARGET_LOCK_MS = 350;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
+// Re-identification identities can also come from accumulated evidence just under the accept
+// threshold (0.72, identify.js); a shot needs at least this.
+const TARGET_MIN_REID_SCORE = 0.7;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -53,6 +64,10 @@ const state = {
   detector: null,
   poseDetector: null,
   embedder: null,
+  reid: null, // person re-identification (reid.js); null if it couldn't load
+  motion: null, // this phone's motion sensor (motion/sensor.js), once permitted
+  remoteMotion: new Map(), // playerId -> [{ t, v }] activity reported by that player's phone
+  trackMotion: new WeakMap(), // track -> [{ t, box }] where the camera saw that person
   delegate: '',
   mode: 'join', // 'join' | 'lobby' | 'scan' | 'game'
   boxes: [], // people in the latest camera frame, in video pixels
@@ -94,8 +109,87 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
+  startMotion(); // inside the tap: iOS only asks for motion access from a user gesture
   enterLobbyFromForm();
 });
+
+// ---- Motion ----
+//
+// Each phone shares how much it's being moved (motion/sensor.js). The camera side records where
+// it saw each person, and motion/matching.js checks whose phone moves with whom on screen. That
+// confirms or vetoes the classifier's identification (fuseMotion).
+
+function startMotion() {
+  if (state.motion || state.motionRequested) return;
+  state.motionRequested = true;
+  MotionSensor.requestPermission().then((granted) => {
+    state.motionRequested = false;
+    if (!granted) return;
+    state.motion = new MotionSensor();
+    state.motion.start();
+    setInterval(flushMotion, MOTION_SEND_INTERVAL_MS);
+  });
+}
+
+function flushMotion() {
+  const samples = state.motion?.takeOutgoing() ?? [];
+  if (samples.length && state.myId) send({ type: 'motion', s: samples });
+}
+
+function onRemoteMotion(playerId, samples) {
+  const list = state.remoteMotion.get(playerId) ?? [];
+  for (const [t, v] of samples) if (Number.isFinite(t) && Number.isFinite(v)) list.push({ t, v });
+  list.sort((a, b) => a.t - b.t);
+  const cutoff = Date.now() - MOTION_HISTORY_MS;
+  while (list.length && list[0].t < cutoff) list.shift();
+  state.remoteMotion.set(playerId, list);
+}
+
+function recordTrackMotion(tracks, seenAt) {
+  const now = Date.now();
+  for (const track of tracks) {
+    if (track.lastSeen !== seenAt) continue;
+    const list = state.trackMotion.get(track) ?? [];
+    list.push({ t: now, box: { ...track.box } });
+    while (list.length && list[0].t < now - MOTION_HISTORY_MS) list.shift();
+    state.trackMotion.set(track, list);
+  }
+}
+
+// How this person's on-screen motion matches each player's phone.
+function motionChecks(track) {
+  const observations = state.trackMotion.get(track);
+  if (!observations || observations.length < 5) return {};
+  const visual = visualActivity(observations);
+  const now = Date.now();
+  const checks = {};
+  for (const [playerId, remote] of state.remoteMotion) {
+    if (playerId !== localSelfId()) checks[playerId] = motionCheck({ visual, remote, ego: state.motion?.ego ?? [], now });
+  }
+  return checks;
+}
+
+function classifierOpinion(track, now) {
+  if (track.selfRejected || track.playerId === localSelfId()) return { self: true };
+  return {
+    playerId: track.playerId,
+    name: track.name,
+    confident: isStableTarget(track, now),
+    candidates: (track.rankings ?? []).map((r) => r.id),
+  };
+}
+
+// Who a tracked person is: the classifier's identification, confirmed or vetoed by motion.
+function identity(track, now = performance.now()) {
+  if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
+    track.motionAt = now;
+    track.motionChecks = motionChecks(track);
+  }
+  const opponents = (state.game?.players ?? [])
+    .filter((p) => p.id !== localSelfId())
+    .map((p) => ({ id: p.id, name: p.name, alive: p.alive !== false }));
+  return fuseMotion({ classifier: classifierOpinion(track, now), opponents, checks: track.motionChecks, requireMotion: REQUIRE_MOTION });
+}
 
 async function enterLobbyFromForm({ resumePlayerId = null, auto = false } = {}) {
   state.name = $('name').value.trim();
@@ -153,11 +247,19 @@ async function prepareCameraAndDetector() {
         delegate: state.delegate,
       })
     : createDetector();
-  const [, vision] = await Promise.all([camera, detector]);
+  // Person re-identification (reid.js); the colour + MobileNet signature still works without it.
+  const reid = state.reid
+    ? Promise.resolve(state.reid)
+    : createReid().catch((err) => {
+        console.warn('Re-identification model unavailable', err);
+        return null;
+      });
+  const [, vision, reidModel] = await Promise.all([camera, detector, reid]);
   state.detector = vision.detector;
   state.poseDetector = vision.poseDetector;
   state.embedder = vision.embedder;
-  state.delegate = vision.delegate;
+  state.reid = reidModel;
+  state.delegate = `${vision.delegate.replace('+ReID', '')}${reidModel ? '+ReID' : ''}`;
 }
 
 function showJoinRejected(message) {
@@ -415,7 +517,9 @@ async function captureScanSignature() {
     const candidate = bestUsableScanCandidate(currentScanBoxes(now), video);
     const box = candidate.box;
     if (box && candidate.problem === 'ok' && usableScanBox(video, box)) {
-      samples.push(extractSignature(video, box, state.embedder, now));
+      const signature = extractSignature(video, box, state.embedder, now);
+      if (state.reid) signature.reid = await state.reid.embed(video, box);
+      samples.push(signature);
       thumbnailBox = box;
       problem = 'ok';
     } else {
@@ -729,8 +833,10 @@ function refreshGameDetection({ forcePose = false } = {}) {
     includeRejected: DEBUG,
     identifyOnce: false,
     embedder: state.embedder,
+    reid: state.reid,
     closedSet: true,
   });
+  recordTrackMotion(state.tracks, t0);
   state.lastGameDetectAt = t0;
   inferenceMs = performance.now() - t0;
   frames++;
@@ -770,8 +876,10 @@ async function processRotationVideo(frames) {
       const box = candidate.box;
 
       if (box && candidate.problem === 'ok' && usableScanBox(frame.image, box)) {
+        const signature = extractSignature(frame.image, box, state.embedder, performance.now());
+        if (state.reid) signature.reid = await state.reid.embed(frame.image, box);
         candidates.push({
-          signature: extractSignature(frame.image, box, state.embedder, performance.now()),
+          signature,
           box: { ...box },
           thumb: cropThumbnail(box, frame.image),
           quality: candidate.quality,
@@ -1163,6 +1271,9 @@ function handleMessage(msg) {
       state.localGallery = scannedGallery(localSelfId());
       if (state.mode === 'lobby') renderLobby();
       break;
+    case 'motion':
+      onRemoteMotion(msg.from, msg.s ?? []);
+      break;
     case 'scanSaved':
       if (state.mode === 'lobby') $('lobby-status').textContent = 'Scan saved.';
       break;
@@ -1316,6 +1427,16 @@ function canLocalPlayerFire() {
 }
 
 function isStableTarget(track, now = performance.now()) {
+  // A re-identification match has already cleared its own threshold; the colour-part minimums
+  // below are for the colour signature, and lighting can push them down for the right person.
+  if (track.hasReid) {
+    return Boolean(
+      track.playerId &&
+        Number.isFinite(track.identifiedAt) &&
+        now - track.identifiedAt >= TARGET_LOCK_MS &&
+        track.score >= TARGET_MIN_REID_SCORE,
+    );
+  }
   return Boolean(
     track.playerId &&
       Number.isFinite(track.identifiedAt) &&
@@ -1327,22 +1448,19 @@ function isStableTarget(track, now = performance.now()) {
   );
 }
 
-function isTargetableTrack(track, now = performance.now()) {
-  return state.game?.status === 'playing' && isStableTarget(track, now) && isAlivePlayer(track.playerId);
-}
-
-// Which (if any) tracked person is under the crosshair, and which zone of them.
-function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
-  let bodyTrack = null;
+// Which (if any) valid target is under the crosshair, which zone, and who it is.
+function targetUnderCrosshair(px, py) {
+  if (state.game?.status !== 'playing') return null;
+  let bodyHit = null;
   const now = performance.now();
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
-    if (!includeSelf && t.playerId === localSelfId()) continue;
-    if (!isTargetableTrack(t, now)) continue;
-    if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
-    if (contains(bodyBox(t.box), px, py)) bodyTrack = t;
+    const id = identity(t, now);
+    if (!id.playerId || !isAlivePlayer(id.playerId)) continue;
+    if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head', identity: id };
+    if (contains(bodyBox(t.box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
   }
-  return bodyTrack ? { track: bodyTrack, zone: 'body' } : null;
+  return bodyHit;
 }
 
 function fire() {
@@ -1359,9 +1477,7 @@ function fire() {
     refreshGameDetection({ forcePose: rosterCandidateCount() > 1 });
   }
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
-  if (hit?.track.playerId && state.game?.status === 'playing') {
-    postHit(hit.track.playerId, hit.zone);
-  }
+  if (hit) postHit(hit.identity.playerId, hit.zone);
 }
 
 async function postHit(targetId, zone) {
@@ -1398,6 +1514,7 @@ function signatureSimilarity(a, b) {
 
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
+  startMotion(); // in case access wasn't granted at join (e.g. an automatic rejoin)
   fire();
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
@@ -1455,7 +1572,7 @@ function loop() {
             ? `\n${identified
                 .map(
                   (t) =>
-                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)}`,
+                    `${t.name}:${t.score.toFixed(2)}${t.hasReid ? ' reid' : ''} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)}`,
                 )
                 .join(' ')}`
             : '')
@@ -1471,6 +1588,7 @@ function loop() {
             )
             .join(' | ')}`
         : '') +
+      `\n${motionDebugLine(now)}` +
       (rejected.length
         ? `\nRejected ${rejected
             .map(
@@ -1480,6 +1598,21 @@ function loop() {
             .join(' ')}`
         : '');
   }
+}
+
+function motionDebugLine(now) {
+  const sensor = state.motion ? (state.motion.receiving ? 'on' : 'no data') : 'off';
+  const players = [...state.remoteMotion.keys()].map((id) => gamePlayer(id)?.name ?? id.slice(0, 4));
+  const tracks = state.tracks
+    .filter((t) => isLiveTrack(t, now))
+    .map((t) => {
+      const id = identity(t, now);
+      const corr = Object.entries(t.motionChecks ?? {})
+        .map(([pid, c]) => `${gamePlayer(pid)?.name ?? '?'}:${c.correlation == null ? c.reason : c.correlation.toFixed(2)}`)
+        .join(',');
+      return `#${t.id} ${id.name ?? '-'} ${id.reason}${corr ? ` [${corr}]` : ''}`;
+    });
+  return `motion ${sensor}${REQUIRE_MOTION ? ' strict' : ''} · from ${players.join(',') || 'nobody'}${tracks.length ? `\nMotion ${tracks.join(' | ')}` : ''}`;
 }
 
 function fitCanvas() {
@@ -1535,8 +1668,10 @@ function drawGame({ vw, vh, toScreen }) {
   const now = performance.now();
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
-    const known = track.playerId !== null && track.playerId !== localSelfId();
-    const dead = known && isDeadPlayer(track.playerId);
+    // The classifier's identity, confirmed or vetoed by motion: a vetoed guess shows as a person.
+    const id = identity(track, now);
+    const known = Boolean(id.playerId);
+    const dead = known && isDeadPlayer(id.playerId);
     const alive = known && !dead;
     const targeted = !dead && hit?.track === track;
     const debugMatch = DEBUG && !known && !track.selfRejected ? track.debugMatch : null;
@@ -1556,7 +1691,13 @@ function drawGame({ vw, vh, toScreen }) {
     const [x, y] = toScreen(track.box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
-    const label = known ? `${track.name}${dead ? ' down' : ''}` : debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'Person';
+    const label = known
+      ? `${id.name}${dead ? ' down' : id.source === 'both' ? ' (moves)' : ''}`
+      : id.reason === 'vetoed' && DEBUG
+        ? `not ${gamePlayer(id.vetoed)?.name ?? 'them'} (motion)`
+        : debugMatch
+          ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
+          : 'Person';
     ctx.fillText(label, x + 4, y + 16);
   }
 }
