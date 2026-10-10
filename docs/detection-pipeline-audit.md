@@ -17,7 +17,11 @@ and which are simulated.**
 >   when re-identification covers the room, OSNet moved to a Web Worker, cadence raised). See
 >   the newer pipeline overview for current state.
 >
-> Everything else here still holds, including both open findings at the bottom.
+> - **The `shape` scale mismatch has been fixed** since, on
+>   `luxkaiwalker/shape-normalisation`. The defect and the finding below are kept, marked as
+>   resolved; the tuning decision they called for is still open.
+>
+> Everything else here still holds, including the remaining open finding at the bottom.
 
 ## How a shot decides who it hit
 
@@ -84,20 +88,28 @@ box-proportion check. No model, no async cost, always available as the floor eve
 | Accept threshold | score ≥ 0.54, margin ≥ 0.06 |
 | Per-part floors | upper 0.50 · lower 0.38 · grid 0.40 · shape 0.36 |
 
-**Known defect, still open.** `shapeSignature()` stores its live value raw, but every gallery
-entry passes through `averageSignatures()`, which L2-**normalises** everything it averages —
-including `shape`. A live signature and its own gallery sample therefore end up on different
-scales, and `shapeSimilarity()` compares them anyway. Measured example: the same person's live
-reading `[2.25, 3.0]` against their own gallery entry `[0.6, 0.8]` scores **0** instead of
-roughly 1.
+**Known defect, fixed — with the tuning question deliberately left open.** `shapeSignature()`
+stored its live value raw, but every gallery entry passed through `averageSignatures()`, which
+L2-**normalises** everything it averages — including `shape`. A live signature and its own gallery
+sample therefore ended up on different scales, and `shapeSimilarity()` compared them anyway.
+Worked example: the same person's live reading `[2.25, 3.0]` against their own gallery entry
+`[0.6, 0.8]` scored **0** instead of roughly 1. Worse than it looks, because `shape`'s two
+components are collinear: normalising cancelled the aspect out entirely and gave *every* enrolled
+person the same gallery value, 0.600 in a 4:3 frame.
 
-Net effect: the `shape` gate silently fails whenever re-identification and the embedder are both
-absent, so colour-only matching runs without one of its four intended guards and never
-accumulates evidence through that path at all — it survives on the closed-set forced-accept and
-initial-streak-lock paths instead.
+Net effect while it was live: the `shape` gate silently failed whenever re-identification was
+absent — on the colour-only path *and* on the MobileNet-embedding path, since
+`rejectionReason()` and `evidenceWeight()` skip the per-part floors only for `hasReid`. Those
+paths ran without one of their four intended guards and never accumulated evidence at all; they
+survived on the closed-set forced-accept and initial-streak-lock paths instead. (The original
+write-up said colour-only; that was too narrow.)
 
-Not fixed because correcting it changes real matching behaviour and needs `MIN_SHAPE_SCORE` /
-`EVIDENCE_MIN_PART` retuned alongside — a product-quality tradeoff, not a mechanical fix.
+`shape` is now averaged raw. `MIN_SHAPE_SCORE` (0.36) and `EVIDENCE_MIN_PART` (0.24) are
+**unchanged on purpose** — the fix makes them reachable, not retuned. See
+[the bug report](shape-feature-bug.md) for the fix and
+[the evaluation](shape-normalisation-evaluation.md) for what it measured; those figures are
+**simulated**, in this document's sense of the word, and the threshold decision stays open until
+someone has the real colour-only distribution off a phone.
 
 ### MobileNet embedding — `identify.js`
 
@@ -225,12 +237,21 @@ quoted a different "how good is OSNet" figure (77% vs. 83% recognised) because t
 different things — game-level versus per-single-check — and neither said so. Both now point at
 the other and name which measurement they are. No value or behaviour changed.
 
-### Still open — needs a tuning decision
+### Fixed since this audit — tuning still open
 
-**The `shape` signature compares mismatched scales.** Detailed above. Silently neutralises one of
-four guards in colour-only matching. Correcting the scale mismatch changes real accept/reject
-behaviour and needs `MIN_SHAPE_SCORE` / `EVIDENCE_MIN_PART` retuned alongside it, which is a
-product call this audit was not positioned to make unilaterally.
+**The `shape` signature compared mismatched scales.** Detailed above. It silently neutralised one
+of four guards on both model-free matching paths. The scale mismatch is **fixed**: `shape` is
+averaged raw, so a live signature and its own gallery entry are comparable, and
+`test/shape-signature.test.js` holds it there through the real extraction-and-averaging path.
+
+**`MIN_SHAPE_SCORE` / `EVIDENCE_MIN_PART` were not retuned, on purpose.** That is still the
+product call this audit was not positioned to make, and it is now a *reachable* gate rather than a
+dead one — the safer of the two states to leave it in while the question is open. The supporting
+numbers ([evaluation](shape-normalisation-evaluation.md)) belong in the **simulated** column: a
+seeded synthetic population through the real matcher, not footage. On it, the corrected gate at
+0.36 rejects 0% of correct pairs and 0% of wrong-person pairs, so it costs nothing and catches
+nothing; where it bites is partial bodies, which is what it was built for. Deciding anything more
+needs the next item.
 
 ### Still open — needs real hardware
 

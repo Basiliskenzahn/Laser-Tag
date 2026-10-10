@@ -93,4 +93,8 @@ real tradeoff, not a free win, which is why it is recorded here rather than acte
 - [Scanning](client/scanning.md) — enrolment, and the scan path's own model usage
 - [Detection pipeline audit](detection-pipeline-audit.md) — per-stage cost and accuracy, and which
   of those numbers are measured versus simulated
-- [Streamlining](streamlining.md) — the open backlog, including the inert `shape` feature
+- [Streamlining](streamlining.md) — the open backlog
+- [The `shape` feature was inert](shape-feature-bug.md) and
+  [what fixing it measured](shape-normalisation-evaluation.md) — one guard that scored 0 for the
+  correct person on both model-free paths, now corrected with its thresholds deliberately left
+  alone

@@ -32,7 +32,7 @@ Both models are optional. `createReid()` failures are caught in `camera.js` (the
 | `hist` | 64 | Upper-body colour: 12 hues × 4 saturations (48), plus 8 brightness and 8 saturation bins so grey/black/white clothes still count | x 16–84%, y 20–62% |
 | `lower` | 64 | Same descriptor for the lower body. A strong guard: a similar shirt isn't enough if the trousers differ. | x 18–82%, y 58–92% |
 | `grid` | 192 | 6×8 grid of brightness, saturation and hue (as sin/cos weighted by saturation). A rough colour+shape fingerprint that *does* change with viewing angle. | x 8–92%, y 6–94% |
-| `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame | whole box |
+| `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame. The only field kept on its **raw** scale rather than L2-normalised — see below | whole box |
 | `embed` | 256 | Optional MobileNetV3 embedding, compacted from the model's output and rounded to 4 decimals so galleries stay small | box with a little padding |
 | `usable` | bool | Whether the box is big and whole enough to trust (not sent to the server) | |
 
@@ -41,7 +41,9 @@ A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. B
 - **Scanning** awaits it (`await reid.embed(...)`), but only for the frames behind a gallery sample that survived selection, *after* selection has run. Selection itself never looks at `reid`. See [Scanning → Deferred work](scanning.md#5-deferred-work-and-what-it-saves).
 - **The tracker** never awaits it. It takes whatever `reid.latest(track)` already holds and asks for a fresh one for next time.
 
-Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap. All vectors are L2-normalised.
+Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap.
+
+**`shape` is the one exception to normalisation.** `hist`, `lower`, `grid`, `embed` and `reid` are all L2-normalised, on both the live and the gallery side (`averageVectors`), which costs nothing because they are compared with cosine similarity — it divides by the magnitudes anyway. `shape` is compared as a **log ratio of aspects**, which is scale-*sensitive*, so it is averaged raw (`meanVector`) and an enrolled `shape[0]` is a genuine aspect ratio you can read. Normalising it, as the code used to, divided each aspect by its own vector's magnitude; since the second component is just the aspect times the frame's aspect ratio, that cancelled the aspect out entirely and every enrolled person ended up with the same value — 0.600 in a 4:3 frame — so the correct person scored 0. Fixed; the whole story is in [the bug report](../shape-feature-bug.md), and the gallery format change is why `SCAN_CACHE_VERSION` is 12.
 
 `averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning now attaches `reid` *after* averaging, `scan.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
 
@@ -135,6 +137,8 @@ In **open-set** mode the best player is accepted only if all of these hold. Othe
 | Grid similarity | ≥ 0.40 | `grid` |
 | Shape similarity | ≥ 0.36 | `shape` |
 | Lead over runner-up | ≥ 0.06 | `margin` |
+
+These floors apply to the `embed` blend as well as to colour alone — `rejectionReason()` skips them only when `hasReid`. That matters for the `shape` row: until the normalisation fix it could never be met, so **both** model-free paths rejected every open-set candidate that got that far, and `EVIDENCE_MIN_PART` (which applies the same floor to each part) stopped the tracker's evidence accumulator from ever filling. The gate is reachable again and the 0.36 is [unchanged on purpose](../development/configuration.md#identification).
 
 If the best match is the local player (`excludeId`), the result is rejected with reason `self`.
 

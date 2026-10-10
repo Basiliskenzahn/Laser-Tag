@@ -94,7 +94,7 @@ Candidate **quality** — used throughout selection — rewards boxes that are l
 3. **If 24 or fewer remain**, they are the samples, one frame each, and step 4 is skipped entirely.
 4. **If more than 24 remain**, pick seeds and average:
    - **Diversity weighting** (`selectDiverseRotationSeeds`): greedily pick 24 seeds, each time taking the frame with the best `quality + (1 − closest similarity to an already-picked seed) × 0.42` (`SCAN_DIVERSITY_WEIGHT`). So a slightly worse frame of an angle nobody has yet beats a great frame of an angle already covered.
-   - **Averaging** (`averagedRotationSample`): each seed is averaged with up to 3 other frames at least 0.74 similar to it (`SCAN_VIEW_AVERAGE_SIMILARITY`, `ROTATION_SAMPLE_AVERAGE_COUNT` 4 including the seed), ranked by similarity with a small quality tiebreak. `averageSignatures()` averages every vector field and re-normalises, which smooths out per-frame sensor noise. The sample keeps the seed's box, thumbnail and timestamp, and the group's mean quality.
+   - **Averaging** (`averagedRotationSample`): each seed is averaged with up to 3 other frames at least 0.74 similar to it (`SCAN_VIEW_AVERAGE_SIMILARITY`, `ROTATION_SAMPLE_AVERAGE_COUNT` 4 including the seed), ranked by similarity with a small quality tiebreak. `averageSignatures()` averages every vector field, re-normalising all of them except `shape` (which has to stay on its raw scale), which smooths out per-frame sensor noise. The sample keeps the seed's box, thumbnail and timestamp, and the group's mean quality.
 5. **Order by view** (`orderRotationSamplesByView`): start with the best-quality sample and repeatedly append the most similar remaining one. This roughly reconstructs the rotation order, which only matters because it makes the thumbnail strip readable.
 
 Note the asymmetry: with ≤24 clean candidates every sample is a single frame, and with >24 every sample is an average of up to 4. Both are valid galleries.
@@ -146,7 +146,7 @@ A gallery is an array of signature objects — exactly what `extractSignature()`
 | `hist` | 64 | Upper-body colour. **Both** sample selection (via `signatureSimilarity`) and live matching. The main angle-invariant colour signal. |
 | `lower` | 64 | Lower-body colour. Selection and live matching. A false-positive guard: a similar shirt is not enough if the trousers differ. |
 | `grid` | 192 | Coarse colour/shape grid. Selection and live matching. Changes with viewing angle, which is exactly why selection uses it to tell angles apart. |
-| `shape` | 2 | Box proportions. Live matching only, as a guard — **not** part of `signatureSimilarity`, so it has no say in which samples are chosen. |
+| `shape` | 2 | Box proportions, stored **raw** rather than L2-normalised like the rest (it is compared as a log ratio of aspects, so its scale carries meaning — see [Identification → Signatures](identification.md#signatures)). Live matching only, as a guard — **not** part of `signatureSimilarity`, so it has no say in which samples are chosen. |
 | `embed` | 256, or `[]` | MobileNet embedding. Live matching only, blended with the colour parts when no `reid` is available on both sides. Not used by selection. |
 | `reid` | 512, or `[]`/absent | OSNet embedding. Live matching only, where it **overrides** every other field. Not used by selection — this is what makes deferring it safe. |
 | `usable` | bool | Whether the box was big and whole enough to trust. Dropped by the server's sanitiser rather than stored. |
@@ -179,7 +179,7 @@ Every scan is cached under `laser-tag:scan:<room>:<lower-cased name>`. When you 
 
 A cached gallery is compared against signatures extracted by whatever code is running *now*. If the signature format changes — a new field, different bin counts, a different region of the body, a different weighting — old samples are not merely stale, they are **silently wrong**: cosine similarity against a vector built by different code still returns a number, so matching degrades instead of failing. Bumping `SCAN_CACHE_VERSION` is what forces those caches to be discarded and the player to rescan.
 
-The current version is **11**, the version whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
+The current version is **12**, which stores `shape` raw instead of L2-normalised. That is a textbook case of the silent failure above: a version-11 `shape` is a unit vector, and the corrected comparison reads it as a wildly wrong aspect ratio rather than failing ([the bug report](../shape-feature-bug.md)). Version 11 was the one whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
 
 Note that the required-field check does *not* include `reid`. A cache saved on a phone where OSNet failed to load is still valid — it just produces weaker matching for that player, which is the same graceful degradation the live path has.
 
