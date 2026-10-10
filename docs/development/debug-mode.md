@@ -38,12 +38,12 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
-"fps" here is detections per second, not screen frame rate. In the game, detection deliberately runs only every 120–180 ms, so 5–8 is normal.
+"fps" here is detections per second, not screen frame rate. In the game, detection runs every 80–120 ms, and less often if a phone can't keep up, so 7–12 is normal; boxes are moved along between detections.
 
 Use this to tune identification:
 
 - **No `+ReID` on line 1:** the ONNX model didn't load, and matching is running on the much weaker colour signature. Check the console and that `/vendor/ort/` and `/models/osnet_x0_25_msmt17.onnx` are being served.
-- **`reid` on line 3:** scores are OSNet cosine similarities against a 0.72 accept threshold, and the `u`/`l`/`g`/`s`/`e` numbers are informational only — they're computed but not mixed into the score. Without the marker, the score is the colour blend and those parts do count.
+- **`reid` on line 3:** scores are OSNet cosine similarities against the accept threshold shown on line 1 (`reid ≥ 0.65` by default, `?reid=` to change it); each box also shows its best match in brackets: the typical score (median of the last 3 s, motion included), this check's score as `now` when different, and `motion+0.06`/`motion-0.08` when motion moved it, and the `u`/`l`/`g`/`s`/`e` numbers are informational only — they're computed but not mixed into the score. Without the marker, the score is the colour blend and those parts do count.
 - **Rejected for `lower`:** the player's lower body doesn't match the scan (different lighting? jacket on?). For `margin`, two candidates look too similar.
 - **`vetoed` or `unconfirmed` in the `Motion` line:** appearance picked someone whose phone isn't moving with them. A real player standing still gives `phone not moving` (which is `unknown`, not a veto); a steady `inconsistent` with a low correlation usually means it's a bystander who looks like that player.
 
@@ -53,9 +53,9 @@ Use this to tune identification:
 - A track whose appearance identity was [vetoed by motion](../client/identification.md#fusing-it-with-the-classifier-fusemotion) is labelled *"not Alice (motion)"* instead of plain *"Person"*.
 - The console logs every SSE `health`/`death` event and every shot the server rejected (e.g. `Cooldown`, `Round not running`).
 
-## Related flags: `?motion=on` and `?motion=strict`
+## Related flags: `?motion=off` and `?motion=strict`
 
-Independent of `?debug`, and combinable with it. Motion tracking is disabled by default. `?motion=on` enables the motion signal; `?motion=strict` also drops the classifier-only fallback, so a shot counts only when the target's own phone motion confirms who they are. Useful for seeing how often motion actually confirms an identity in a real space: in strict mode, every green name on screen has been confirmed by two independent signals. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
+Independent of `?debug`, and combinable with it. Motion tracking is on by default. `?motion=off` disables it; `?motion=strict` also drops the classifier-only fallback, so a shot counts only when the target's own phone motion confirms who they are. Useful for seeing how often motion actually confirms an identity in a real space: in strict mode, every green name on screen has been confirmed by two independent signals. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
 
 Be aware that it makes a single-laptop debug session nearly unplayable: the "clone" on camera is you, and there's only one phone in the room, so nothing can confirm it.
 

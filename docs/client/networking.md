@@ -52,7 +52,7 @@ The response isn't used for feedback. Confirmation arrives as `hitConfirmed` on 
 
 ## Motion samples
 
-Motion samples are disabled by default. This channel is used only when the page is opened with `?motion=on` or `?motion=strict`.
+Motion samples are sent by default. This channel is unused when the page is opened with `?motion=off`.
 
 The polling session is also how phones share motion for [identity confirmation](identification.md#motion-confirmation-motion). Every 500 ms `flushMotion()` takes whatever new 100 ms bins the sensor has produced and sends them as one message:
 
@@ -60,7 +60,7 @@ The polling session is also how phones share motion for [identity confirmation](
 { "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
 ```
 
-The server relays each phone's samples to **every other player in the room** as `{type: 'motion', from: <player id>, s: [...]}`; it never echoes them back to the sender and keeps no history of its own. `onRemoteMotion()` merges arriving samples into a per-player series sorted by time and trims it to the last 12 s.
+The server relays each phone's samples to **every other player in the room** as `{type: 'motion', from: <player id>, s: [...]}`; it never echoes them back to the sender and keeps no history of its own. The motion provider's remote-sample handler merges arriving samples into a per-player series sorted by time and trims it to the last 12 s.
 
 Samples are capped at 32 per message (`MAX_MOTION_SAMPLES`, about 3 s at 10 Hz) and sanitised to finite, non-negative numbers on both servers, since they come straight from a client. A phone with motion disabled, or one that never got motion permission, simply sends nothing.
 

@@ -59,13 +59,13 @@ Rescan the affected players in the playing area. To see *why* a match was reject
 Check that phone with `?debug`. A missing `+ReID` on the first overlay line means the re-identification model failed to load — usually ONNX Runtime Web (`/vendor/ort/`) or `/models/osnet_x0_25_msmt17.onnx` not being served. The browser console has the warning. Behind a custom web server, check those paths exist and that `.wasm` is served as `application/wasm`.
 
 **A player's name flickers onto a bystander, or onto the wrong player.**
-By default, targeting uses appearance only. Rescan the affected players in the playing area and check debug mode for the rejection reason. If you deliberately enable motion with `?motion=on`, a name gets the *"(moves)"* suffix when that player's own phone reports motion matching the person on screen; `?motion=strict` makes that confirmation mandatory, at the cost of not being able to shoot motionless players.
+Rescan the affected players in the playing area and check debug mode for the rejection reason. With motion on (the default), a name gets the *"(moves)"* suffix when that player's own phone reports motion matching the person on screen; `?motion=strict` makes that confirmation mandatory, at the cost of not being able to shoot motionless players.
 
 **The crosshair is on a named player but shots don't count.**
-A player becomes targetable after they've been recognised steadily for about 0.35 seconds with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit. If you enabled motion with `?motion=on` or `?motion=strict`, a name can also be blocked when motion vetoes it.
+A player becomes targetable after they've been recognised steadily for a moment (0.15 s with re-identification, 0.35 s on the colour signature) with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit. A name can also be blocked when motion vetoes it (the label then has no name); `?motion=off` rules that out.
 
 **It's slow or laggy.**
-Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 120–180 ms, so some delay between movement and the outline is normal.
+Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 80–120 ms (less often if the phone can't keep up); between detections the outlines are moved along with each person's recent motion.
 
 **No vibration when hit on iPhone.**
 Safari doesn't support the vibration API. iPhones get the red flash and sound only.

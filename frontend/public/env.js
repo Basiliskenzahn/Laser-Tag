@@ -10,11 +10,14 @@ export const $ = (id) => document.getElementById(id);
 export const params = new URLSearchParams(location.search);
 export const DEBUG = params.has('debug');
 const motionMode = params.get('motion');
-// Motion tracking is opt-in. ?motion=on enables phone-motion identity fusion, and
-// ?motion=strict makes a shot count only when motion confirms the target.
+// Phone-motion identity fusion is on by default; ?motion=off disables it (no sensor prompt, no
+// shared samples, appearance alone decides), and ?motion=strict makes a shot count only when
+// motion confirms the target.
 export const MOTION_ENABLED = motionMode === 'on' || motionMode === 'strict';
 export const REQUIRE_MOTION = motionMode === 'strict';
 export const MOTION_OFF = !MOTION_ENABLED;
+// ?reid=0.70: the re-identification accept threshold, for tuning in the field (identify.js).
+export const REID_THRESHOLD = params.has('reid') ? Number(params.get('reid')) : null;
 
 export const video = $('video');
 export const canvas = $('overlay');

@@ -34,8 +34,8 @@ device or a scan that cannot support the one above it.
 **Signal 4 — phone motion** (`motion/matching.js` + `motion/sensor.js`) sits outside this ranking
 entirely. It is not a classifier and contributes no score of its own; it *confirms or vetoes*
 whichever of 1–3 already named a track, by correlating that track's on-screen movement against
-each phone's accelerometer. It enters through one seam, `resolveIdentity()` in
-`motion-identity.js`.
+each phone's accelerometer. It enters through one seam, the identity provider's `resolve()` in
+`motion-identity.js`, which `identity.js` installs only under `?motion=on`/`?motion=strict`.
 
 ## Every feature, individually
 

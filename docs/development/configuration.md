@@ -18,6 +18,7 @@ Read once at startup in `frontend/public/env.js`:
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
+| `?reid=<0-1>` | Overrides the re-identification accept threshold for this device (`REID_THRESHOLD` in `env.js`, applied by `setReidThreshold()` in `identify.js`). Defaults to `REID_DEFAULT_THRESHOLD` (0.65). See the re-identification table below. |
 | `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
 | `?motion=off` or no motion parameter | The default. `identity.js` installs the appearance-only provider instead, so there is no motion permission prompt, no sample sharing and no motion fusion: targeting uses appearance identity + `isStableTarget()` only. |
@@ -105,10 +106,10 @@ Model options that aren't separate constants but are worth knowing about, inside
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `LIVE_TRACK_MS` | 520 | A track counts as visible for this long after last being seen |
-| `TARGET_LOCK_MS` | 350 | How long an identity must be held before it's targetable |
+| `TARGET_LOCK_MS` / `TARGET_LOCK_REID_MS` | 350 / 150 | How long an identity must be held before it's targetable (colour signature / re-identification) |
 | `TARGET_MIN_SCORE` | 0.48 | Minimum overall match score (colour signature) |
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
-| `TARGET_MIN_REID_SCORE` | 0.70 | Minimum score when the re-identification embedding decided. Slightly under `REID_MATCH_THRESHOLD`, because accumulated evidence can name a track just below the accept threshold. |
+| `reidTargetMinScore()` (identify.js) | threshold | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
 
 All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own". A track whose motion is confirmed by the target's own phone is targetable without it — only liveness (`LIVE_TRACK_MS`) still applies. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
 
@@ -176,11 +177,14 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `REID_MATCH_THRESHOLD` | 0.72 | Cosine similarity needed to accept. 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. |
+| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.65 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 and 0.68 had no false positives. Go back to `?reid=0.68` if bystanders get named. |
+| `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
+| `MOTION_SCORE_BONUS` / `MOTION_SCORE_PENALTY` (motion-identity.js) | +0.06 / −0.08 | Added to a track's typical score for a player when that player's phone motion is consistent / inconsistent with the person on screen. 0 unless `?motion=on`/`?motion=strict` installed the motion provider, and 0 while nobody moves. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
-| `REID_EVIDENCE_MIN_SCORE` | 0.62 | Below this a rejected match contributes no evidence |
-| `REID_SOFT_LABEL_SCORE` | 0.66 | A rejected match this good can still be the track's candidate |
-| `REID_INITIAL_LOCK` | 0.80 | Score that names a brand-new track in one check |
+| `reidEvidenceMinScore()` | threshold | Below this a check contributes no evidence. Was fixed at 0.62, then threshold − 0.03, which at 0.65 let people who usually score 0.62–0.64 build up evidence and get named; the 3 s median bridges bad checks instead. |
+| `reidSoftLabelScore()` | threshold | A rejected match this good can still be the track's candidate |
+| `REID_REVOKE_SCORE`, `REID_REVOKE_CHECKS` | 0.6, 3 | A named track whose score for its own player stays below 0.6 for 3 checks in a row loses the name (someone else stepped into its box) |
+| `reidInitialLock()` | threshold + 0.08, at least 0.80 | Score that names a brand-new track in one check |
 
 **Tracker:**
 
@@ -263,7 +267,7 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE`/`TARGET_MIN_REID_SCORE`, `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or require motion confirmation with `?motion=strict`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
 - **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict` — with motion off the debug overlay has no `motion` line at all, because the provider isn't installed. Once it is there, `off` means permission was never granted, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.

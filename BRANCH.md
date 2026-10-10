@@ -12,8 +12,8 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 19 JS tests
-python -m unittest discover -s backend -p "test_*.py" # 28 backend tests
+npm test                                              # 24 JS tests
+python -m unittest discover -s backend -p "test_*.py" # 32 backend tests
 ```
 
 ## What merges here
@@ -23,6 +23,25 @@ python -m unittest discover -s backend -p "test_*.py" # 28 backend tests
 | `luxkaiwalker/tracking-smoothing` | **merged** | Position and velocity now have separate exponential time constants instead of one shared per-detection blend factor. Trailing 22.6 px → 7.5 px *and* velocity noise 18 → 12 px/s; the old coupling meant you could only trade one for the other. Interval-independent, which matters because the detection interval isn't fixed |
 | `luxkaiwalker/motion-isolation` | **merged** | Motion is now behind one seam, `identity.js`, which installs a single provider at load. `screens/game.js`, `net.js`, `state.js` and `app.js` contain zero occurrences of the word "motion" |
 | `luxkaiwalker/scan-optimisation` | **merged** | Select-then-embed: OSNet now runs on the frames backing chosen samples rather than every usable frame, pose becomes a rescue-only pass, detection moves to 512 px, thumbnails deferred. **240 → 150 model inferences per scan.** Plus rewritten scanning/detection/identification docs |
+
+| `detection-tuning` (Basiliskenzahn) | **merged, minus two things** | The larger performance change in this area: colour features skipped when re-identification covers the room, OSNet in a Web Worker, velocity-projected boxes, a 3 s median over re-id scores, and every re-id gate tied to one `?reid=`-tunable accept threshold (0.65 instead of a frozen 0.72). See the two exclusions below |
+
+### What was deliberately left out of `detection-tuning`
+
+Merged as `git merge --no-ff 3a9f783`, i.e. the branch **minus its tip commit**:
+
+- **`335ccac` (camera zoom) is excluded.** The merge stops at `3a9f783`, one commit earlier.
+- **The 80/120 ms detection cadence is not taken.** `GAME_ACQUIRE_DETECT_INTERVAL_MS` /
+  `GAME_TRACK_DETECT_INTERVAL_MS` stay at **120 / 180 ms**. His `DETECT_MAX_BUSY_SHARE` (0.7) *is*
+  kept, which is safe in either direction: it can only *lengthen* the interval on a phone that
+  can't keep up, never shorten it below the 120/180 floor.
+- **`MOTION_ENABLED` stays opt-in.** His branch reverts it to `motionMode !== 'off'` (motion on by
+  default); this branch keeps `=== 'on' || === 'strict'`, matching `b88154f` on `dev`. His score
+  nudge is ported onto the provider seam instead of reinstating the old wiring: `motion-identity.js`
+  exports a `scoreAdjust` provider method, and `screens/game.js` passes
+  `identity.scoreAdjust ?? null` — so with the appearance provider installed the adjustment is
+  simply absent rather than conditionally skipped. **Flag for review:** if the intent is to ship
+  motion on by default, that is a one-line change in `env.js`, not a re-merge.
 
 ### Breaking change to be aware of
 
@@ -54,9 +73,7 @@ has since become opt-in and `detection-tuning` has improved several of the costs
 
 ## Related work not from this session
 
-`detection-tuning` (Basiliskenzahn) is the larger performance change in this area — colour
-features skipped when re-identification covers the room, OSNet in a Web Worker, raised cadence,
-re-id thresholds actually enforced. It is **not** merged into `dev` yet and is not merged here.
-Anything in this branch that touches the same ground is written to compose with it rather than
-collide; `luxkaiwalker/tracking-smoothing` in particular deliberately avoids reimplementing its
-`liveBox()`.
+`detection-tuning` (Basiliskenzahn) is merged here, with the exclusions recorded above. It is
+**not** merged into `dev` yet — this branch is where it and this session's work meet first.
+`luxkaiwalker/tracking-smoothing` deliberately avoided reimplementing its `liveBox()`, so the two
+compose rather than collide.

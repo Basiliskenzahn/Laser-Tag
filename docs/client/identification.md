@@ -19,7 +19,7 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
 
-If enabled with `?motion=on` or `?motion=strict`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
+Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It isn't part of the per-check appearance score, but it nudges a track's typical score for a player: +0.06 when that player's phone moves with the person on screen, −0.08 when it clearly doesn't (`motionScoreAdjustment()` in `motion-identity.js`). Real games put players at 0.70–0.80+ and non-players at 0.60–0.65, so this widens the gap whenever people move.
 
 Both models are optional. `createReid()` failures are caught in `camera.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
 
@@ -109,7 +109,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.72 (`REID_MATCH_THRESHOLD`) | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -191,7 +191,7 @@ The floors for "plausible" depend on the signal:
 
 | | Minimum score to count as evidence | Minimum score for a soft label |
 | --- | --- | --- |
-| With `reid` | 0.62 (`REID_EVIDENCE_MIN_SCORE`) | 0.66 (`REID_SOFT_LABEL_SCORE`) |
+| With `reid` | threshold (`reidEvidenceMinScore()`) | threshold (`reidSoftLabelScore()`) |
 | Colour | 0.42 (`EVIDENCE_MIN_SCORE`), and each part ≥ 0.24 | 0.48 (`SOFT_LABEL_SCORE`), and each part ≥ 0.24 |
 
 A *soft label* is a rejected match that is still good enough to be the track's candidate for the hysteresis below. Matches rejected for `margin` are never soft-labelled: an ambiguous frame should not nudge the identity either way.
@@ -200,7 +200,7 @@ The identity then changes only through hysteresis:
 
 | Situation | Needed to (re)assign |
 | --- | --- |
-| New track, very confident match (score ≥ 0.80 with `reid`, ≥ 0.66 without) | 1 check |
+| New track, very confident match (score ≥ threshold + 0.08, at least 0.80, with `reid`; ≥ 0.66 without) | 1 check |
 | New track, otherwise | 2 agreeing checks in a row |
 | Track already identified as someone else | 4 agreeing checks in a row |
 | Check finds no candidate | Identity is **kept**. A known track only loses its identity when it disappears, loses a conflict, or another player wins the switch. |
@@ -217,7 +217,7 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 
 ## Motion confirmation (`motion/`)
 
-Motion tracking is disabled by default. The code below is used only when the page is opened with `?motion=on` or `?motion=strict`.
+Motion tracking is on by default. The code below is skipped when the page is opened with `?motion=off`.
 
 Appearance alone can't tell apart two people in similar clothes, and it can put a player's name on a bystander who happens to look like them. Motion matching adds a signal that has nothing to do with appearance: **every phone knows how much it is being moved, and the camera can see how much each person on screen is moving.** They should rise and fall together for the right pairing, and be unrelated for a wrong one.
 

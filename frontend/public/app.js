@@ -5,7 +5,8 @@
 // diagram you can read in one go. The only thing it starts by itself is the attempt to resume a
 // lobby a refresh interrupted.
 
-import { $ } from './env.js';
+import { $, REID_THRESHOLD } from './env.js';
+import { setReidThreshold } from './identify.js';
 import { keepScreenOn } from './camera.js';
 import { identity } from './identity.js';
 import { send } from './net.js';
@@ -15,6 +16,8 @@ import { enterLobbyFromForm, initJoinForm, resumeActiveLobby, setJoinStatus } fr
 import { launchGame, leaveLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
 import { fire } from './screens/game.js';
+
+if (REID_THRESHOLD != null) setReidThreshold(REID_THRESHOLD); // ?reid=0.70, for tuning in the field
 
 // ---- Join screen ----
 

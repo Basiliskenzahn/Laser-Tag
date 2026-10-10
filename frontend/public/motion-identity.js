@@ -21,6 +21,10 @@ import { state } from './state.js';
 const MOTION_SEND_INTERVAL_MS = 500;
 const MOTION_CHECK_MS = 300;
 const MOTION_HISTORY_MS = 12_000;
+// How far motion moves a person's re-identification score for one player (scoreAdjust below).
+const MOTION_SCORE_BONUS = 0.06;
+const MOTION_SCORE_PENALTY = 0.08;
+
 
 // Everything motion knows, private to this file. It is deliberately not on the shared `state`
 // object: nothing outside here can reach it, and with the provider uninstalled none of it exists.
@@ -131,10 +135,24 @@ function motionDebugLine(now, liveTracks) {
 }
 
 // The seal: identity.js installs this, and nothing else in the app imports this file.
+// The tracker's `scoreAdjust` (identify.js adds it to a person's typical score for a player): up
+// when that player's phone moves the way the person on screen does, down when it clearly doesn't.
+// Real games put players at 0.70-0.80+ and non-players at 0.60-0.65, so whenever people move this
+// widens the gap: a player scoring 0.60 who walks gets named, a look-alike scoring 0.69 whose
+// movement doesn't match the player's phone doesn't. Standing still leaves the score alone.
+//
+// It reaches identify.js as an injected option, never an import, so the matcher still has no
+// dependency on motion - the game loop passes whichever provider is installed (identity.js).
+function scoreAdjust(track, playerId, now = performance.now()) {
+  const status = checksFor(track, now)?.[playerId]?.status;
+  return status === 'consistent' ? MOTION_SCORE_BONUS : status === 'inconsistent' ? -MOTION_SCORE_PENALTY : 0;
+}
+
 export const motionIdentity = {
   start: startMotion,
   observe: recordTrackMotion,
   resolve: resolveIdentity,
+  scoreAdjust,
   debugLine: motionDebugLine,
   onServerMessage(msg) {
     if (msg.type === 'motion') onRemoteMotion(msg.from, msg.s ?? []);

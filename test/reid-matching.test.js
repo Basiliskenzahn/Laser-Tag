@@ -70,3 +70,85 @@ test('averaged scan samples keep a normalised re-identification embedding', () =
   assert.ok(Math.abs(Math.hypot(...avg.reid) - 1) < 1e-9);
   assert.equal(averageSignatures([colours]).reid.length, 0);
 });
+
+test('a named track whose re-identification no longer fits its player loses the name', async () => {
+  const { Tracker } = await import('../frontend/public/identify.js');
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
+  let current = similarTo(rexReid, 0.95);
+  const reid = { latest: () => current, request() {} }; // stands in for reid.js's background embedder
+  const tracker = new Tracker();
+  let now = 1000;
+  const step = () => tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
+  let track;
+  for (let i = 0; i < 4; i++) track = step();
+  assert.equal(track.playerId, 'rex');
+
+  // Someone else steps into the same spot: the box carries on, but they look nothing like Rex.
+  current = similarTo(rexReid, 0.3);
+  track = step();
+  track = step();
+  assert.equal(track.playerId, 'rex', 'two bad checks are not enough');
+  track = step();
+  assert.equal(track.playerId, null, 'three in a row drop the name');
+});
+
+test('the threshold can be tuned in the field (?reid=)', async () => {
+  const { setReidThreshold, getReidThreshold } = await import('../frontend/public/identify.js');
+  const before = getReidThreshold();
+  const probe = person(similarTo(rexReid, 0.8));
+  try {
+    setReidThreshold(0.85);
+    assert.equal(matchGallery(probe, players, null, { closedSet: true, includeRejected: true }).accepted, false);
+    setReidThreshold(0.7);
+    assert.equal(matchGallery(probe, players, null, { closedSet: true }).accepted, true);
+    setReidThreshold(5); // nonsense is ignored
+    assert.equal(getReidThreshold(), 0.7);
+  } finally {
+    setReidThreshold(before);
+  }
+});
+
+// Feeds one tracked box a sequence of re-identification scores against Rex, one check every
+// 300 ms, and returns the track after each check.
+async function trackScores(scores, { scoreAdjust = null } = {}) {
+  const { Tracker } = await import('../frontend/public/identify.js');
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
+  let current;
+  const reid = { latest: () => current, request() {} };
+  const tracker = new Tracker();
+  let now = 1000;
+  return scores.map((score) => {
+    current = similarTo(rexReid, score);
+    const track = tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true, scoreAdjust })[0];
+    return { playerId: track.playerId, score: track.score };
+  });
+}
+
+test('a brief spike from someone who usually scores low does not name them', async () => {
+  const steps = await trackScores([0.62, 0.64, 0.6, 0.63, 0.65, 0.62, 0.79, 0.8, 0.78, 0.63, 0.61]);
+  assert.ok(steps.every((s) => s.playerId == null), JSON.stringify(steps));
+});
+
+test('a player who usually scores high keeps their name and stays shootable through a dip', async () => {
+  const { reidTargetMinScore } = await import('../frontend/public/identify.js');
+  const steps = await trackScores([0.84, 0.86, 0.83, 0.85, 0.87, 0.6, 0.84, 0.86]);
+  assert.equal(steps[4].playerId, 'rex');
+  for (const s of steps.slice(4)) {
+    assert.equal(s.playerId, 'rex');
+    assert.ok(s.score >= reidTargetMinScore(), `score ${s.score} after a dip`);
+  }
+});
+
+test('motion widens the gap: matching movement lifts a player over the threshold, contradicting movement keeps a look-alike out', async () => {
+  const lukewarm = [0.6, 0.61, 0.59, 0.6, 0.61, 0.6];
+  assert.ok((await trackScores(lukewarm)).every((s) => s.playerId == null), 'appearance alone is not enough');
+  const moving = await trackScores(lukewarm, { scoreAdjust: (track, id) => (id === 'rex' ? 0.06 : 0) });
+  assert.equal(moving.at(-1).playerId, 'rex');
+
+  const lookAlike = [0.69, 0.7, 0.68, 0.69, 0.7, 0.69];
+  assert.equal((await trackScores(lookAlike)).at(-1).playerId, 'rex', 'appearance alone names them');
+  const contradicted = await trackScores(lookAlike, { scoreAdjust: (track, id) => (id === 'rex' ? -0.08 : 0) });
+  assert.ok(contradicted.every((s) => s.playerId == null), JSON.stringify(contradicted));
+});

@@ -8,14 +8,18 @@
 // confirming signal; motion-identity.js wraps the same classifier opinion with phone-motion
 // confirmation, and identity.js installs exactly one of the two.
 
+import { reidTargetMinScore } from './identify.js';
 import { localSelfId } from './roster.js';
 
 const TARGET_LOCK_MS = 350;
+// Re-identification names already need two agreeing checks on a 3 s median score (identify.js),
+// so the extra hold before a shot can be short: 350 ms here was a third of the time to shootable.
+const TARGET_LOCK_REID_MS = 150;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
 // Re-identification identities can also come from accumulated evidence just under the accept
 // threshold (0.72, identify.js); a shot needs at least this.
-const TARGET_MIN_REID_SCORE = 0.7;
+
 
 export function isStableTarget(track, now = performance.now()) {
   // A re-identification match has already cleared its own threshold; the colour-part minimums
@@ -24,8 +28,8 @@ export function isStableTarget(track, now = performance.now()) {
     return Boolean(
       track.playerId &&
         Number.isFinite(track.identifiedAt) &&
-        now - track.identifiedAt >= TARGET_LOCK_MS &&
-        track.score >= TARGET_MIN_REID_SCORE,
+        now - track.identifiedAt >= TARGET_LOCK_REID_MS &&
+        track.score >= reidTargetMinScore(),
     );
   }
   return Boolean(
