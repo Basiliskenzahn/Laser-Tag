@@ -1,16 +1,16 @@
-# The realtime game server only - no static files, no TLS (nginx in frontend/ handles both
-# and reverse-proxies /ws here over the private Docker network).
-FROM node:20-bookworm-slim
+# The Python realtime game backend only - no static files, no TLS (nginx in frontend/
+# handles both and reverse-proxies /api/* and /events/* here over the private Docker
+# network).
+FROM python:3.12-slim
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+COPY backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt
 
-COPY server/ ./server/
+COPY backend/ ./backend/
 
-ENV PORT=4000 NODE_ENV=production
+ENV PORT=4000 PYTHONUNBUFFERED=1
 EXPOSE 4000
 
-USER node
-CMD ["node", "server/ws-server.js"]
+CMD ["python", "-m", "backend.app"]
