@@ -21,7 +21,7 @@ Appearance matching uses whichever of these it has, strongest first:
 
 If enabled with `?motion=on` or `?motion=strict`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
 
-Both models are optional. `createReid()` failures are caught in `app.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking.
+Both models are optional. `createReid()` failures are caught in `camera.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
 
 ## Signatures
 
@@ -36,11 +36,14 @@ Both models are optional. `createReid()` failures are caught in `app.js` (the de
 | `embed` | 256 | Optional MobileNetV3 embedding, compacted from the model's output and rounded to 4 decimals so galleries stay small | box with a little padding |
 | `usable` | bool | Whether the box is big and whole enough to trust (not sent to the server) | |
 
-A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. Because inference is asynchronous it is attached by the caller afterwards — `await reid.embed(...)` while scanning, or `reid.latest(track)` in the tracker. See below.
+A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. Because inference is asynchronous it is attached by the caller afterwards — and the two callers do it very differently:
+
+- **Scanning** awaits it (`await reid.embed(...)`), but only for the frames behind a gallery sample that survived selection, *after* selection has run. Selection itself never looks at `reid`. See [Scanning → Deferred work](scanning.md#5-deferred-work-and-what-it-saves).
+- **The tracker** never awaits it. It takes whatever `reid.latest(track)` already holds and asks for a fresh one for next time.
 
 Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap. All vectors are L2-normalised.
 
-`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples.
+`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning now attaches `reid` *after* averaging, `scan.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
 
 ## The re-identification embedding (`reid.js`)
 
@@ -66,6 +69,19 @@ await reid.embed(source, box);         // one-off, awaited; used while scanning
 - `request()` grabs the pixels immediately and queues the inference. One inference runs at a time; a second request for the same key while one is pending is dropped rather than queued, so the model never falls behind the camera.
 - Results are stored in a `WeakMap` keyed by the object you pass (the tracker passes the track), so entries disappear with the track.
 - `latest()` returns `null` for an embedding older than `maxAgeMs` (800 ms by default), which is what makes the tracker fall back to "not yet identifiable" rather than matching against a stale crop.
+
+### How much of it runs, and where
+
+The model is the most expensive inference in the app, so both callers limit how often it runs — in opposite ways:
+
+| | Scanning | Gameplay |
+| --- | --- | --- |
+| Call | `embed()`, **awaited** | `request()` / `latest()`, never awaited |
+| How often | Once per frame backing a chosen gallery sample — roughly **30 inferences per scan**, after selection has picked the samples | At most one in flight at a time; requested on each due identity check per track (its first 6 checks, then every 250 ms) |
+| If it isn't ready | Not applicable — the scan waits | The check is **skipped** and the track stays unnamed |
+| If it fails | The whole scan fails with *"Could not process the rotation video"* | Logged and ignored; the track simply has no recent embedding |
+
+[Detection → Which model runs when](detection.md#which-model-runs-when) has the same comparison for all four on-device models.
 
 ### Why it overrides rather than blends
 
@@ -267,13 +283,15 @@ The 6-second window and the 0.75 threshold come from simulation (random walk/sta
 | nobody | several or no phones match | nobody | `ambiguous` / `unrecognised` |
 | self-match | — | nobody | `self` |
 
-"Confident on its own" is `isStableTarget()` in `motion-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
+"Confident on its own" is `isStableTarget()` in `appearance-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
 
-With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Without `?motion=on` or `?motion=strict`, motion is off and `resolveIdentity()` skips `fuseMotion()` entirely, falling back unconditionally to the appearance gate (`isStableTarget()` alone).
+With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Without `?motion=on` or `?motion=strict`, `motion-identity.js` is never installed at all: `identity.js` installs `appearance-identity.js` instead, whose `resolve()` is the appearance gate (`isStableTarget()` alone) and nothing else.
 
 ### How the client drives it
 
-When motion is enabled, `motion-identity.js` keeps `state.remoteMotion` (player id → activity series) and `state.trackMotion` (a `WeakMap` from track to box observations), both trimmed to 12 seconds. `resolveIdentity(track)` re-runs the checks for a track at most every 300 ms and caches the result on the track, so the fused identity is cheap to ask for from both the draw loop and the hit test. Drawing shows a confirmed identity as *"Name (moves)"*, and in debug mode a vetoed one as *"not Name (motion)"*.
+`identity.js` is the only seam. The game loop holds one identity provider, hands it each frame's tracks (`identity.observe()`) and asks it who a track is (`identity.resolve()`); `net.js` hands it every server message no screen claims (`identity.onServerMessage()`); `app.js` asks it, inside a tap, for whatever permission it needs (`identity.start()`). Nothing outside `identity.js` names a signal, so deleting motion identification or swapping it for a different confirming signal is a one-line change there.
+
+When motion is enabled, `motion-identity.js` keeps all of its own state privately — this phone's sensor, a player id → activity series map, and two `WeakMap`s from track to box observations and to the last checks, all trimmed to 12 seconds. None of it is on the shared `state` object and none of it is written onto the tracker's track objects. `resolve(track)` re-runs the checks for a track at most every 300 ms and caches them, so the fused identity is cheap to ask for from both the draw loop and the hit test. It also tags the result with `confirmedBy`/`vetoedBy`, which is how the overlay can show a confirmed identity as *"Name (moves)"* and, in debug mode, a vetoed one as *"not Name (motion)"* without `screens/game.js` knowing that motion is what decided.
 
 ## Swapping in a better model
 
@@ -282,7 +300,8 @@ When motion is enabled, `motion-identity.js` keeps `state.remoteMotion` (player 
 - add the field to `GALLERY_FIELDS` in `backend/sanitize.py` (see [Protocol → Gallery format](../server/protocol.md#gallery-format));
 - decide how it combines with the existing score in `similarityParts()` (`reid` overrides rather than blends, because blending measured worse);
 - give it its own thresholds if its scores aren't on the same scale as the colour score — `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` all branch on `hasReid` for this reason;
-- bump `SCAN_CACHE_VERSION` in `app.js` so stale cached scans are ignored;
+- bump `SCAN_CACHE_VERSION` in `screens/scan.js` so stale cached scans are ignored (see [Scanning → Why the version exists](scanning.md#why-the-version-exists));
+- check whether [sample selection](scanning.md#4-sample-selection) should use it. `signatureSimilarity()` in `scan.js` deliberately uses the colour fields only, which is both why a view-invariant field like `reid` must stay out of it and why such a field can be computed after selection instead of during it;
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES`.
 
 ## Tuning

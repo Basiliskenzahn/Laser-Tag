@@ -14,7 +14,9 @@ frontend/               nginx container AND the phone client it serves
     roster.js            Read-only lookups over the server's roster/game snapshot
     camera.js            Starting the camera and on-device models, once
     net.js                Long-polling/SSE connection and server-message handling
-    motion-identity.js   Motion plumbing + resolveIdentity() (fuses appearance + motion)
+    identity.js          The "who is that person?" seam: installs one identity provider
+    appearance-identity.js  The default provider: isStableTarget() + appearance-only resolve()
+    motion-identity.js   The ?motion=on/strict provider: motion plumbing, sealed behind it
     screens/
       join.js, lobby.js, scan.js, game.js
     detector.js          MediaPipe models, person boxes, hitboxes

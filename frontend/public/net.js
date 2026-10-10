@@ -11,7 +11,7 @@ import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
 import { localSelfId, scannedGallery } from './roster.js';
-import { onRemoteMotion } from './motion-identity.js';
+import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
@@ -121,9 +121,6 @@ function handleMessage(msg) {
       state.localGallery = scannedGallery(localSelfId());
       if (state.mode === 'lobby') renderLobby();
       break;
-    case 'motion':
-      onRemoteMotion(msg.from, msg.s ?? []);
-      break;
     case 'scanSaved':
       if (state.mode === 'lobby') $('lobby-status').textContent = 'Scan saved.';
       break;
@@ -140,6 +137,10 @@ function handleMessage(msg) {
       navigator.vibrate?.(msg.zone === 'head' ? [80, 40, 160] : 120);
       restartAnimation($('damage'), 'flash');
       break;
+    default:
+      // Nothing on screen wants it, so it is a signal for whatever is identifying people
+      // (identity.js); messages nobody claims are ignored there.
+      identity.onServerMessage(msg);
   }
 }
 

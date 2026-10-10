@@ -132,7 +132,39 @@ const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the sa
 const TRACK_TIMEOUT_MS = 900;
 const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
 const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
-const BOX_SMOOTHING = 0.68; // how far a track's box moves towards the new detection each frame
+// Box position and velocity are filtered separately, and both are specified as time constants
+// rather than as a per-detection blend factor. A blend factor only means something at a fixed
+// detection interval, and the interval here is neither fixed nor the same on every phone: it is
+// 80-180 ms by schedule, longer on a slow device, and longer again whenever a detection is missed
+// and the track coasts. With a time constant, both filters behave the same in seconds everywhere,
+// a long gap is correctly weighted more than a short one, and a burst of two detections 10 ms
+// apart cannot yank the estimate (small dt -> small blend), which is what kept the old fixed
+// 0.68 from being safe to raise.
+//
+// Position: how far the drawn box trails a target moving at v px/s. For dt << tau the steady
+// state lag is v * tau; for larger dt it is less, so tau is the worst case. Measured against the
+// detector jitter model in test/motion.test.js (sigma = 0.87% of box height) at dt = 120 ms and
+// v = 400 px/s: the old 0.68 was tau = 105 ms and trailed 22.6 px, with 1.9 px of visible box
+// noise. 60 ms trails 7.5 px for 2.3 px of noise - a 3x lag cut for 22% more jitter. Going lower
+// buys little: tau = 40 ms removes only another 5 px and takes the noise to 2.5 px, most of the
+// detector's raw 2.6 px.
+const BOX_SMOOTHING_TAU_MS = 60;
+// Velocity: deliberately slower than the position filter, and measured from the *raw* detection
+// centres rather than from the smoothed box (see updateTrackBox). Keeping the two separate is the
+// point - track.vx/vy decide box-to-track association (predictedBox), where a noisy velocity
+// causes identity swaps between people, and the overlay projects along them between detections,
+// where noise lands straight on the screen and on the aim. In the same measurement, velocity
+// noise on a standing person falls from 18 px/s rms (old, coupled at 0.68) to 12 px/s, where
+// merely raising the old factor to 0.85 would have taken it to 24 px/s. 250 ms would halve it
+// again, but velocity then needs a quarter second to notice someone reversing direction, which
+// is the whole window the overlay projects over.
+const VELOCITY_SMOOTHING_TAU_MS = 180;
+// Over a longer gap than this, the straight line between two detections is not a velocity: a
+// person can turn around within it. Keep the coasted estimate instead of inventing a confident
+// wrong one. TRACK_TIMEOUT_MS lets a track coast more than twice this long.
+const VELOCITY_MAX_GAP_MS = 400;
+const MIN_FRAME_DT_S = 0.016; // never divide a displacement by less than about one frame
+const PREDICT_MAX_AHEAD_S = 0.5; // how far association may extrapolate a track along its velocity
 const COAST_VELOCITY_DECAY = 0.82; // velocity damping while a track is briefly unseen
 
 // -- identity hysteresis: how reluctant a track is to take or change a name --
@@ -572,12 +604,30 @@ function blendBox(a, b, alpha) {
   };
 }
 
+// Blend factor for a one-pole filter with time constant `tauMs`, sampled `dtS` seconds after the
+// last one. dtS -> 0 gives 0 (nothing new to learn yet), dtS >> tau gives ~1 (the old estimate is
+// stale, take the measurement).
+function smoothingAlpha(dtS, tauMs) {
+  return 1 - Math.exp((-dtS * 1000) / tauMs);
+}
+
+// Where the detector last actually saw this track, rather than where its drawn box has smoothed
+// to. Association is predicting the *next measurement*, and measurements are unsmoothed, so
+// starting from the smoothed box would put every prediction a fixed BOX_SMOOTHING_TAU_MS behind.
+// Falls back to the drawn box for a track that has not been through updateTrackBox yet.
+function measuredBox(track) {
+  const measured = track.measuredCenter;
+  if (!measured) return track.box;
+  return { ...track.box, x: measured.x - track.box.w / 2, y: measured.y - track.box.h / 2 };
+}
+
 function predictedBox(track, now) {
-  const dt = Math.min(0.5, Math.max(0, (now - (track.lastUpdated || track.lastSeen || now)) / 1000));
+  const dt = Math.min(PREDICT_MAX_AHEAD_S, Math.max(0, (now - (track.lastUpdated || track.lastSeen || now)) / 1000));
+  const base = measuredBox(track);
   return {
-    ...track.box,
-    x: track.box.x + (track.vx ?? 0) * dt,
-    y: track.box.y + (track.vy ?? 0) * dt,
+    ...base,
+    x: base.x + (track.vx ?? 0) * dt,
+    y: base.y + (track.vy ?? 0) * dt,
   };
 }
 
@@ -592,14 +642,23 @@ function associationScore(track, box, now) {
   return overlap * 0.5 + distance * 0.35 + sizeScore(predicted, box) * 0.15;
 }
 
+// Fold one detection into a track: the box that gets drawn, and the velocity, filtered
+// independently of each other. Velocity is measured between consecutive *raw* detection centres
+// and smoothed on its own, so loosening the position filter to cut display lag does not make
+// velocity noisier - inferring it from the smoothed box, as this used to, tied the two together
+// and meant any reduction in lag was paid for in association quality and in aim.
 function updateTrackBox(track, box, now) {
-  const previous = center(track.box);
-  const dt = Math.max(0.016, (now - (track.lastUpdated || track.lastSeen || now)) / 1000);
-  const smoothed = blendBox(track.box, box, BOX_SMOOTHING);
-  const next = center(smoothed);
-  track.vx = (next.x - previous.x) / dt;
-  track.vy = (next.y - previous.y) / dt;
-  track.box = smoothed;
+  const elapsed = now - (track.lastUpdated || track.lastSeen || now);
+  const dt = Math.max(MIN_FRAME_DT_S, elapsed / 1000);
+  const measured = center(box);
+  const previous = track.measuredCenter ?? center(track.box);
+  if (elapsed <= VELOCITY_MAX_GAP_MS) {
+    const alpha = smoothingAlpha(dt, VELOCITY_SMOOTHING_TAU_MS);
+    track.vx = (track.vx ?? 0) + alpha * ((measured.x - previous.x) / dt - (track.vx ?? 0));
+    track.vy = (track.vy ?? 0) + alpha * ((measured.y - previous.y) / dt - (track.vy ?? 0));
+  }
+  track.measuredCenter = measured;
+  track.box = blendBox(track.box, box, smoothingAlpha(dt, BOX_SMOOTHING_TAU_MS));
   track.lastSeen = now;
   track.lastUpdated = now;
   track.seenThisFrame = true;
@@ -849,6 +908,9 @@ export class Tracker {
       this.tracks.push({
         id: this.nextId++,
         box: boxes[i],
+        // The raw detection centre, kept alongside the smoothed box so velocity and association
+        // can work from the measurements (updateTrackBox, measuredBox).
+        measuredCenter: center(boxes[i]),
         lastSeen: now,
         lastUpdated: now,
         seenThisFrame: true,

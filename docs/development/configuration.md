@@ -18,9 +18,9 @@ Read once at startup in `frontend/public/env.js`:
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
-| `?motion=on` | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
+| `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
-| `?motion=off` or no motion parameter | Sets `MOTION_OFF`: skips motion permission, sample sharing and motion fusion, so targeting uses appearance identity + `isStableTarget()` only. This is the default. |
+| `?motion=off` or no motion parameter | The default. `identity.js` installs the appearance-only provider instead, so there is no motion permission prompt, no sample sharing and no motion fusion: targeting uses appearance identity + `isStableTarget()` only. |
 
 ## Game rules
 
@@ -100,7 +100,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 
 ## Targeting
 
-`frontend/public/motion-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
+`frontend/public/appearance-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -133,6 +133,8 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `SCAN_VIEW_AVERAGE_SIMILARITY` | 0.74 | Similarity needed to be averaged into a sample |
 | `SCAN_DIVERSITY_WEIGHT` | 0.42 | How strongly sample selection prefers varied views |
 | `ROTATION_SAMPLE_AVERAGE_COUNT` | 4 | Frames averaged per sample |
+| `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
+| `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
 | `SCAN_CACHE_VERSION` | 11 | Bump when the signature format changes (11 = samples carry a re-identification embedding) |
 
 `SCAN_SAMPLE_COUNT` (6) and `SCAN_SAMPLE_INTERVAL_MS` (70) belong to an older capture path (`captureScanSignature`) that the current rotation scan doesn't use.
@@ -264,6 +266,6 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 - **Too many wrong-player hits:** raise `TARGET_MIN_SCORE`/`TARGET_MIN_REID_SCORE`, `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
-- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict`. In debug mode, `motion off` means tracking is disabled, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
-- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which bypasses `fuseMotion()` entirely and restores the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
+- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict` — with motion off the debug overlay has no `motion` line at all, because the provider isn't installed. Once it is there, `off` means permission was never granted, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
+- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which installs the appearance-only provider instead, restoring the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

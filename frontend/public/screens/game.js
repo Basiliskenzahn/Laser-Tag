@@ -8,7 +8,7 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
+import { identity } from '../identity.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
@@ -99,7 +99,7 @@ function refreshGameDetection({ forcePose = false } = {}) {
     reid: state.reid,
     closedSet: true,
   });
-  recordTrackMotion(state.tracks, t0);
+  identity.observe(state.tracks, t0);
   state.lastGameDetectAt = t0;
   inferenceMs = performance.now() - t0;
   frames++;
@@ -223,7 +223,7 @@ function targetUnderCrosshair(px, py) {
   const now = performance.now();
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
-    const id = resolveIdentity(t, now);
+    const id = identity.resolve(t, now);
     if (!id.playerId || !isAlivePlayer(id.playerId)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head', identity: id };
     if (contains(bodyBox(t.box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
@@ -302,6 +302,8 @@ export function loop() {
     const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
+    // Whatever is identifying people gets a line of its own, if it has anything to say.
+    const identityLine = identity.debugLine(now, visibleTracks);
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
@@ -327,7 +329,7 @@ export function loop() {
             )
             .join(' | ')}`
         : '') +
-      `\n${motionDebugLine(now, visibleTracks)}` +
+      (identityLine ? `\n${identityLine}` : '') +
       (rejected.length
         ? `\nRejected ${rejected
             .map(
@@ -382,8 +384,8 @@ function drawGame({ vw, vh, toScreen }) {
   const now = performance.now();
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
-    // The classifier's identity, confirmed or vetoed by motion: a vetoed guess shows as a person.
-    const id = resolveIdentity(track, now);
+    // Who this is, from every signal that has an opinion: a rejected guess shows as a person.
+    const id = identity.resolve(track, now);
     const known = Boolean(id.playerId);
     const dead = known && isDeadPlayer(id.playerId);
     const alive = known && !dead;
@@ -406,9 +408,9 @@ function drawGame({ vw, vh, toScreen }) {
     ctx.fillStyle = color;
     ctx.setLineDash([]);
     const label = known
-      ? `${id.name}${dead ? ' down' : id.source === 'both' ? ' (moves)' : ''}`
+      ? `${id.name}${dead ? ' down' : id.confirmedBy ? ` (${id.confirmedBy})` : ''}`
       : id.reason === 'vetoed' && DEBUG
-        ? `not ${gamePlayer(id.vetoed)?.name ?? 'them'} (motion)`
+        ? `not ${gamePlayer(id.vetoed)?.name ?? 'them'} (${id.vetoedBy})`
         : debugMatch
           ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
           : 'Person';

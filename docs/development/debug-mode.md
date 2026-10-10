@@ -34,7 +34,7 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | 2 | Video resolution; people in the last detection; tracks seen recently / all tracks; tracks identified as another player |
 | 3 | Each identified track: name, overall score, the marker `reid` if the [re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs) decided the match, then **u**pper-body, **l**ower-body, **g**rid, **s**hape and **e**mbedding similarity |
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
-| `motion` | `off` by default; with `?motion=on` or `?motion=strict`, this phone's sensor (`on`, `no data` or `off`), `strict` if set, and which players' phones are sending motion samples |
+| `motion` | Absent by default, since whatever is identifying people only gets a line if it has something to say and the appearance-only provider doesn't. With `?motion=on` or `?motion=strict`: this phone's sensor (`on`, `no data` or `off`), `strict` if set, and which players' phones are sending motion samples |
 | `Motion` | Per track: the fused identity and its reason (`confirmed`, `classifier-only`, `corrected`, `vetoed`, `unconfirmed`, `motion-only`, `ambiguous`, `unrecognised`, `self`), then each player's motion correlation in brackets — or that check's reason when there's no number yet (`not enough data`, `person not moving`, `phone not moving`, `unclear`) |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
