@@ -7,7 +7,16 @@
 // forced first if the last one is too old to trust, and the server is the judge of the damage.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
-import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
+import {
+  bodyBox,
+  contains,
+  detectScanPeople,
+  detectTrackedPeople,
+  detectTrackedPeopleFast,
+  detectZoomedPeople,
+  headBox,
+  mergeZoomedPeople,
+} from '../detector.js';
 import { motionDebugLine, motionScoreAdjustment, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
 import { getReidThreshold } from '../identify.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
@@ -26,6 +35,9 @@ const DETECT_MAX_BUSY_SHARE = 0.7;
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
 const SHOT_REFRESH_MAX_AGE_MS = 90;
 const GAME_DETECT_MAX_WIDTH = 512;
+// Run the zoom pass for far people (detector.js detectZoomedPeople) on every Nth detection.
+const GAME_ZOOM_EVERY = 2;
+let gameDetections = 0;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
@@ -96,6 +108,7 @@ function refreshGameDetection({ forcePose = false } = {}) {
   const t0 = performance.now();
   const { source, scaleX, scaleY } = gameplayInferenceSource();
   state.boxes = scaleBoxes(detectGameplayPeople(source, t0, { forcePose }), scaleX, scaleY);
+  if (++gameDetections % GAME_ZOOM_EVERY === 0) state.boxes = mergeZoomedPeople(state.boxes, detectZoomedPeople(state.detector, video, t0 + 1));
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
     identifyOnce: false,

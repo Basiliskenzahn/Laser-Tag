@@ -55,6 +55,9 @@ The phone can see someone but isn't confident who it is. Usually:
 
 Rescan the affected players in the playing area. To see *why* a match was rejected, use [debug mode](development/debug-mode.md); if its first line has no `+ReID`, the strongest recognition model didn't load on that phone and it's running on clothing colour alone, which is much weaker.
 
+**Far-away players get no outline at all.**
+Beyond roughly 5 m the detector only finds people near the middle of the screen, where it looks at a magnified crop: aim at them and give it a moment. At very long range recognition gets unreliable too, because there's little detail left. See [Detection tuning → Range](development/detection-tuning.md#range).
+
 **Everyone shows up as "Person", on one phone only.**
 Check that phone with `?debug`. A missing `+ReID` on the first overlay line means the re-identification model failed to load — usually ONNX Runtime Web (`/vendor/ort/`) or `/models/osnet_x0_25_msmt17.onnx` not being served. The browser console has the warning. Behind a custom web server, check those paths exist and that `.wasm` is served as `application/wasm`.
 

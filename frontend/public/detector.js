@@ -19,6 +19,11 @@
 //   detectTrackedPeopleFast - gameplay, every other frame. The object detector alone, which is
 //                             several times cheaper. Identity rides along on the tracker between
 //                             thorough passes, so the cheap boxes are enough most of the time.
+//   detectZoomedPeople      - gameplay, far people. The object detector on a magnified crop
+//                             around the crosshair, merged in with mergeZoomedPeople. The model
+//                             sees every frame at 320x320, so a person beyond ~5 m is only a few
+//                             dozen pixels tall there and gets missed; the crop gives them 2.5x
+//                             the pixels, exactly where the player is aiming.
 //
 // detectPeople is the shared raw object-detector pass underneath all three.
 
@@ -30,6 +35,13 @@ const EMBEDDER_MODEL_URL = '/models/mobilenet_v3_small_embedder.tflite';
 const MIN_SCORE = 0.35;
 const POSE_MIN_LANDMARKS = 6;
 const TRACKED_POSE_MIN_SCORE = 0.55;
+// The zoom pass: crop the central 1/ZOOM_FACTOR of the frame (width and height) at full camera
+// resolution. On a portrait 720x1280 test video this took a person at 22% of the frame height
+// (~7 m) from a box on 35% of detections to most of them; see docs/development/detection-tuning.md.
+const ZOOM_FACTOR = 2.5;
+// Boxes this close to the crop's edge are people cut off by the crop, whom the full-frame pass
+// sees whole: drop them rather than let a truncated box compete with the real one.
+const ZOOM_EDGE_RATIO = 0.02;
 
 // Gameplay hitboxes are intentionally tighter than detector boxes. Detector boxes need to
 // include pose variation and loose arms for tracking; shots should hit the head/torso, not
@@ -231,6 +243,41 @@ export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
 export function detectTrackedPeopleFast(detector, source, timestamp) {
   return keepDistinct(
     detectPeople(detector, source, timestamp),
+    (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
+  );
+}
+
+let zoomCanvas = null;
+
+// Gameplay, far pass: the object detector on the central crop of `video` (full resolution,
+// magnified ZOOM_FACTOR times relative to the full-frame pass). Boxes in video coordinates, with
+// source 'zoom'. MediaPipe's video mode needs strictly increasing timestamps per detector, so
+// pass a timestamp different from the full-frame pass of the same frame.
+export function detectZoomedPeople(detector, video, timestamp, zoom = ZOOM_FACTOR) {
+  const vw = sourceWidth(video);
+  const vh = sourceHeight(video);
+  const w = Math.max(1, Math.round(vw / zoom));
+  const h = Math.max(1, Math.round(vh / zoom));
+  const cx = Math.round((vw - w) / 2);
+  const cy = Math.round((vh - h) / 2);
+  zoomCanvas ??= document.createElement('canvas');
+  if (zoomCanvas.width !== w || zoomCanvas.height !== h) {
+    zoomCanvas.width = w;
+    zoomCanvas.height = h;
+  }
+  zoomCanvas.getContext('2d').drawImage(video, cx, cy, w, h, 0, 0, w, h);
+  const pad = ZOOM_EDGE_RATIO * Math.min(w, h);
+  return detectPeople(detector, zoomCanvas, timestamp)
+    .filter((b) => b.x > pad && b.y > pad && b.x + b.w < w - pad && b.y + b.h < h - pad)
+    .map((b) => ({ ...b, x: b.x + cx, y: b.y + cy, source: 'zoom' }));
+}
+
+// Full-frame boxes plus the zoom pass's, a person found by both kept once (the same suppression
+// as the gameplay passes).
+export function mergeZoomedPeople(boxes, zoomedBoxes) {
+  if (!zoomedBoxes.length) return boxes;
+  return keepDistinct(
+    [...boxes, ...zoomedBoxes],
     (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
   );
 }

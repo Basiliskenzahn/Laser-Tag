@@ -76,7 +76,11 @@ const EMBED_PRECISION = 10_000;
 // Enrolment ("scan") is a cooperative, posed shot, so it can afford slightly looser limits than
 // live matching, which has to cope with whatever the game gives it.
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
-const MIN_MATCH_HEIGHT_RATIO = 0.18;
+// Live matching takes much smaller people than the scan: re-identification crops them from the
+// full-resolution camera frame, so what matters is their size in pixels, not their share of the
+// frame. 0.18 made everyone beyond ~6 m (phone upright) unidentifiable even when detected.
+const MIN_MATCH_HEIGHT_RATIO = 0.07;
+const MIN_MATCH_HEIGHT_PX = 96;
 const MIN_BOX_WIDTH_RATIO = 0.035;
 const MIN_SCAN_BOX_WIDTH_RATIO = 0.025;
 const MIN_ASPECT = 0.58;
@@ -256,7 +260,7 @@ export function scanBoxProblem(source, box) {
 }
 
 function usableMatchBox(source, box) {
-  return usableBox(source, box, MIN_MATCH_HEIGHT_RATIO);
+  return box.h >= MIN_MATCH_HEIGHT_PX && usableBox(source, box, MIN_MATCH_HEIGHT_RATIO);
 }
 
 function rgbToHueSat(r, g, b) {

@@ -32,7 +32,7 @@ Embedder settings: video mode, L2-normalised float output.
 
 ## Detection functions
 
-Every function returns boxes in source-pixel coordinates: `{x, y, w, h, score, source}` where `source` is `'object'` or `'pose'`.
+Every function returns boxes in source-pixel coordinates: `{x, y, w, h, score, source}` where `source` is `'object'`, `'pose'` or `'zoom'`.
 
 | Function | Used during | What it does |
 | --- | --- | --- |
@@ -40,6 +40,7 @@ Every function returns boxes in source-pixel coordinates: `{x, y, w, h, score, s
 | `detectScanPeople` | scanning | Object boxes **plus** pose boxes, deduplicated (overlap below 0.75 IoU). Generous, so scanning finds the person even in awkward poses. |
 | `detectTrackedPeopleFast` | most game frames | Object boxes only, deduplicated (IoU below 0.5 and centres far enough apart) |
 | `detectTrackedPeople` | some game frames | Object boxes refined with pose (see below) |
+| `detectZoomedPeople` | every 2nd game detection | Object boxes on the central 1/2.5 of the full-resolution frame, for people too far away for the full-frame pass; boxes touching the crop edge are dropped. Merged with the frame's other boxes by `mergeZoomedPeople` (same suppression as `detectTrackedPeopleFast`). See [Detection tuning → Range](../development/detection-tuning.md#range). |
 
 ### Pose-assisted detection
 
@@ -82,6 +83,6 @@ The constants (`HEAD_TOP`, `HEAD_HEIGHT`, `HEAD_WIDTH`, `BODY_TOP`, `BODY_HEIGHT
 
 ## Performance notes
 
-- In the game, inference runs on a copy of the frame scaled to at most **512 px wide**; boxes are scaled back to full video resolution afterwards.
+- In the game, inference runs on a copy of the frame scaled to at most **512 px wide**; boxes are scaled back to full video resolution afterwards. The model itself sees 320×320, which is why far people need the zoom pass; it crops from the full-resolution video, not the 512 px copy.
 - Detection runs every **80 ms** while some visible person is still unidentified and every **120 ms** once everyone is identified, but never more often than the last detection's time ÷ 0.7, so a slow phone spends at most ~70% of its time detecting. It does not run on every animation frame; between detections the overlay and the shot move each box along its track's velocity (at most 0.25 s ahead).
 - Scanning records frames at up to **1024 px wide** and runs detection on them after recording, not live (see [Scanning](scanning.md)).

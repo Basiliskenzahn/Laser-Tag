@@ -35,5 +35,6 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Testing](development/testing.md)
 - [Debug mode](development/debug-mode.md)
 - [Configuration and tuning](development/configuration.md): every constant worth changing
+- [Detection and identification tuning](development/detection-tuning.md): what was tuned and measured, and how to tune `?reid=`/`?motion=` in the field
 - [Contributing](development/contributing.md): conventions and gotchas
 - [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting

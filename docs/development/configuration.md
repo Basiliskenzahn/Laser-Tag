@@ -75,6 +75,8 @@ Wider boxes are more forgiving but count more near-misses as hits.
 | `MIN_SCORE` | 0.35 | Object detector confidence threshold. Lower finds more people and more false positives. |
 | `POSE_MIN_LANDMARKS` | 6 | Visible landmarks needed for a pose box |
 | `TRACKED_POSE_MIN_SCORE` | 0.55 | Minimum pose box score to split or add boxes in the game |
+| `ZOOM_FACTOR` | 2.5 | The zoom pass detects on the central 1/2.5 of the frame (width and height) at full resolution, for people too far away for the full-frame pass. See [Detection tuning → Range](detection-tuning.md#range). |
+| `ZOOM_EDGE_RATIO` | 0.02 | Zoom-pass boxes this close to the crop edge are dropped (people cut off by the crop) |
 | `OBJECT_MODEL_URL`, `POSE_MODEL_URL`, `EMBEDDER_MODEL_URL` | `/models/…` | Which model files to load |
 
 Model options that aren't separate constants but are worth knowing about, inside `createDetector()`: the object detector takes `maxResults: 8` and the `person` category only; the pose landmarker takes `numPoses: 8` and detection/presence/tracking confidence `0.18`; the embedder is created with `l2Normalize: true, quantize: false`.
@@ -84,8 +86,10 @@ Model options that aren't separate constants but are worth knowing about, inside
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `GAME_DETECT_MAX_WIDTH` | 512 | Frame width for in-game inference. Higher is more accurate at range, but slower. |
-| `GAME_ACQUIRE_DETECT_INTERVAL_MS` | 120 | Detection interval while someone is unidentified |
-| `GAME_TRACK_DETECT_INTERVAL_MS` | 180 | Detection interval once everyone visible is identified |
+| `GAME_ACQUIRE_DETECT_INTERVAL_MS` | 80 | Detection interval while someone is unidentified |
+| `GAME_TRACK_DETECT_INTERVAL_MS` | 120 | Detection interval once everyone visible is identified |
+| `DETECT_MAX_BUSY_SHARE` | 0.7 | Never detect more often than the last detection's time ÷ this |
+| `GAME_ZOOM_EVERY` | 2 | Run the zoom pass on every Nth detection. 1 doubles the far range's hit rate at ~20% fewer detections per second; 3 is faster with less range. |
 | `GAME_POSE_DETECT_INTERVAL_MS` | 520 | Minimum interval for the slower pose model |
 | `SHOT_REFRESH_MAX_AGE_MS` | 90 | A shot triggers a fresh detection if the last one is older than this |
 
@@ -195,7 +199,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `MIN_MATCH_HEIGHT_RATIO` | 0.18 | Box height as a fraction of the frame, in game |
+| `MIN_MATCH_HEIGHT_RATIO` / `MIN_MATCH_HEIGHT_PX` | 0.07 / 96 | Minimum box height in game, as a fraction of the frame and in camera pixels. Was 0.18, which left everyone beyond ~6 m unidentified even when detected; scans keep 0.18 (`MIN_SCAN_HEIGHT_RATIO`). |
 | `MIN_BOX_WIDTH_RATIO` | 0.035 | Box width as a fraction of the frame, in game (scans use 0.025) |
 | `MIN_ASPECT` / `MAX_ASPECT` | 0.58 / 6.5 | Accepted height/width ratio in game |
 | `MIN_SCAN_ASPECT` / `MAX_SCAN_ASPECT` | 0.65 / 7.0 | Accepted height/width ratio while scanning |
