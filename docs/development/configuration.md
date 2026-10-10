@@ -7,14 +7,12 @@ There are no config files: behaviour is controlled by named constants at the top
 | Variable | Used by | Default |
 | --- | --- | --- |
 | `PORT` | Python backend | `4000` |
-| `PORT` | Node dev server (HTTP) | `3000` |
-| `HTTPS_PORT` | Node dev server (HTTPS) | `3443` |
 
 Published Docker ports (`8080`, `3443`) are set in `docker-compose.yml`.
 
 ## URL parameters
 
-Read once at startup in `public/env.js`:
+Read once at startup in `frontend/public/env.js`:
 
 | Parameter | Effect |
 | --- | --- |
@@ -25,7 +23,7 @@ Read once at startup in `public/env.js`:
 
 ## Game rules
 
-Defined in **both** `server/game.js` and `backend/models.py`. Change them together.
+Defined in `backend/models.py`.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -36,11 +34,11 @@ Defined in **both** `server/game.js` and `backend/models.py`. Change them togeth
 | `SHOT_COOLDOWN_MS` | 350 | Server-side minimum time between shots |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round |
 
-The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `public/screens/lobby.js`). Keep them equal to the server values.
+The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `frontend/public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `frontend/public/screens/lobby.js`). Keep them equal to the server values.
 
 ## Networking
 
-In both `server/realtime.js` and `backend/transport.py`:
+In `backend/transport.py`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -54,7 +52,7 @@ nginx has its own limit in `frontend/common-locations.conf`: `client_max_body_si
 
 ## Hitboxes
 
-`public/detector.js`, as fractions of the person box:
+`frontend/public/detector.js`, as fractions of the person box:
 
 | Constant | Default | |
 | --- | --- | --- |
@@ -69,7 +67,7 @@ Wider boxes are more forgiving but count more near-misses as hits.
 
 ## Detection
 
-`public/detector.js`:
+`frontend/public/detector.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -80,7 +78,7 @@ Wider boxes are more forgiving but count more near-misses as hits.
 
 Model options that aren't separate constants but are worth knowing about, inside `createDetector()`: the object detector takes `maxResults: 8` and the `person` category only; the pose landmarker takes `numPoses: 8` and detection/presence/tracking confidence `0.18`; the embedder is created with `l2Normalize: true, quantize: false`.
 
-`public/screens/game.js`:
+`frontend/public/screens/game.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -92,7 +90,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 
 ## Targeting
 
-`public/motion-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
+`frontend/public/motion-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `frontend/public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -106,7 +104,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 
 ## Scanning
 
-`public/screens/scan.js`:
+`frontend/public/screens/scan.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -129,11 +127,11 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 
 `SCAN_SAMPLE_COUNT` (6) and `SCAN_SAMPLE_INTERVAL_MS` (70) belong to an older capture path (`captureScanSignature`) that the current rotation scan doesn't use.
 
-Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65, `MAX_SCAN_ASPECT` 7.0) are in `public/identify.js`.
+Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65, `MAX_SCAN_ASPECT` 7.0) are in `frontend/public/identify.js`.
 
 ## Identification
 
-`public/identify.js`. The pipeline is explained in [Player identification](../client/identification.md).
+`frontend/public/identify.js`. The pipeline is explained in [Player identification](../client/identification.md).
 
 **Feature weights** (each set sums to 1; keep it that way so the thresholds below keep their meaning). They apply only when no re-identification embedding is available — with one, it is the score on its own:
 
@@ -203,7 +201,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 ## Re-identification model
 
-`public/reid.js`:
+`frontend/public/reid.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -222,14 +220,14 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 
 ## Motion
 
-`public/motion/sensor.js` (what this phone shares):
+`frontend/public/motion/sensor.js` (what this phone shares):
 
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `PANNING_DEG_PER_S` | 10 | Own rotation rate above which camera-image motion isn't trusted for that 100 ms bin |
 | `HISTORY_MS` | 12 000 | How much of this phone's own history is kept |
 
-`public/motion/matching.js` (the comparison). `SAMPLE_MS` is exported; the rest are the `DEFAULTS` object, overridable per call:
+`frontend/public/motion/matching.js` (the comparison). `SAMPLE_MS` is exported; the rest are the `DEFAULTS` object, overridable per call:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -243,7 +241,7 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 | `inconsistentAt` | 0.30 | Correlation at or below which an active pair contradicts it |
 | `gapMs` (in `resample`) | 350 | How far a sample may be from a grid point and still be interpolated |
 
-`public/motion-identity.js`:
+`frontend/public/motion-identity.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |

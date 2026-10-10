@@ -250,14 +250,3 @@ export function bodyBox(box) {
 export function contains(box, px, py) {
   return px >= box.x && px <= box.x + box.w && py >= box.y && py <= box.y + box.h;
 }
-
-// 'head', 'body' or null for whatever is under the point (px, py). A head hit anywhere in the
-// list wins over a body hit, so overlapping people cannot cost someone a headshot.
-export function hitTest(boxes, px, py) {
-  let zone = null;
-  for (const box of boxes) {
-    if (contains(headBox(box), px, py)) return 'head';
-    if (contains(bodyBox(box), px, py)) zone = 'body';
-  }
-  return zone;
-}

@@ -31,7 +31,7 @@ flowchart LR
 | Dockerfile | `frontend/Dockerfile` (two stages) |
 | Stage 1 | `node:20-bookworm-slim`: `npm ci --omit=dev`, only to get the browser runtimes (`@mediapipe/tasks-vision`, `onnxruntime-web`) onto disk |
 | Stage 2 | `nginx:1.27-alpine` plus `openssl` |
-| Serves | `public/` at `/`, MediaPipe's files at `/vendor/tasks-vision/`, and ONNX Runtime Web at `/vendor/ort/` (needed by [`reid.js`](../client/identification.md#the-re-identification-embedding-reidjs)) |
+| Serves | `frontend/public/` at `/`, MediaPipe's files at `/vendor/tasks-vision/`, and ONNX Runtime Web at `/vendor/ort/` (needed by [`reid.js`](../client/identification.md#the-re-identification-embedding-reidjs)) |
 | Ports | `8080 → 80` (HTTP), `3443 → 443` (HTTPS) |
 | Volume | `certs` mounted at `/certs` |
 
@@ -58,7 +58,7 @@ It mounts the repo into a `node:20-bookworm-slim` container, keeps `node_modules
 | `/events/` | Proxied to the backend, buffering and caching off, 1 h read timeout for long-lived SSE streams |
 | `/` | Static files |
 
-Every static response carries `Cache-Control: no-store` with ETags disabled, so phones always get the latest client after a redeploy. The trade-off is that the ~18 MB of models in `public/models/`, plus both WebAssembly runtimes, are downloaded again on every page load.
+Every static response carries `Cache-Control: no-store` with ETags disabled, so phones always get the latest client after a redeploy. The trade-off is that the ~18 MB of models in `frontend/public/models/`, plus both WebAssembly runtimes, are downloaded again on every page load.
 
 ## TLS certificate
 

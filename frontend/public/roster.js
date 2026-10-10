@@ -42,10 +42,6 @@ export function playerName(playerId) {
   );
 }
 
-export function hasScan(player) {
-  return Boolean(player.gallery?.length);
-}
-
 export function missingScanPlayers() {
   const players = state.game?.players ?? state.roster;
   return players.filter((player) => !cloneOwnerId(player.id) && !scannedGallery(player.id).length);

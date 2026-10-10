@@ -4,7 +4,7 @@
 
 The game has two halves:
 
-- **The phone client** (`public/`) does all the heavy lifting: camera, person detection, player identification, aiming and the UI.
+- **The phone client** (`frontend/public/`) does all the heavy lifting: camera, person detection, player identification, aiming and the UI.
 - **The game server** keeps the shared state honest and in sync: who's in the room, HP, the countdown and the winner. It never sees camera frames, only small messages like "player A hit player B in the head".
 
 ```mermaid
@@ -34,17 +34,16 @@ flowchart LR
 
 | Component | Location | Responsibility | Docs |
 | --- | --- | --- | --- |
-| UI and game loop | `public/app.js` (entrypoint), `public/state.js`, `public/env.js`, `public/roster.js`, `public/camera.js`, `public/net.js`, `public/screens/*.js`, `index.html`, `style.css` | Screens, camera, render loop, scanning, shooting, HUD | [App flow](client/app-flow.md) |
-| Motion-aware identity | `public/motion-identity.js` | Fuses the appearance classifier's answer with phone-motion confirmation into a final "who is this" verdict (`resolveIdentity()`) | [App flow](client/app-flow.md#who-counts-as-a-target) |
-| Transport | `public/transport.js` | Long-polling connection to the server | [Networking](client/networking.md) |
-| Detection | `public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
-| Identification | `public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
-| Re-identification | `public/reid.js` | OSNet person re-identification embeddings in ONNX Runtime Web; the strongest identification signal when it loads | [Identification](client/identification.md#the-re-identification-embedding-reidjs) |
-| Motion matching | `public/motion/sensor.js`, `public/motion/matching.js` | Each phone shares its accelerometer activity; a tracked person's on-screen motion confirms or vetoes who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
-| Sound | `public/sound.js` | Synthesised sound effects | [Feedback](client/feedback.md) |
-| Models | `public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder, OSNet x0.25 | [Detection](client/detection.md#models) |
-| Python backend | `backend/` (`app.py` entrypoint, `models.py`, `transport.py`, `sanitize.py`) | Production game server | [Python backend](server/python-backend.md) |
-| Node dev server | `server/` | Local dev server and test target | [Node dev server](server/node-dev-server.md) |
+| UI and game loop | `frontend/public/app.js` (entrypoint), `frontend/public/state.js`, `frontend/public/env.js`, `frontend/public/roster.js`, `frontend/public/camera.js`, `frontend/public/net.js`, `frontend/public/screens/*.js`, `index.html`, `style.css` | Screens, camera, render loop, scanning, shooting, HUD | [App flow](client/app-flow.md) |
+| Motion-aware identity | `frontend/public/motion-identity.js` | Fuses the appearance classifier's answer with phone-motion confirmation into a final "who is this" verdict (`resolveIdentity()`) | [App flow](client/app-flow.md#who-counts-as-a-target) |
+| Transport | `frontend/public/transport.js` | Long-polling connection to the server | [Networking](client/networking.md) |
+| Detection | `frontend/public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
+| Identification | `frontend/public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
+| Re-identification | `frontend/public/reid.js` | OSNet person re-identification embeddings in ONNX Runtime Web; the strongest identification signal when it loads | [Identification](client/identification.md#the-re-identification-embedding-reidjs) |
+| Motion matching | `frontend/public/motion/sensor.js`, `frontend/public/motion/matching.js` | Each phone shares its accelerometer activity; a tracked person's on-screen motion confirms or vetoes who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
+| Sound | `frontend/public/sound.js` | Synthesised sound effects | [Feedback](client/feedback.md) |
+| Models | `frontend/public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder, OSNet x0.25 | [Detection](client/detection.md#models) |
+| Python backend | `backend/` (`app.py` entrypoint, `models.py`, `transport.py`, `sanitize.py`) | The only game server - production, and local dev | [Python backend](server/python-backend.md) |
 | nginx frontend | `frontend/` | Static files, TLS, reverse proxy | [Docker setup](operations/docker.md) |
 
 ## Data flow for one shot
@@ -80,19 +79,19 @@ All realtime traffic uses ordinary HTTP:
 
 This works unchanged through reverse proxies, SSO gateways, Cloudflare tunnels and self-signed local HTTPS, which were all part of the hackathon's hosting setup. There is no WebSocket code path. See [Networking](client/networking.md) and [Protocol](server/protocol.md).
 
-## Two backend implementations
+## One backend (there used to be two)
 
-The same protocol and game rules are implemented twice:
+`backend/` (Python) is the only server implementation - game rules in `backend/models.py`,
+protocol in `backend/app.py`/`backend/transport.py`. A second, Node implementation
+(`server/game.js` + `server/realtime.js`) used to exist purely so `npm start`/`npm run dev` could
+run the whole game without Docker; it's archived under `deprecated/server/` (see
+[Streamlining](streamlining.md)) and no longer built, run, or tested.
 
-| | Python (`backend/`) | Node (`server/`) |
-| --- | --- | --- |
-| Used by | Docker and production | `npm start` / `npm run dev`, and all automated tests |
-| Serves static files | No (nginx does) | Yes |
-| TLS | No (nginx does) | Yes, self-signed via `selfsigned` |
-| Game rules | `Room` class in `backend/models.py` | `server/game.js` |
-| Protocol | aiohttp handlers in `backend/app.py`, session/poller/broadcast plumbing in `backend/transport.py` | `server/realtime.js` |
-
-They're meant to behave identically. **Any change to rules or the protocol has to be made in both**, and the tests only cover the Node version. See [Contributing](development/contributing.md#keep-both-backends-in-sync).
+That archiving didn't add test coverage, it just stopped *hiding* the lack of it: the Node
+implementation's tests (`server/game.test.js`, `server/realtime.test.js`) were the only automated
+coverage this game's rules and protocol ever had, and they tested the Node copy, not the Python
+one that's actually deployed. **`backend/` has no automated tests of its own.** See
+[Streamlining](streamlining.md) for what porting those suites would take.
 
 ## State: who owns what
 

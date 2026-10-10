@@ -32,7 +32,7 @@ On the scan screen, `drawScan()` outlines every detected person, with the one th
 
 ## Sound
 
-`public/sound.js` synthesises every effect with the Web Audio API, so there are no audio files.
+`frontend/public/sound.js` synthesises every effect with the Web Audio API, so there are no audio files.
 
 | Function | When | Sound |
 | --- | --- | --- |
@@ -53,4 +53,4 @@ All of them go through one helper, `tone({type, from, to, duration, volume, dela
 | You got hit | Full-screen red `flash`, and vibration: 120 ms for a body hit, a pattern for a headshot | `navigator.vibrate` (not supported on iOS) |
 | You fired | FIRE button `firing` animation | |
 
-Styles and animations live in `public/style.css`.
+Styles and animations live in `frontend/public/style.css`.

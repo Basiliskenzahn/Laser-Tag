@@ -24,7 +24,7 @@ pip install -r backend/requirements.txt
 python -m backend.app          # listens on 0.0.0.0:4000, or $PORT
 ```
 
-On its own it serves no client. To play against it locally, put something in front that serves `public/` and proxies `/api/` and `/events/` to it, which is exactly what the `frontend` container does.
+On its own it serves no client. To play against it locally, put something in front that serves `frontend/public/` and proxies `/api/` and `/events/` to it, which is exactly what the `frontend` container does.
 
 ## Structure
 
@@ -33,7 +33,7 @@ On its own it serves no client. To play against it locally, put something in fro
 | Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
 | Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
 | `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time |
-| `Room` | `models.py` | The game rules: a line-by-line port of `server/game.js`. See [Game rules](game-rules.md). |
+| `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: message queue, last-seen time, the pending poll's future, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
 | `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
@@ -60,16 +60,21 @@ For SSE, each `/events/<room>` request gets an `asyncio.Queue` registered in `ss
 
 All state is in process memory. Restarting the container ends every game and drops every scan. It runs as a single process, so it can't be scaled horizontally without moving state to shared storage.
 
-## Differences from the Node server
+## Behaviour worth knowing
 
-The two are meant to be equivalent; these are the known differences:
+- Session sweep interval: every 5 s, a session with no activity for 30 s is dropped.
+- An oversized request body gets `413`, checked from `Content-Length` before the body is read.
+- A second `/api/poll` on the same session replaces the first poll's waiter (the earlier one never
+  resolves on its own - the client is expected to only hold one poll open per session).
+- Body size limit (`MAX_BODY_BYTES`, 1 MB) is enforced by aiohttp's `client_max_size`.
+- `/` is a health check, not the client - nginx serves the client's static files.
 
-| | Python | Node |
-| --- | --- | --- |
-| Session sweep interval | 5 s | 10 s |
-| Oversized body | `413` (checked from `Content-Length`) | `400` (counted while reading) |
-| Second poll on same session | Replaces the waiter | Answers the first with `[]` |
-| Body size limit | `MAX_BODY_BYTES` (1 MB), enforced by aiohttp's `client_max_size` | `MAX_BODY_BYTES` (1 MB), counted while reading |
-| Health check at `/` | Yes | No (`/` serves the client) |
+## No automated tests
 
-The automated tests run against the Node server only. When changing behaviour here, mirror it in `server/` and check the Node tests still describe it. See [Contributing](../development/contributing.md#keep-both-backends-in-sync).
+This is the one backend now - see [Streamlining](../streamlining.md) for the Node implementation it
+replaced - but it has no test suite of its own. The tests that existed
+(`server/game.test.js`, `server/realtime.test.js`) tested the Node copy and moved with it to
+`deprecated/server/` when that was archived. Nothing currently verifies `models.py`/`transport.py`
+automatically; see [Streamlining → Two complete backend implementations](../streamlining.md) for
+the consequence and what porting those tests would take. Until that happens, check changes here by
+running the frontend and backend in Docker and playing through them with [debug mode](../development/debug-mode.md).

@@ -4,7 +4,7 @@ The client talks to the server over three plain-HTTP channels. There are no WebS
 
 | Channel | Code | Used for |
 | --- | --- | --- |
-| Long polling | `public/transport.js` | Joining, scans, starting rounds, sharing motion; receiving `state`, `roster`, `motion`, `hitConfirmed`, `gotHit`, `error` |
+| Long polling | `frontend/public/transport.js` | Joining, scans, starting rounds, sharing motion; receiving `state`, `roster`, `motion`, `hitConfirmed`, `gotHit`, `error` |
 | `POST /api/hit` | `postHit()` in `app.js` | Reporting a shot |
 | Server-Sent Events | `openGameEvents()` in `app.js` | Room-wide `health` and `death` events during a round |
 

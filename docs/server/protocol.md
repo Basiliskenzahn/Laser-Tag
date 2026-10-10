@@ -1,6 +1,6 @@
 # API and protocol reference
 
-Both server implementations ([Python](python-backend.md) and [Node](node-dev-server.md)) speak this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` and `/events/` to the backend.
+The [Python backend](python-backend.md) speaks this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` and `/events/` to it.
 
 All bodies are JSON. Responses carry `Cache-Control: no-store`.
 
@@ -14,15 +14,15 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 | `POST` | `/api/disconnect?token=T` | — | `204` |
 | `POST` | `/api/hit` | [Hit request](#post-apihit) | `200` result, or `400`/`404` with `{ok: false, error}` |
 | `GET` | `/events/<room>` | — | `text/event-stream` |
-| `GET` | `/` | — | Python backend only: `laser-tag python backend` (health check) |
+| `GET` | `/` | — | `laser-tag python backend` (health check) |
 
 ### Sessions and long polling
 
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
-`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one answers the first with `[]` (Node).
+`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one replaces the first poll's waiter, which never resolves on its own.
 
-A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s (Python) or 10 s (Node).
+A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
 
 Errors:
 
@@ -30,7 +30,7 @@ Errors:
 | --- | --- | --- |
 | `410 {"error": "Unknown session"}` | Unknown or expired token | Reconnect with a new `/api/connect` |
 | `400` | Body isn't valid JSON | Fix the request |
-| `413` (Python) / `400` (Node) | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
+| `413` | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
 
 ### `POST /api/hit`
 

@@ -1,9 +1,8 @@
 # Game rules and room lifecycle
 
-The rules live in a `Room` class with no networking, implemented twice with the same behaviour:
-
-- `server/game.js` (Node, unit-tested in `server/game.test.js`)
-- the `Room` class in `backend/models.py` (Python, used in production)
+The rules live in a `Room` class with no networking, in `backend/models.py` (Python - the only
+backend; see [Streamlining → Two complete backend implementations](../streamlining.md) for the
+Node implementation this replaced, archived under `deprecated/server/`).
 
 ## Constants
 

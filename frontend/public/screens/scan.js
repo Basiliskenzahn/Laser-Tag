@@ -41,7 +41,6 @@ const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible and face th
 function startScanStep() {
   const count = state.gallery.length;
   const ready = count >= SCAN_MIN_SAMPLES;
-  const scanBusy = state.autoScanning || state.postProcessingScan;
   const targetName = scanPersonName();
   if (state.postProcessingScan) {
     $('scan-instruction').textContent = `Processing ${targetName}'s rotation...`;
@@ -56,11 +55,7 @@ function startScanStep() {
     $('scan-instruction').textContent =
       state.savedScan ? `Use ${targetName}'s saved scan, or rescan with a slow rotation.` : `${targetName}: ${ROTATION_SCAN_PROMPT}`;
   }
-  updateScanButtons();
-  renderSavedScan();
 }
-
-function updateScanButtons() {}
 
 function cropThumbnail(box, source = video) {
   const c = document.createElement('canvas');
@@ -115,25 +110,9 @@ function saveScanCache() {
     };
     localStorage.setItem(`laser-tag:${scanCacheKey()}`, JSON.stringify(cache));
     state.savedScan = cache;
-    renderSavedScan();
   } catch {
     // The scan cache is only a debug convenience; the live scan still works.
   }
-}
-
-function clearScanCache() {
-  try {
-    localStorage.removeItem(`laser-tag:${scanCacheKey()}`);
-  } catch {
-    // Ignore storage errors; clearing the in-memory copy is enough for this run.
-  }
-  state.savedScan = null;
-  state.autoScanning = false;
-  state.postProcessingScan = false;
-  state.gallery = [];
-  state.scanThumbs = [];
-  $('scan-thumbs').innerHTML = '';
-  startScanStep();
 }
 
 function appendScanThumb(src) {
@@ -157,8 +136,6 @@ function setScanGallery(gallery, thumbs) {
   for (const thumb of thumbs) appendScanThumb(thumb);
 }
 
-function renderSavedScan() {}
-
 function afterNextPaint(callback) {
   requestAnimationFrame(() => requestAnimationFrame(callback));
 }
@@ -176,55 +153,8 @@ export function hideScanCountdown() {
   $('scan-countdown').hidden = true;
 }
 
-function useSavedScan() {
-  if (!state.savedScan) return;
-  setScanGallery(state.savedScan.gallery, state.savedScan.thumbs ?? []);
-  startScanStep();
-}
-
-function recordScanCapture(captured) {
-  if (state.gallery.length >= SCAN_TARGET_SAMPLES) return;
-  state.gallery.push(captured.signature);
-  const thumb = cropThumbnail(captured.box);
-  state.scanThumbs.push(thumb);
-  appendScanThumb(thumb);
-  startScanStep();
-  saveScanCache();
-}
-
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
-
-function currentScanBoxes(timestamp = performance.now()) {
-  const boxes = detectScanPeople(state.detector, state.poseDetector, video, timestamp);
-  state.boxes = boxes;
-  return boxes;
-}
-
-async function captureScanSignature() {
-  const samples = [];
-  let thumbnailBox = null;
-  let problem = 'no-person';
-  for (let i = 0; i < SCAN_SAMPLE_COUNT; i++) {
-    await nextFrame();
-    const now = performance.now();
-    const candidate = bestUsableScanCandidate(currentScanBoxes(now), video);
-    const box = candidate.box;
-    if (box && candidate.problem === 'ok' && usableScanBox(video, box)) {
-      const signature = extractSignature(video, box, state.embedder, now);
-      if (state.reid) signature.reid = await state.reid.embed(video, box);
-      samples.push(signature);
-      thumbnailBox = box;
-      problem = 'ok';
-    } else {
-      problem = candidate.problem ?? scanBoxProblem(video, box);
-    }
-    if (i < SCAN_SAMPLE_COUNT - 1) await wait(SCAN_SAMPLE_INTERVAL_MS);
-  }
-  return samples.length >= Math.ceil(SCAN_SAMPLE_COUNT / 2)
-    ? { signature: averageSignatures(samples), box: thumbnailBox }
-    : { problem };
-}
 
 function scanProblemMessage(problem) {
   if (problem === 'too-far') return 'step a little closer';
@@ -480,7 +410,6 @@ async function processRotationVideo(frames) {
   const problemCounts = new Map();
   let lastProblem = 'no-person';
   state.postProcessingScan = true;
-  updateScanButtons();
 
   try {
     for (let i = 0; state.autoScanning && i < frames.length; i++) {
@@ -511,7 +440,6 @@ async function processRotationVideo(frames) {
     }
   } finally {
     state.postProcessingScan = false;
-    updateScanButtons();
   }
 
   if (!state.autoScanning) return null;
@@ -529,7 +457,6 @@ async function runAutoScan() {
   state.gallery = [];
   state.scanThumbs = [];
   $('scan-thumbs').innerHTML = '';
-  updateScanButtons();
 
   try {
     const readyAt = performance.now() + ROTATION_SCAN_COUNTDOWN_MS;
@@ -568,7 +495,6 @@ async function runAutoScan() {
   } finally {
     state.autoScanning = false;
     hideScanCountdown();
-    updateScanButtons();
     if (state.mode === 'scan') {
       startScanStep();
       if (finalMessage) showLobby(finalMessage);

@@ -9,22 +9,43 @@ wasn't just fixed on the spot.
 If you resolve one of these, delete its entry here rather than leaving it to rot alongside a doc
 claiming it's still open.
 
+## Resolved in a later pass
+
+### Two complete backend implementations - now one
+
+Was: the game server existed twice, `backend/` (Python, actually deployed) and `server/` (Node,
+used only for `npm start`/`npm run dev` and all of the automated tests), with every rule, message
+format and validation limit hand-ported between two languages to stay in sync - which had already
+drifted at least once (`COUNTDOWN_MS` was out of sync between the two for a while).
+
+Now: `server/` has been archived to `deprecated/server/` (see `deprecated/README.md`) and removed
+from `package.json`'s scripts/dependencies (`start`, `dev`, and the now-unneeded `selfsigned`).
+`backend/` is the only backend.
+
+**This traded one problem for a sharper one, worth reading carefully:** `server/game.test.js` and
+`server/realtime.test.js` were the *only* automated test coverage this game's rules and protocol
+ever had - and they tested the Node copy, not the Python one that's live. Archiving `server/`
+didn't remove real coverage of `backend/` (there wasn't any), but it does mean the only test
+suites that ever existed for this logic are now sitting unrun in `deprecated/`, and the CI/CD
+pipeline still has no test gate at all (next item). Porting those suites to the Python backend -
+pytest, or an HTTP-driven Node test against the running Python process, either works - is the
+single highest-value thing left to do here. See `deprecated/server/game.test.js` and
+`deprecated/server/realtime.test.js` for what they covered; `docs/development/testing.md`'s
+"Writing tests" section has pointers on the patterns they used.
+
+### Dead frontend code - now archived
+
+Was: several frontend functions were defined but provably unreachable - no button, no caller,
+nothing wired them up (`captureScanSignature`, `recordScanCapture`, `useSavedScan`,
+`clearScanCache`, `currentScanBoxes`, `hasScan`, the no-op `updateScanButtons`/`renderSavedScan`,
+and `detector.js`'s `hitTest`). Left over from an earlier manual single-capture scan UI, and from
+before `targetUnderCrosshair`'s equivalent started calling `contains()`/`headBox()`/`bodyBox()`
+directly instead of through `hitTest()`.
+
+Now: moved to `deprecated/public-dead-code.js` and deleted from the live files. See that file's
+header for exactly what each piece used to do.
+
 ## Structural (highest impact)
-
-### Two complete backend implementations
-
-The game server exists twice: `backend/` (Python, actually deployed) and `server/` (Node,
-used only for `npm start`/`npm run dev` and all of the automated tests). Every rule, message
-format and validation limit has to be hand-ported between two languages to stay in sync - and it
-already has drifted at least once (`COUNTDOWN_MS` was out of sync between the two until this
-pass; see [Contributing → Keep both backends in sync](development/contributing.md#keep-both-backends-in-sync)).
-Worse: the CI workflow (`.github/workflows/ci-cd-action.yml`) runs no tests at all before
-deploying - it only runs `npm test`, which exercises the Node implementation, and even that isn't
-wired into the actual deploy gate. **The backend that's live has zero automated verification.**
-
-Not fixed because: picking one backend and deleting the other is a product decision (does local
-dev without Docker matter enough to keep the Node path alive?), not a refactor. Flagging it is as
-far as this pass goes.
 
 ### No CI test gate before deploy
 
@@ -32,7 +53,8 @@ far as this pass goes.
 thing: SSH in and `docker compose up --build -d`. There's no step that runs `npm test`, let alone
 anything for the Python backend, before that happens. `docker-compose.yml` has a `tests` profile
 (`docker compose run --rm tests`) that would run the JS suite in a container, but nothing invokes
-it automatically.
+it automatically. Now that `backend/` is the only implementation and has zero tests of its own
+(see above), there is genuinely no automated check of anything server-side before a deploy.
 
 Not fixed because: editing the deploy pipeline itself felt like it needed a deliberate decision
 from whoever owns the hackathon server credentials, not a drive-by change bundled into a
@@ -82,7 +104,7 @@ entirely (only `LIVE_TRACK_MS` liveness applies), while classifier-only identiti
 an asymmetry that may or may not be intentional.
 
 What *was* done about this (this pass): isolated all motion-integration glue into
-`public/motion-identity.js` behind one function, `resolveIdentity()`, and added a real opt-out,
+`frontend/public/motion-identity.js` behind one function, `resolveIdentity()`, and added a real opt-out,
 `?motion=off`, which bypasses `fuseMotion` entirely and restores the exact pre-motion-matching
 targeting gate - see [Configuration → Tuning tips](development/configuration.md#tuning-tips). That
 makes it possible to A/B test whether motion fusion is actually the source of a given reported bug,
@@ -93,7 +115,7 @@ One cosmetic side effect of adding the bypass: under `?motion=off`, the overlay 
 only once its identity is stable (lock-time passed), where before the motion commit landed, a
 track was labelled as soon as the classifier named it even though only the *shot* required
 stability. If the old, looser labelling is wanted back, that's a one-line change in
-`public/screens/game.js`'s draw call.
+`frontend/public/screens/game.js`'s draw call.
 
 ### A few small, currently-unreachable edges in `identify.js`
 
@@ -102,7 +124,7 @@ code calls them today - listed so they don't surprise someone who changes a call
 
 - `matchGallery`'s accept path (`{...best, accepted: true, candidates}`) omits `rankings`, while
   both rejection paths and the closed-set path include it. Unreachable today because
-  `public/screens/game.js` always passes `closedSet: true`, which returns earlier. Would matter if
+  `frontend/public/screens/game.js` always passes `closedSet: true`, which returns earlier. Would matter if
   open-set mode is ever used live.
 - `averageMatches` doesn't carry a `reid` field through, while `similarityParts` produces one.
   Harmless today - only `agreement.score` is read from its result - but asymmetric.
@@ -112,21 +134,6 @@ code calls them today - listed so they don't surprise someone who changes a call
 - `visualActivity()` divides by box height with no guard against zero. `detectTrackedPeople`
   already filters boxes to `h > 8`, so unreachable in practice.
 
-## Dead code (left in place, not deleted)
-
-Found while splitting `public/app.js` - verbatim-moved rather than deleted, since nothing here was
-asked to be cleaned up and deleting UI code without being able to run the app in a browser felt
-like the wrong moment to guess:
-
-- `hasScan()` in `public/roster.js` (or wherever it landed) - never called, before or after the
-  split.
-- A whole unreachable manual-capture scan path: `captureScanSignature`, `recordScanCapture`,
-  `useSavedScan`, `clearScanCache`, `currentScanBoxes` in `public/screens/scan.js`. `index.html`
-  has no buttons wired to any of them - the UI moved to the automatic rotation-scan flow and this
-  is what's left of the manual one.
-- `updateScanButtons()` and `renderSavedScan()` are empty no-op functions, still called from six
-  places. Leftovers of removed UI elements.
-
 ## Smaller things
 
 - **Circular imports in the new frontend module graph**: `net.js` ↔ `screens/game.js`, `net.js` ↔
@@ -134,9 +141,6 @@ like the wrong moment to guess:
   and `motion-identity.js` ↔ `net.js`. Currently safe - nothing calls an imported function at
   module-evaluation time, only `app.js` makes top-level calls, after the whole graph has loaded -
   but it's the thing most likely to break if someone adds top-level work to a screen module later.
-- **`package.json`'s `start`/`dev` scripts** still launch the Node dev server, which is itself the
-  "two backends" streamlining candidate above - not wrong, just worth remembering they're not
-  exercising what's actually deployed.
 - **`isStableTarget()` and the `TARGET_*` constants live in `motion-identity.js`**, because
   `classifierOpinion()` is their only caller - but they read like targeting constants that
   conceptually belong next to the rest of the game loop in `screens/game.js`. Moving them would
@@ -160,3 +164,7 @@ like the wrong moment to guess:
   track. Display-only (the gameplay-relevant reader also checks `playerId`, which is cleared) but
   fixed for consistency.
 - A duplicated, redundant score check in `detectTrackedPeople`'s pose-fallback filter.
+- `server/` archived to `deprecated/server/`, `public/` merged into `frontend/public/` (so the
+  frontend's app code lives alongside its Dockerfile, mirroring `backend/`'s shape), and the dead
+  frontend code listed above moved to `deprecated/public-dead-code.js`. `package.json`'s `start`/
+  `dev` scripts and its now-unused `selfsigned` dependency were removed along with `server/`.

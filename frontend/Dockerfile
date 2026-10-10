@@ -9,7 +9,7 @@ RUN npm ci --omit=dev
 FROM nginx:1.27-alpine
 RUN apk add --no-cache openssl
 
-COPY public/ /usr/share/nginx/html/
+COPY frontend/public/ /usr/share/nginx/html/
 COPY --from=deps /app/node_modules/@mediapipe/tasks-vision/ /usr/share/nginx/html/vendor/tasks-vision/
 COPY --from=deps /app/node_modules/onnxruntime-web/dist/ /usr/share/nginx/html/vendor/ort/
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf

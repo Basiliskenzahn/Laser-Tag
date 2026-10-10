@@ -2,7 +2,7 @@
 
 Before a round, every player is scanned so the other phones can recognise them. A scan produces a **gallery**: 12 to 24 appearance [signatures](identification.md#signatures), each from a different viewing angle, each carrying the colour features and — when the model loaded — a [re-identification embedding](identification.md#the-re-identification-embedding-reidjs). The gallery is uploaded to the server and shared with every phone in the room.
 
-The code lives in `public/screens/scan.js`. Signature extraction itself is in [`identify.js`](identification.md).
+The code lives in `frontend/public/screens/scan.js`. Signature extraction itself is in [`identify.js`](identification.md).
 
 ## Who scans whom
 
