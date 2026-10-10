@@ -299,18 +299,21 @@ test('the quality gate judges the pixels the signature is actually built from', 
   // part that fell outside; scanImageStats subtracted nothing, so for an overhanging box the gate
   // measured a window *shifted* inwards - wider, and over pixels the signature never saw.
   //
-  // Here the box hangs 160 px off the left edge, so the sliver of it inside the frame is flat
-  // paint and everything to the right of it is textured. The signature is built from the flat
-  // sliver, so the frame has nothing in it worth enrolling and the gate must say so. Measuring
-  // the shifted window instead finds the texture next door and enrols a frame of flat wall.
+  // Here the box hangs 25% of the frame off the left edge *and* off the top, so the corner of it
+  // that is actually inside the frame is flat paint and everything beyond it is textured. The
+  // signature is built from that corner, so the frame has nothing in it worth enrolling and the
+  // gate must say so. Measuring a shifted window instead - in either axis; the bug was in both -
+  // finds the texture next door and enrols a frame of flat wall.
   const flatWidth = 20;
-  const paintFlatSliver = (canvas) => {
+  const flatHeight = 185;
+  const paintFlatCorner = (canvas) => {
     const { width: w, height: h, pixels } = canvas;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         const n = Math.sin((x * 12.9898 + y * 78.233) * 1.7) * 43_758.545;
-        const noise = x < flatWidth ? 0 : (n - Math.floor(n)) * 90 - 45;
+        const flat = x < flatWidth && y < flatHeight;
+        const noise = flat ? 0 : (n - Math.floor(n)) * 90 - 45;
         pixels[i] = Math.max(0, Math.min(255, 120 + noise));
         pixels[i + 1] = Math.max(0, Math.min(255, 120 + noise));
         pixels[i + 2] = Math.max(0, Math.min(255, 120 - noise));
@@ -325,7 +328,7 @@ test('the quality gate judges the pixels the signature is actually built from', 
     return {
       detections: [
         {
-          boundingBox: { originX: -Math.round(w * 0.25), originY: Math.round(h * 0.1), width: Math.round(w * 0.3), height: Math.round(h * 0.8) },
+          boundingBox: { originX: -Math.round(w * 0.25), originY: -Math.round(h * 0.25), width: Math.round(w * 0.3), height: Math.round(h * 0.8) },
           categories: [{ score: 0.9 }],
         },
       ],
@@ -338,10 +341,10 @@ test('the quality gate judges the pixels the signature is actually built from', 
   const rAF = globalThis.requestAnimationFrame;
   globalThis.requestAnimationFrame = (callback) =>
     rAF((timestamp) => {
-      paintFlatSliver(dom.video);
+      paintFlatCorner(dom.video);
       callback(timestamp);
     });
-  paintFlatSliver(dom.video);
+  paintFlatCorner(dom.video);
 
   await runScan(selfPlayer);
 
@@ -419,6 +422,21 @@ test('the recorded frames are released as they are described, not held to the en
     live < fullFrameBytes * 2,
     `${(live / 1e6).toFixed(2)} MB of canvas still live after the scan, out of ${((recorded.length * fullFrameBytes) / 1e6).toFixed(1)} MB recorded`,
   );
+});
+
+test('a scan abandoned before it starts leaves no numbers from the scan before it', async () => {
+  // runAutoScan resets the cost counters, but it only runs a paint later (afterNextPaint), so a
+  // scan the player backs out of before then never reached the reset - and the ?debug overlay
+  // went on describing the previous scan as though it were this one.
+  const { sent } = arrangeScan();
+  await runScan(selfPlayer);
+  assert.ok(sent.find((msg) => msg.type === 'scan'));
+  assert.match(scan.scanCostLine(), /Scan \d+\/\d+ usable/, 'a finished scan should have put numbers on the overlay');
+
+  scan.beginPlayerScan(otherSam);
+  scan.cancelScan(); // before the two animation frames beginPlayerScan waits for
+  await dom.flush();
+  assert.equal(scan.scanCostLine(), '', `the overlay still reads: ${scan.scanCostLine()}`);
 });
 
 test('cancelling mid-scan sends nothing, caches nothing and says so', async () => {

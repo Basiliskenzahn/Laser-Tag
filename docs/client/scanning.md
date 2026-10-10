@@ -75,6 +75,8 @@ Two things follow from that, and both are in the code now:
 
 A frame whose colour signature comes back all-zero fails the scan from the processing loop for the same reason, and `assertEnrollableGallery` re-checks the finished gallery before anything is sent or cached. Neither should be reachable — a fully blank frame fails the brightness gate first, and no average of describable frames is blank — which is exactly why they throw rather than filter.
 
+Measured by [driving a whole scan](#testing) at 640×360, a frame size the harness can afford: 62 frames recorded, 57 MB of backing store at the peak, and **4.2 MB still resident during the embedding pass** — 7% of the recording. At the phone resolution the constants actually ask for (1024×576) the same scan records ~146 MB. Before this, the figure resident during the embedding pass *was* the recording.
+
 ### 3. Per-frame analysis
 
 `processRotationVideo()` walks the recorded frames. For each one:
@@ -164,7 +166,7 @@ Measured by driving the real `processRotationVideo()` over 60 synthetic recorded
 | JPEG thumbnail encodes | 60 | 24, and **0** since they were [removed](#thumbnails-removed-not-hidden) |
 | `getImageData` calls | 300–360 | 270 |
 | Pixels read back via `getImageData` | ~2.11 M | ~1.13 M |
-| Renderer yields | 60 | 50 (20 in the loop, 30 in the embedding pass) |
+| Renderer yields | 60 | 50 (20 in the loop, 30 in the embedding pass), plus a handful in [selection](#4-sample-selection), which used to yield none |
 
 Total model inferences in the processing pass: **240 → 150**, and the two classes that shrank are the two most expensive per call. (The `getImageData` range before the change is because `detectScanPeople` returned an object box *and* a pose box, so the quality gates sometimes read stats for two boxes per frame instead of one.)
 
@@ -202,7 +204,7 @@ The resolution change is more modest than it looks. EfficientDet-Lite0, the pose
 
   *"Saved scan"* used to be said whether or not the gallery ever left the phone. `send()` hands the message to whatever connection is there, so a scan sent down one that had gone away was a twelve-second rotation the player was told had worked and that no other phone ever saw — and the local cache made it look right on this phone too. `saveCurrentScan` now takes whatever `send()` reports back and corrects the lobby line if the scan turns out not to have arrived, while the player is still reading it.
 - **Fewer than 12:** the phone returns to the lobby with *"Only got N/12 usable angles from U/T frames: &lt;hint&gt;. Try again slower."* — where `U` is usable frames, `T` total recorded, and the hint is the message for the **most frequent** problem code (`mostCommonProblem`), falling back to the last one seen. Nothing is sent or cached. The player-facing version of this list is in [How to play](../how-to-play.md#scanning-a-player).
-- **An exception anywhere** in recording or processing: *"Could not process the rotation video: &lt;error&gt;."* A failed OSNet inference lands here, so one model error fails the whole scan rather than producing a gallery with some embeddings missing.
+- **An exception anywhere** in recording or processing: *"Could not process the rotation video: &lt;error&gt;."* A failed OSNet inference lands here, so one model error fails the whole scan rather than producing a gallery with some embeddings missing — and so does a [frame the browser took away](#how-much-of-the-recording-is-alive-at-once), which is the whole point of that check: the alternative is not a failed scan, it is a successful one describing a blank rectangle.
 
 ## What a gallery sample contains
 
@@ -319,12 +321,22 @@ On top of them:
 | --- | --- |
 | [`test/scan-enrolment.test.js`](../../test/scan-enrolment.test.js) | Whole scans. Who the gallery is sent and cached under, what a shared name does and does not do, a rotation whose frames were discarded, a frame lost between selection and the embedding pass, a red-free frame *not* being mistaken for a lost one, how much canvas is still resident during the embedding pass, a superseded run, and a cancel. |
 | [`test/scan-cache.test.js`](../../test/scan-cache.test.js) | `scan-cache.js` directly: the key, what may be cached, and every way a sample can be blank. Its bounds are the test's own numbers, not the screen's constants. |
+| [`test/scan-select.test.js`](../../test/scan-select.test.js) | `scan-select.js` directly: that the pass yields and yields more as the pool grows, that a cancel produces nothing, that carrying `nearest` forward picks the same seeds a recomputing reference picks, and that a seed is in its own sample. |
 | [`test/scan-reid.test.js`](../../test/scan-reid.test.js) | `scan-reid.js`: that the batched pass produces byte-for-byte the gallery the serial one did, and what a cancel or a failed inference does. |
 | [`test/scan-run-token.test.js`](../../test/scan-run-token.test.js) | The run-token discipline, as assertions on the shipped source — the properties the fix rests on, each of which would silently regress the bug. |
 
 Note what is real in the enrolment tests and what is not. Real: `scan.js`, `scan-select.js`, `scan-cache.js`, `identify.js`, `detector.js`'s box plumbing, and every threshold. Faked: the camera's pixels, the object detector's answer, the OSNet embedder, and the clock.
 
 Two things these tests deliberately do **not** prove, because nothing can reach them from outside: the processing loop's all-zero-signature throw and `assertEnrollableGallery`. A fully blank frame fails the brightness gate first, and no average of describable frames is blank, so both are invariants rather than reachable paths — which is why they throw instead of filtering. Their predicate (`degenerateSignature`) is unit-tested.
+
+### Mutation-check anything added here
+
+Every test in this area was written by breaking the behaviour it claims to guard, watching it fail, and restoring. That is not ceremony: on the pass that produced these files, **ten of twenty-one** mutations ran green first time, and each one was either a test asserting less than it looked like it did or a piece of code that turned out to be redundant. Two examples worth remembering:
+
+- A memory ceiling expressed as *a fraction of the recording* passed with every candidate's crop still alive, because the crops are small enough that keeping all of them still came in under the fraction. Expressed against the number of frames the embedding pass actually reads, it fails.
+- `frameLost` reading a colour channel instead of alpha passed everything, because a discarded canvas is zero in every channel. Only a *live* frame with no red in it separates the two.
+
+And two mutations that ran green because the code they broke was genuinely redundant, which is worth knowing rather than papering over: `cancelScan()`'s `scanRun++` and `live()`'s `state.autoScanning` check are two halves of one guarantee — every path that clears the flag also starts a run that retires the token — so either alone stops a parked run. Both are kept as belt and braces, but no test can distinguish them, and one claiming to would be asserting nothing.
 
 ## Server-side limits
 
