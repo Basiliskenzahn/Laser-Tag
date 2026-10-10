@@ -1,36 +1,95 @@
-# This is a basic workflow to help you get started with Actions
-
 name: CI
 
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "dev" branch
+  # Deploys hang off `push`, not off a pull request being closed. A push event to dev only
+  # exists if something actually landed on dev, so the "closed without merging" case cannot
+  # arise at all rather than being filtered out after the fact by an `if:`. It also covers
+  # direct pushes to dev, which the old pull_request trigger silently never deployed.
+  push:
+    branches:
+      - dev
+
+  # Pull requests run the tests only (see the `if:` on deploy), so the gate is reportable as
+  # a required status check before a merge rather than as news afterwards.
   pull_request:
     branches:
       - dev
-    types:
-      - closed
 
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
-jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
+# No job here needs the GITHUB_TOKEN for anything: the tests read the checkout and the deploy
+# talks to the VM over SSH. An empty map is narrower than the repository default.
+permissions: {}
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
+      # 22, which is package.json's `engines` floor and the version the docker-compose
+      # `tests` service pins, so CI exercises exactly what the floor claims.
+      #
+      # This was meant to be 20, but 20 cannot run this suite: `npm test` passes a quoted
+      # recursive glob, and node 20's test runner does not accept glob patterns at all -
+      # it exits with "Could not find 'test/**/*.test.js'" and runs nothing. Node 20 also
+      # reached end of life in April 2026. So the floor moved up rather than CI moving down;
+      # see docs/operations/deployment.md.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Native, not `docker compose run --rm tests`. The suite resolves no bare specifiers,
+      # so there is nothing to install: `npm ci` would download ~180 MB of MediaPipe and ONNX
+      # Runtime that no test imports, purely so the frontend image's deps stage can copy them
+      # later. Verified on a fresh checkout with no node_modules at all: 85/85 pass.
+      - name: Node tests
+        run: npm test
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches backend/Dockerfile's python:3.12-slim.
+          python-version: '3.12'
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Backend tests
+        run: python -m unittest discover -s backend -p "test_*.py" -v
+
+  deploy:
+    name: Deploy to the VM
+    # A real gate. The deploy cannot start unless the tests passed, which is the difference
+    # between a check and a notification.
+    needs: test
+    # Pull requests get the tests and nothing else - a PR must never touch the server.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions: {}
+    # One deploy at a time: both runs share a single directory on the VM and a single Docker
+    # daemon, so two overlapping `git reset --hard` + `compose up --build` sequences would
+    # build each other's code. Not cancel-in-progress - killing an ssh mid-deploy would leave
+    # the VM in a state nobody chose.
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: 22-direct.viscon-hackathon.ch
+      DEPLOY_PORT: '22'
+      DEPLOY_PATH: /home/viscon/Laser-Tag
+    steps:
+      - name: Deploy
         env:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          # The exact commit this run was triggered for. The old script deployed whatever
+          # `git pull` happened to produce, which referenced neither the PR, the merge commit
+          # nor this SHA.
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
@@ -38,9 +97,30 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-          ssh-keyscan -p "22" "22-direct.viscon-hackathon.ch" >> ~/.ssh/known_hosts
+          ssh-keyscan -p "$DEPLOY_PORT" "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
+          # `git pull` on a live server could deploy a tree that exists in no commit: a dirty
+          # tree that does not conflict merges around the local edits and then builds
+          # origin/dev plus someone's leftover debugging, silently and with a green check;
+          # and a non-fast-forward produces an unreviewed merge commit that only ever exists
+          # on the VM, which makes every later pull more likely to diverge again.
+          #
+          # fetch + checkout -f -B + clean instead, pinned to DEPLOY_SHA so the deploy is
+          # reproducible and two racing deploys cannot land each other's code.
+          #
+          # `git clean -fd` without -x: tracked-file edits are already gone via checkout -f,
+          # and leaving -x off is deliberate. Everything the VM legitimately keeps outside
+          # git is .gitignore'd - .env*, *.pem/*.key/*.crt, node_modules/, __pycache__/ - so
+          # -x would delete exactly the files a human put there on purpose. The TLS cert is
+          # not at risk either way: it lives in the `certs` Docker volume, not the tree.
           ssh -i ~/.ssh/deploy_key \
-            -p "22" \
-            "$SSH_USER@22-direct.viscon-hackathon.ch" \
-            'cd /home/viscon/Laser-Tag && git checkout dev && git pull && docker compose up --build -d'
+            -p "$DEPLOY_PORT" \
+            "$SSH_USER@$DEPLOY_HOST" \
+            "cd '$DEPLOY_PATH' \
+              && git fetch --prune origin \
+              && git checkout -f -B dev '$DEPLOY_SHA' \
+              && git clean -fd \
+              && git --no-pager log --oneline -1 \
+              && docker compose up --build -d --remove-orphans \
+              && docker compose ps \
+              && docker image prune -f"
