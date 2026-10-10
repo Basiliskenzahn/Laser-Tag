@@ -39,7 +39,7 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
-"fps" here is detections per second, not screen frame rate. In the game, detection runs every 80–120 ms, and less often if a phone can't keep up, so 7–12 is normal; boxes are moved along between detections.
+"fps" here is detections per second, not screen frame rate. In the game, detection runs every 120–180 ms, and less often if a phone can't keep up, so 5–8 is normal; boxes are moved along between detections.
 
 ### The range readout
 

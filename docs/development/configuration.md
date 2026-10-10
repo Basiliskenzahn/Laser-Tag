@@ -134,7 +134,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `ROTATION_SAMPLE_AVERAGE_COUNT` | 4 | Frames averaged per sample |
 | `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
 | `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
-| `SCAN_CACHE_VERSION` | 12 | Bump when the signature format changes (11 = samples carry a re-identification embedding; 12 = `shape` is stored raw rather than L2-normalised) |
+| `SCAN_CACHE_VERSION` (`scan-cache.js`) | see source | Bump when the signature format or the cache key changes, so phones discard caches that would be silently wrong rather than merely stale. [Why the version exists](../client/scanning.md#why-the-version-exists) |
 
 `frontend/public/scan-reid.js` — the deferred OSNet pass:
 

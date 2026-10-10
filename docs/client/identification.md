@@ -320,7 +320,7 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 - add the field to `GALLERY_FIELDS` in `backend/sanitize.py` (see [Protocol → Gallery format](../server/protocol.md#gallery-format));
 - decide how it combines with the existing score in `similarityParts()` (`reid` overrides rather than blends, because blending measured worse);
 - give it its own thresholds if its scores aren't on the same scale as the colour score — `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` all branch on `hasReid` for this reason;
-- bump `SCAN_CACHE_VERSION` in `screens/scan.js` so stale cached scans are ignored (see [Scanning → Why the version exists](scanning.md#why-the-version-exists));
+- bump `SCAN_CACHE_VERSION` in `scan-cache.js` so stale cached scans are ignored (see [Scanning → Why the version exists](scanning.md#why-the-version-exists));
 - check whether [sample selection](scanning.md#4-sample-selection) should use it. `signatureSimilarity()` in `scan.js` deliberately uses the colour fields only, which is both why a view-invariant field like `reid` must stay out of it and why such a field can be computed after selection instead of during it;
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES`.
 
