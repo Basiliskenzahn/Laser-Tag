@@ -37,4 +37,5 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
 - [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting
+- [How the vision pipeline came to be](vision-pipeline-history.md): what each model was added to fix, and what each one earns for its download size
 - [Detection pipeline audit](detection-pipeline-audit.md): per-signal cost and accuracy across the identification pipeline, and which numbers are measured vs simulated
