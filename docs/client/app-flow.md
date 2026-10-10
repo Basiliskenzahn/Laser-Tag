@@ -107,7 +107,7 @@ With motion enabled, a motion-confirmed identity is targetable immediately, with
 
 | | Score floor | Per-part floors |
 | --- | --- | --- |
-| Re-identification embedding decided (`track.hasReid`) | threshold − 0.01 (`reidTargetMinScore()`, identify.js) | none — the embedding has already cleared its own threshold, and lighting can push the colour parts down for the right person |
+| Re-identification embedding decided (`track.hasReid`) | the threshold (`reidTargetMinScore()`, identify.js) | none — the embedding has already cleared its own threshold, and lighting can push the colour parts down for the right person |
 | Colour signature decided | 0.48 (`TARGET_MIN_SCORE`) | upper, lower and grid each ≥ 0.22 (`TARGET_MIN_PART`) |
 
 When enabled, motion can also actively *remove* a target: if the appearance classifier names a player but that player's phone clearly isn't moving with the person on screen, the identity is vetoed and the track draws as an unnamed "Person" (in debug mode, *"not Name (motion)"*). If exactly one other ranked candidate's phone does match, the identity is corrected to them instead.

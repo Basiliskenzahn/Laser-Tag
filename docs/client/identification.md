@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.68 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -175,7 +175,7 @@ The floors for "plausible" depend on the signal:
 
 | | Minimum score to count as evidence | Minimum score for a soft label |
 | --- | --- | --- |
-| With `reid` | threshold − 0.03 (`REID_EVIDENCE_MIN_SCORE`) | threshold − 0.015 (`REID_SOFT_LABEL_SCORE`) |
+| With `reid` | threshold (`reidEvidenceMinScore()`) | threshold (`reidSoftLabelScore()`) |
 | Colour | 0.42 (`EVIDENCE_MIN_SCORE`), and each part ≥ 0.24 | 0.48 (`SOFT_LABEL_SCORE`), and each part ≥ 0.24 |
 
 A *soft label* is a rejected match that is still good enough to be the track's candidate for the hysteresis below. Matches rejected for `margin` are never soft-labelled: an ambiguous frame should not nudge the identity either way.

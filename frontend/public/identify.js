@@ -127,11 +127,12 @@ const MIN_SHAPE_SCORE = 0.36;
 //
 // Real phones score players lower than the benchmark (the scan is taken by another phone, in other
 // light): 0.80 recognised nobody in a real test. With the median below, real games put players at
-// 0.70-0.80+ and non-players at 0.60-0.65; 0.70 had no false positives, so the default is 0.68
-// for faster, steadier recognition of players near the bottom of that range. Evidence and soft labels are now tied to it (they used to name anyone above fixed 0.62 / 0.66 and let false
+// 0.70-0.80+ and non-players at 0.60-0.65; 0.70 and 0.68 had no false positives, so the default
+// is 0.65 for fewer missed players. If bystanders start getting named, go back up with
+// ?reid=0.68. Evidence and soft labels are now tied to it (they used to name anyone above fixed 0.62 / 0.66 and let false
 // positives through regardless of the threshold). Tune it in the field with ?reid=0.70 in the
 // address (env.js); ?debug shows each person's best score on their box.
-const REID_DEFAULT_THRESHOLD = 0.68;
+const REID_DEFAULT_THRESHOLD = 0.65;
 let reidMatchThreshold = REID_DEFAULT_THRESHOLD;
 
 export function setReidThreshold(value) {
@@ -148,12 +149,14 @@ export function getReidThreshold() {
 const REID_REVOKE_SCORE = 0.6;
 const REID_REVOKE_CHECKS = 3;
 const REID_MATCH_MARGIN = 0.03;
-// Evidence and soft labels can name a track from scores just under the threshold (several
-// agreeing checks), so they follow it.
-const reidEvidenceMinScore = () => reidMatchThreshold - 0.03;
-const reidSoftLabelScore = () => reidMatchThreshold - 0.015;
+// Evidence, soft labels and shots all use the threshold itself. They used to accept scores a
+// little under it, to bridge single bad checks; the 3 s median (REID_HISTORY_MS) does that now,
+// and at a threshold of 0.65 those allowances reached into the non-player range (0.60-0.65), so
+// someone who usually scored 0.63 slowly built up evidence and got named.
+const reidEvidenceMinScore = () => reidMatchThreshold;
+const reidSoftLabelScore = () => reidMatchThreshold;
 // A shot needs the named track's score at least this high (motion-identity.js isStableTarget).
-export const reidTargetMinScore = () => reidMatchThreshold - 0.01;
+export const reidTargetMinScore = () => reidMatchThreshold;
 // Name a brand new track on a single check this strong.
 const reidInitialLock = () => Math.max(0.8, reidMatchThreshold + 0.08);
 // One check can spike (a bystander turned at just the right angle) or dip (motion blur, a side

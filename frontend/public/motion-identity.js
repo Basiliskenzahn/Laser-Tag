@@ -93,7 +93,7 @@ function refreshMotionChecks(track, now) {
 // The tracker's `scoreAdjust` (identify.js adds it to a person's typical score for a player): up
 // when that player's phone moves the way the person on screen does, down when it clearly doesn't.
 // Real games put players at 0.70-0.80+ and non-players at 0.60-0.65, so whenever people move this
-// widens the gap: a player scoring 0.63 who walks gets named, a look-alike scoring 0.72 whose
+// widens the gap: a player scoring 0.60 who walks gets named, a look-alike scoring 0.69 whose
 // movement doesn't match the player's phone doesn't. Standing still leaves the score alone.
 export function motionScoreAdjustment(track, playerId, now = performance.now()) {
   if (MOTION_OFF) return 0;

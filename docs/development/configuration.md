@@ -99,7 +99,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 | `TARGET_LOCK_MS` / `TARGET_LOCK_REID_MS` | 350 / 150 | How long an identity must be held before it's targetable (colour signature / re-identification) |
 | `TARGET_MIN_SCORE` | 0.48 | Minimum overall match score (colour signature) |
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
-| `reidTargetMinScore()` (identify.js) | threshold − 0.01 | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
+| `reidTargetMinScore()` (identify.js) | threshold | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
 
 All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own". A track whose motion is confirmed by the target's own phone is targetable without it — only liveness (`LIVE_TRACK_MS`) still applies. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
 
@@ -165,12 +165,12 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.68 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 had no false positives. |
+| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.65 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 and 0.68 had no false positives. Go back to `?reid=0.68` if bystanders get named. |
 | `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
 | `MOTION_SCORE_BONUS` / `MOTION_SCORE_PENALTY` (motion-identity.js) | +0.06 / −0.08 | Added to a track's typical score for a player when that player's phone motion is consistent / inconsistent with the person on screen. 0 with `?motion=off` or while nobody moves. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
-| `REID_EVIDENCE_MIN_SCORE` | threshold − 0.03 | Below this a rejected match contributes no evidence. Fixed at 0.62 before, which let evidence name anyone above it regardless of the threshold. |
-| `REID_SOFT_LABEL_SCORE` | threshold − 0.015 | A rejected match this good can still be the track's candidate |
+| `reidEvidenceMinScore()` | threshold | Below this a check contributes no evidence. Was fixed at 0.62, then threshold − 0.03, which at 0.65 let people who usually score 0.62–0.64 build up evidence and get named; the 3 s median bridges bad checks instead. |
+| `reidSoftLabelScore()` | threshold | A rejected match this good can still be the track's candidate |
 | `REID_REVOKE_SCORE`, `REID_REVOKE_CHECKS` | 0.6, 3 | A named track whose score for its own player stays below 0.6 for 3 checks in a row loses the name (someone else stepped into its box) |
 | `reidInitialLock()` | threshold + 0.08, at least 0.80 | Score that names a brand-new track in one check |
 
