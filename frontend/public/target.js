@@ -1,12 +1,15 @@
-// Who a tracked person is, from body appearance alone - the identity provider the game runs with
-// by default.
+// When an identified person may be shot: the appearance targeting gate.
 //
 // identify.js matches a track against the scanned galleries and leaves its verdict on the track
-// (playerId, score, the colour-part scores). This file turns that verdict into the two things the
-// rest of the app needs: whether the classifier is confident enough to shoot on (isStableTarget)
-// and the identity shape every provider answers in (resolve). Nothing here knows about any
-// confirming signal; motion-identity.js wraps the same classifier opinion with phone-motion
-// confirmation, and identity.js installs exactly one of the two.
+// (playerId, score, the colour-part scores). This file turns that verdict into the one question
+// the game loop asks of it - "who, if anyone, is this track, confidently enough to shoot?" -
+// which is both the crosshair's gate and the label drawGame() writes over a box.
+//
+// This used to be one of two interchangeable "identity providers" behind identity.js: an object
+// with six methods (start/stop/observe/resolve/onServerMessage/debugLine), chosen at load between
+// appearance alone and appearance plus a phone-motion cross-check. The motion half is gone, so the
+// indirection is gone with it - there is no provider, no seam, and no identity shape to agree on.
+// Two functions, called directly.
 
 import { reidTargetMinScore } from './identify.js';
 import { localSelfId } from './roster.js';
@@ -43,38 +46,18 @@ export function isStableTarget(track, now = performance.now()) {
   );
 }
 
-// What the appearance classifier thinks of this track, in the shape a confirming signal consumes.
-export function classifierOpinion(track, now) {
-  if (track.selfRejected || track.playerId === localSelfId()) return { self: true };
-  return {
-    playerId: track.playerId,
-    name: track.name,
-    confident: isStableTarget(track, now),
-    candidates: (track.rankings ?? []).map((r) => r.id),
-  };
-}
-
-// The identity provider with nothing to confirm with: appearance decides on its own. Nothing to
-// permit, nothing to record per frame, nothing arriving from the server and nothing to add to the
-// debug overlay - see identity.js for what each of those means.
+// Who this track is, for the crosshair and for the box label: the player's id once appearance has
+// named somebody other than us confidently enough to shoot, and null otherwise.
 //
-// resolve() is the identification the game used before motion matching existed, in the same shape
-// fuseMotion returns so nothing downstream can tell the difference. The old code gated a shot on
-// `isStableTarget(track, now) && isAlivePlayer(track.playerId)` with the round playing, and
-// targetUnderCrosshair still applies the aliveness and status halves itself, so naming the track
-// whenever the classifier is stable reproduces that gate exactly.
-export const appearanceIdentity = {
-  start() {},
-  stop() {}, // nothing to tear down: appearance alone holds no sensor and no per-room state
-  observe() {},
-  onServerMessage() {},
-  debugLine() {
-    return '';
-  },
-  resolve(track, now = performance.now()) {
-    if (track.selfRejected || track.playerId === localSelfId()) return { playerId: null, reason: 'self' };
-    return isStableTarget(track, now)
-      ? { playerId: track.playerId, name: track.name, verified: false, source: 'classifier', reason: 'appearance-only' }
-      : { playerId: null, reason: 'unconfirmed' };
-  },
-};
+// The self-exclusion is here rather than at the two call sites because it is part of the same
+// question - you cannot shoot yourself, so a track the matcher named as us is not a target. It is
+// what the old provider's resolve() did before consulting isStableTarget, and both of its callers
+// in screens/game.js only ever read the resulting playerId.
+//
+// Aliveness and round status are deliberately NOT checked here: targetUnderCrosshair() applies
+// isAlivePlayer() itself and drawGame() needs to tell a named-but-dead player from an unknown
+// person, so folding them in would lose that distinction.
+export function targetPlayerId(track, now = performance.now()) {
+  if (track.selfRejected || track.playerId === localSelfId()) return null;
+  return isStableTarget(track, now) ? track.playerId : null;
+}
