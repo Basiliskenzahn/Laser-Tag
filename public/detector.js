@@ -25,7 +25,7 @@ export async function createDetector() {
     baseOptions: { modelAssetPath: OBJECT_MODEL_URL, delegate },
     runningMode: 'VIDEO',
     scoreThreshold: MIN_SCORE,
-    maxResults: 5,
+    maxResults: 8,
     categoryAllowlist: ['person'],
   });
   const poseOptions = (delegate) => ({
@@ -167,6 +167,13 @@ export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
   );
   return keepDistinct(
     [...objectBoxes, ...poseFallbacks],
+    (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
+  );
+}
+
+export function detectTrackedPeopleFast(detector, source, timestamp) {
+  return keepDistinct(
+    detectPeople(detector, source, timestamp),
     (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
   );
 }

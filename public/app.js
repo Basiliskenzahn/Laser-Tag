@@ -1,4 +1,4 @@
-import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, headBox, contains } from './detector.js';
+import { bodyBox, createDetector, detectScanPeople, detectTrackedPeopleFast, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
@@ -7,7 +7,7 @@ const $ = (id) => document.getElementById(id);
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug');
 const FIRE_COOLDOWN_MS = 350;
-const LIVE_TRACK_MS = 180;
+const LIVE_TRACK_MS = 520;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
 const SCAN_CACHE_VERSION = 9;
@@ -18,6 +18,16 @@ const ROTATION_SCAN_DURATION_MS = 12_000;
 const ROTATION_RECORD_FRAME_MS = 180;
 const ROTATION_FRAME_MAX_WIDTH = 1024;
 const ROTATION_SAMPLE_AVERAGE_COUNT = 4;
+const GAME_ACQUIRE_DETECT_INTERVAL_MS = 120;
+const GAME_TRACK_DETECT_INTERVAL_MS = 450;
+const GAME_DETECT_MAX_WIDTH = 512;
+const TARGET_LOCK_MS = 350;
+const TARGET_MIN_SCORE = 0.48;
+const TARGET_MIN_PART = 0.22;
+const LIVE_ENRICH_INTERVAL_MS = 2500;
+const LIVE_ENRICH_MIN_LOCK_MS = 1400;
+const LIVE_ENRICH_MIN_SCORE = 0.62;
+const LIVE_ENRICH_MAX_SAMPLES = 32;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -32,6 +42,7 @@ const state = {
   myId: null,
   game: null, // latest state snapshot from the server (hp, status, ...)
   roster: [], // latest roster from the server (id, name, gallery)
+  liveSamples: new Map(), // local-only appearance samples learned after stable gameplay tracks
   detector: null,
   poseDetector: null,
   embedder: null,
@@ -49,6 +60,7 @@ const state = {
   events: null,
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
+  lastGameDetectAt: 0,
   countdownEndsAt: null,
   lastCountdownBeep: null,
   bannerOverride: null,
@@ -407,6 +419,42 @@ function captureRecordedFrame(time) {
   return { image, time };
 }
 
+let gameInferenceCanvas = null;
+function gameplayInferenceSource() {
+  const vw = video.videoWidth || 1;
+  const vh = video.videoHeight || 1;
+  const scale = Math.min(1, GAME_DETECT_MAX_WIDTH / vw);
+  if (scale >= 0.99) return { source: video, scaleX: 1, scaleY: 1 };
+
+  gameInferenceCanvas ??= document.createElement('canvas');
+  const w = Math.max(1, Math.round(vw * scale));
+  const h = Math.max(1, Math.round(vh * scale));
+  if (gameInferenceCanvas.width !== w || gameInferenceCanvas.height !== h) {
+    gameInferenceCanvas.width = w;
+    gameInferenceCanvas.height = h;
+  }
+  gameInferenceCanvas.getContext('2d').drawImage(video, 0, 0, w, h);
+  return { source: gameInferenceCanvas, scaleX: vw / w, scaleY: vh / h };
+}
+
+function scaleBoxes(boxes, scaleX, scaleY) {
+  if (scaleX === 1 && scaleY === 1) return boxes;
+  return boxes.map((box) => ({
+    ...box,
+    x: box.x * scaleX,
+    y: box.y * scaleY,
+    w: box.w * scaleX,
+    h: box.h * scaleY,
+  }));
+}
+
+function gameDetectInterval(now) {
+  const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
+  return liveTracks.length && liveTracks.every((track) => track.playerId)
+    ? GAME_TRACK_DETECT_INTERVAL_MS
+    : GAME_ACQUIRE_DETECT_INTERVAL_MS;
+}
+
 async function recordRotationVideo() {
   const frames = [];
   const startedAt = performance.now();
@@ -580,10 +628,21 @@ function sendJoin() {
 }
 
 function matchingRoster() {
-  if (!state.gallery.length) return state.roster;
+  const withLiveSamples = (player) => ({
+    ...player,
+    gallery: [...(player.gallery ?? []), ...(state.liveSamples.get(player.id) ?? [])],
+  });
   const selfId = localSelfId();
+  const roster = state.roster.filter((player) => player.id !== selfId).map(withLiveSamples);
+  if (!state.gallery.length) return roster;
   const self = { id: selfId, name: state.name || 'You', gallery: state.gallery };
-  return [...state.roster.filter((player) => player.id !== selfId), self];
+  return [...roster, self];
+}
+
+function playerGallery(playerId) {
+  if (playerId === localSelfId()) return state.gallery;
+  const player = state.roster.find((candidate) => candidate.id === playerId);
+  return player ? [...(player.gallery ?? []), ...(state.liveSamples.get(playerId) ?? [])] : null;
 }
 
 function localSelfId() {
@@ -639,6 +698,9 @@ function handleMessage(msg) {
       break;
     case 'roster':
       state.roster = msg.players;
+      for (const id of state.liveSamples.keys()) {
+        if (!state.roster.some((player) => player.id === id)) state.liveSamples.delete(id);
+      }
       break;
     case 'state':
       onState(msg.state);
@@ -752,7 +814,19 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 // ---- Shooting ----
 
 function isLiveTrack(track, now = performance.now()) {
-  return track.seenThisFrame && now - track.lastSeen <= LIVE_TRACK_MS;
+  return now - track.lastSeen <= LIVE_TRACK_MS;
+}
+
+function isStableTarget(track, now = performance.now()) {
+  return Boolean(
+    track.playerId &&
+      Number.isFinite(track.identifiedAt) &&
+      now - track.identifiedAt >= TARGET_LOCK_MS &&
+      track.score >= TARGET_MIN_SCORE &&
+      track.upper >= TARGET_MIN_PART &&
+      track.lower >= TARGET_MIN_PART &&
+      track.grid >= TARGET_MIN_PART,
+  );
 }
 
 // Which (if any) tracked person is under the crosshair, and which zone of them.
@@ -762,6 +836,7 @@ function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
     if (!includeSelf && t.playerId === localSelfId()) continue;
+    if (!isStableTarget(t, now)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
     if (contains(bodyBox(t.box), px, py)) bodyTrack = t;
   }
@@ -796,6 +871,59 @@ async function postHit(targetId, zone) {
   }
 }
 
+function cosine(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  const n = Math.min(a?.length ?? 0, b?.length ?? 0);
+  for (let i = 0; i < n; i++) {
+    const av = Number.isFinite(a[i]) ? a[i] : 0;
+    const bv = Number.isFinite(b[i]) ? b[i] : 0;
+    dot += av * bv;
+    normA += av * av;
+    normB += bv * bv;
+  }
+  return normA && normB ? dot / Math.sqrt(normA * normB) : 0;
+}
+
+function signatureSimilarity(a, b) {
+  return (cosine(a?.hist, b?.hist) + cosine(a?.lower, b?.lower) + cosine(a?.grid, b?.grid)) / 3;
+}
+
+function shouldLearnFromTrack(track, now) {
+  return (
+    isLiveTrack(track, now) &&
+    isStableTarget(track, now) &&
+    track.playerId !== localSelfId() &&
+    now - (track.identifiedAt ?? now) >= LIVE_ENRICH_MIN_LOCK_MS &&
+    now - (track.lastEnrichedAt ?? 0) >= LIVE_ENRICH_INTERVAL_MS &&
+    track.score >= LIVE_ENRICH_MIN_SCORE &&
+    track.upper >= 0.42 &&
+    track.lower >= 0.32 &&
+    track.grid >= 0.34
+  );
+}
+
+function maybeEnrichLiveSamples(now) {
+  for (const track of state.tracks) {
+    if (!shouldLearnFromTrack(track, now)) continue;
+    const gallery = playerGallery(track.playerId);
+    if (!gallery) continue;
+    const signature = extractSignature(video, track.box, state.embedder, now);
+    if (signature.usable === false) continue;
+    if (gallery.some((sample) => signatureSimilarity(signature, sample) >= 0.985)) {
+      track.lastEnrichedAt = now;
+      return;
+    }
+    const samples = state.liveSamples.get(track.playerId) ?? [];
+    samples.push(signature);
+    while (samples.length > LIVE_ENRICH_MAX_SAMPLES) samples.shift();
+    state.liveSamples.set(track.playerId, samples);
+    track.lastEnrichedAt = now;
+    return;
+  }
+}
+
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fire();
@@ -818,18 +946,28 @@ function loop() {
 
   if (!state.postProcessingScan && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
     lastVideoTime = video.currentTime;
-    const t0 = performance.now();
     if (state.mode === 'scan') {
+      const t0 = performance.now();
       state.boxes = detectScanPeople(state.detector, state.poseDetector, video, t0);
+      inferenceMs = performance.now() - t0;
+      frames++;
     } else {
-      state.boxes = detectTrackedPeople(state.detector, state.poseDetector, video, t0);
-      state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
-        includeRejected: DEBUG,
-        embedder: state.embedder,
-      });
+      const now = performance.now();
+      if (now - state.lastGameDetectAt >= gameDetectInterval(now)) {
+        state.lastGameDetectAt = now;
+        const t0 = performance.now();
+        const { source, scaleX, scaleY } = gameplayInferenceSource();
+        state.boxes = scaleBoxes(detectTrackedPeopleFast(state.detector, source, t0), scaleX, scaleY);
+        state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
+          includeRejected: DEBUG,
+          identifyOnce: true,
+          embedder: state.embedder,
+        });
+        maybeEnrichLiveSamples(performance.now());
+        inferenceMs = performance.now() - t0;
+        frames++;
+      }
     }
-    inferenceMs = performance.now() - t0;
-    frames++;
   }
 
   draw();

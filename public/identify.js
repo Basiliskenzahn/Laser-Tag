@@ -448,6 +448,9 @@ function clearIdentity(track) {
   track.embed = 0;
   track.streak = 0;
   track.streakId = undefined;
+  track.identifiedAt = null;
+  track.identityHits = 0;
+  track.lastEnrichedAt = 0;
 }
 
 function resolveDuplicateIdentities(tracks, now) {
@@ -473,10 +476,10 @@ const INITIAL_STREAK = 2; // a new track must agree a couple of times before get
 const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
 const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66;
 const EVIDENCE_DECAY = 0.82;
-const EVIDENCE_ACCEPT = 0.72;
-const EVIDENCE_MARGIN = 0.18;
-const EVIDENCE_MIN_SCORE = 0.46;
-const EVIDENCE_MIN_PART = 0.28;
+const EVIDENCE_ACCEPT = 0.58;
+const EVIDENCE_MARGIN = 0.12;
+const EVIDENCE_MIN_SCORE = 0.42;
+const EVIDENCE_MIN_PART = 0.24;
 const SOFT_LABEL_SCORE = 0.48;
 
 function decayEvidence(track) {
@@ -542,6 +545,7 @@ function evidenceWinner(track) {
 }
 
 function assignIdentity(track, match) {
+  const previousId = track.playerId;
   track.playerId = match?.id ?? null;
   track.name = match?.name ?? null;
   track.score = match?.score ?? 0;
@@ -551,6 +555,13 @@ function assignIdentity(track, match) {
   track.shape = match?.shape ?? 0;
   track.embed = match?.embed ?? 0;
   track.misses = 0;
+  if (match?.id) {
+    track.identifiedAt = previousId === match.id ? (track.identifiedAt ?? track.lastSeen) : track.lastSeen;
+    track.identityHits = previousId === match.id ? (track.identityHits ?? 0) + 1 : 1;
+  } else {
+    track.identifiedAt = null;
+    track.identityHits = 0;
+  }
   track.streak = 0;
   track.streakId = undefined;
 }
@@ -566,7 +577,7 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
-  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null } = {}) {
+  update(boxes, video, players, selfId, now = performance.now(), { includeRejected = false, embedder = null, identifyOnce = false } = {}) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
     const pairs = [];
@@ -624,13 +635,18 @@ export class Tracker {
         streak: 0,
         misses: 0,
         missedFrames: 0,
+        identifiedAt: null,
+        identityHits: 0,
+        lastEnrichedAt: 0,
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
 
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
-      const due = track.checks <= SETTLE_CHECKS || now - track.lastCheck >= RECHECK_MS || !track.playerId;
+      const due =
+        !track.playerId ||
+        (!identifyOnce && (track.checks <= SETTLE_CHECKS || now - track.lastCheck >= RECHECK_MS));
       if (!due) continue;
       track.lastCheck = now;
 
