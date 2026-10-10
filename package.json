@@ -6,10 +6,10 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/*.test.js frontend/public/identify.test.js",
+    "test": "node --test \"test/**/*.test.js\" frontend/public/identify.test.js",
     "eval:shape": "node tools/shape-evaluation.mjs"
   },
   "dependencies": {
