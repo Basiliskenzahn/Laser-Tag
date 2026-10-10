@@ -93,12 +93,28 @@ test('free-for-all: the last player standing wins, eliminated players can no lon
   assert.equal(room.winner, 'a');
 });
 
-test('leaving resets the round for the remaining players', () => {
-  const { room } = startedRoom();
+test('leaving a free-for-all removes that player without resetting the round', () => {
+  const { room } = startedRoom(['a', 'b', 'c']);
   room.shoot('a', 'b', 'body');
   room.leave('b');
-  assert.equal(room.status, 'waiting');
+  assert.equal(room.status, 'playing');
+  assert.equal(room.players.has('b'), false);
   assert.equal(room.players.get('a').hp, MAX_HP);
+  assert.equal(room.players.get('c').hp, MAX_HP);
+});
+
+test('leaving can decide a free-for-all when only one player remains alive', () => {
+  const { room, clock } = startedRoom(['a', 'b', 'c']);
+  let result;
+  do {
+    result = room.shoot('a', 'b', 'head');
+    clock.advance(SHOT_COOLDOWN_MS);
+  } while (!result.ko);
+
+  room.leave('c');
+  assert.equal(room.status, 'over');
+  assert.equal(room.winner, 'a');
+  assert.equal(room.players.get('a').wins, 1);
 });
 
 test('roster carries each player\'s appearance gallery; state does not', () => {

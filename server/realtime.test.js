@@ -131,6 +131,42 @@ test('shots and damage travel over polling', async () => {
   b.stop();
 });
 
+test('three polling players can play a free-for-all until one winner remains', async () => {
+  const a = await pollingClient();
+  const b = await pollingClient();
+  const c = await pollingClient();
+  const room = 'free-for-all';
+  await a.send({ type: 'join', name: 'A', room, gallery });
+  await b.send({ type: 'join', name: 'B', room, gallery });
+  await c.send({ type: 'join', name: 'C', room, gallery });
+  await waitFor(() => lastState(a.messages)?.players.length === 3);
+  await waitFor(() => a.messages.filter((m) => m.type === 'roster').at(-1)?.players.length === 3);
+  const aId = a.messages.find((m) => m.type === 'welcome').id;
+  const bId = b.messages.find((m) => m.type === 'welcome').id;
+  const cId = c.messages.find((m) => m.type === 'welcome').id;
+
+  await a.send({ type: 'start' });
+  await waitFor(() => lastState(a.messages)?.status === 'playing', 5000);
+  await a.send({ type: 'shoot', targetId: bId, zone: 'head' });
+  await c.send({ type: 'shoot', targetId: bId, zone: 'head' });
+  await waitFor(() => {
+    const state = lastState(a.messages);
+    return state?.status === 'playing' && state.players.find((p) => p.id === bId)?.alive === false;
+  });
+
+  await new Promise((r) => setTimeout(r, 380));
+  await a.send({ type: 'shoot', targetId: cId, zone: 'head' });
+  await new Promise((r) => setTimeout(r, 380));
+  await a.send({ type: 'shoot', targetId: cId, zone: 'head' });
+
+  await waitFor(() => lastState(a.messages)?.status === 'over');
+  assert.equal(lastState(a.messages).winner, aId);
+  assert.equal(lastState(a.messages).players.find((p) => p.id === aId).wins, 1);
+  a.stop();
+  b.stop();
+  c.stop();
+});
+
 test('posted hits emit health updates over SSE', async () => {
   const a = await pollingClient();
   const b = await pollingClient();

@@ -54,15 +54,33 @@ class Room:
         self.players[player_id] = Player(player_id, name, gallery)
         return {"ok": True}
 
-    def leave(self, player_id):
-        if player_id in self.players:
-            del self.players[player_id]
+    def reset_round(self):
         self.status = "waiting"
         self.starts_at = None
         self.winner = None
         for player in self.players.values():
             player.hp = MAX_HP
             player.alive = True
+
+    def finish_if_decided(self):
+        survivors = [player for player in self.players.values() if player.alive]
+        if len(survivors) > 1:
+            return
+        self.status = "over"
+        self.winner = survivors[0].id if survivors else None
+        if self.winner:
+            self.players[self.winner].wins += 1
+
+    def leave(self, player_id):
+        if player_id not in self.players:
+            return
+        del self.players[player_id]
+        if self.status == "playing":
+            self.finish_if_decided()
+        elif self.status == "countdown" and len(self.players) < MIN_PLAYERS:
+            self.reset_round()
+        elif self.status == "over" and (not self.winner or self.winner not in self.players):
+            self.reset_round()
 
     def start(self):
         if self.status in ("countdown", "playing"):
@@ -107,12 +125,7 @@ class Room:
         ko = target.hp == 0
         if ko:
             target.alive = False
-            survivors = [player for player in self.players.values() if player.alive]
-            if len(survivors) <= 1:
-                self.status = "over"
-                self.winner = survivors[0].id if survivors else None
-                if self.winner:
-                    self.players[self.winner].wins += 1
+            self.finish_if_decided()
         return {
             "ok": True,
             "victimId": target.id,

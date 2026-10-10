@@ -32,15 +32,33 @@ export class Room {
     return { ok: true };
   }
 
-  leave(id) {
-    this.players.delete(id);
-    // Whoever's left waits in the lobby for the next round.
+  resetRound() {
     this.status = 'waiting';
     this.startsAt = null;
     this.winner = null;
     for (const p of this.players.values()) {
       p.hp = MAX_HP;
       p.alive = true;
+    }
+  }
+
+  finishIfDecided() {
+    const survivors = [...this.players.values()].filter((p) => p.alive);
+    if (survivors.length > 1) return;
+    this.status = 'over';
+    this.winner = survivors[0]?.id ?? null;
+    if (this.winner) this.players.get(this.winner).wins += 1;
+  }
+
+  leave(id) {
+    if (!this.players.has(id)) return;
+    this.players.delete(id);
+    if (this.status === 'playing') {
+      this.finishIfDecided();
+    } else if (this.status === 'countdown' && this.players.size < MIN_PLAYERS) {
+      this.resetRound();
+    } else if (this.status === 'over' && (!this.winner || !this.players.has(this.winner))) {
+      this.resetRound();
     }
   }
 
@@ -89,12 +107,7 @@ export class Room {
     const ko = target.hp === 0;
     if (ko) {
       target.alive = false;
-      const survivors = [...this.players.values()].filter((p) => p.alive);
-      if (survivors.length <= 1) {
-        this.status = 'over';
-        this.winner = survivors[0]?.id ?? null;
-        if (this.winner) this.players.get(this.winner).wins += 1;
-      }
+      this.finishIfDecided();
     }
     return { ok: true, victimId: target.id, damage, zone, ko };
   }
