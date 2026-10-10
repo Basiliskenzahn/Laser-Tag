@@ -16,7 +16,7 @@ SHOT_COOLDOWN_MS = 350
 COUNTDOWN_MS = 5000
 POLL_WAIT_MS = 20_000
 POLL_EXPIRY_MS = 30_000
-MAX_BODY_BYTES = 256 * 1024
+MAX_BODY_BYTES = 1024 * 1024  # a 24-sample scan with re-identification embeddings is ~210 KB
 
 
 @dataclass
@@ -223,6 +223,7 @@ GALLERY_FIELDS = (
     ("lower", 64, False),
     ("shape", 8, False),
     ("embed", 512, False),
+    ("reid", 512, False),  # person re-identification embedding (public/reid.js)
 )
 
 
@@ -575,7 +576,7 @@ async def stop_sweeper(app):
 
 
 def create_app():
-    app = web.Application()
+    app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_post("/api/connect", api_connect)
     app.router.add_post("/api/send", api_send)
     app.router.add_post("/api/disconnect", api_disconnect)
