@@ -209,7 +209,17 @@ The game runs matching in **closed-set** mode: the local player is included as a
 - **Colour only:** closed set assumes everyone visible is one of the room's players and accepts the best match anyway. That's survivable for weak colour features, but it's exactly what used to label bystanders as players.
 - **With `reid`:** the thresholds are kept (`accepted` is only true when nothing was rejected), because the scores are reliable enough to say "none of them". A bystander in frame stays "Person".
 
+That second guarantee used to hold only while **one** person was on screen: with two or more visible tracks, [closed-set assignment](#5-closed-set-assignment) reassigned every track from the raw rankings without consulting `accepted` or `reason` at all, so a bystander matching nobody still got a name. It now holds whatever the room contains — see that section for what the resolver may assign.
+
 The "is this good enough to shoot?" decision still belongs to the [targeting rules](app-flow.md#shooting).
+
+### One scale for the room
+
+A colour/`embed` cosine and an OSNet cosine are not the same quantity. Colour runs 0.95+ for the same person and 0.85–0.96 for a *different* person in similar clothes; OSNet runs 0.70–0.85 for the correct person. So the two can never be sorted against each other, and `roomScoresOnReid()` decides **per room**, not per pair: re-identification scores a room only when *every* enrolled player's gallery carries a `reid` vector, and one reid-less gallery puts everyone on the blended path.
+
+A gallery is all-or-nothing for `reid` (`screens/scan.js` enrols one or none), so the mix is always *across* players — a phone whose OSNet failed or timed out, or a restored cache from before it existed. Deciding per pair meant that one player was read on the higher scale and became an attractor that outscored every correct re-identification match in the room, and because the winning match then had `hasReid: false` the colour accept path, the colour shot floor (0.48) and the colour-only initial lock (0.66) all applied to a name that was wrong.
+
+Dropping the whole room to the blend is a real loss of accuracy for the players who *do* have embeddings. It is still the better trade: the blend is a weaker signal applied consistently, where the mix was a stronger signal applied incomparably.
 
 ### The self-match guard
 
@@ -249,7 +259,9 @@ That last step matters: while the model is still warming up on a new track, the 
 
 ### 4. Evidence and hysteresis
 
-Each check adds **evidence** for the matched player, and old evidence decays (×0.82 per check). Accepted matches add 1.25; plausible-but-rejected ones add `0.45 +` however far the score is above the evidence floor; weak ones add nothing. A player becomes the evidence winner once they have at least 0.58 and lead the next player by 0.12.
+Each check adds **evidence** for every player it scored, and old evidence decays (×0.82 per check). The accepted winner adds 1.25; plausible runners-up add `0.45 +` however far the score is above the evidence floor; weak ones add nothing. A player becomes the evidence winner once they have at least 0.58 and lead the next player by 0.12.
+
+A check rejected for `margin` adds nothing at all, to either side. And "every player it scored" is what makes the 0.12 lead mean anything: only the single best candidate used to be recorded, so against a *persistent* narrow leader the runner-up's bucket stayed empty, the lead was the leader's whole bucket, and the margin was passed trivially on every check — it only ever bit on rapid alternation, never on the stable near-tie it reads as guarding. Between them those two were how a tie got named anyway, two checks later, by the one route that had not been told it was a tie (`evidenceWinner` is consulted *before* `softLabelMatch`).
 
 The floors for "plausible" depend on the signal:
 
@@ -271,9 +283,34 @@ The identity then changes only through hysteresis:
 
 This stops a single blurry or side-on frame from flipping who you'd be credited with shooting.
 
+#### Revocation: when a name is dropped rather than changed
+
+Separately from the switch above, a named track can have its name *revoked* — nobody else won it, this just isn't that player any more (they walked off and a bystander stepped into the same box). `revokedByReid()` needs two things to agree, because the raw score and the median answer different questions:
+
+- the **raw** score for the track's own player is below `REID_REVOKE_SCORE` (0.6) on `REID_REVOKE_CHECKS` (3) consecutive checks — the fast trigger, and nothing is revoked without it;
+- **and** the median has stopped clearing the accept floor — the authority, since the median is what granted the name and what [grants the shot](app-flow.md#shooting).
+
+Revocation used to read the raw score alone, which overrode the median in exactly the case the median exists for. Three consecutive checks is 750–900 ms at `RECHECK_MS`: an ordinary side view or motion-blur burst, not a substitution. A player holding 0.84–0.87 with a three-check burst at 0.55 lost their name, their evidence **and** the whole history the median was built from, then spent ~600 ms unidentified while it refilled from a single sample. Under `?motion=on` the two were further apart still, since acceptance saw `median + motionAdjust` and revocation saw neither.
+
+Tying them together costs one check of latency on a genuine substitution (a 0.95 player replaced by a 0.30 stranger loses the name on the fourth bad check rather than the third). That check is also the first on which the median falls under the shot floor, so the substitute was never shootable any earlier either: the extra latency is in the displayed name only, and the name and the shot are now lost together instead of one to two checks apart.
+
+When a name does go, it goes completely: `clearIdentity()` resets the evidence buckets, the re-identification history and both miss counters along with the identity. Leaving those behind meant a track cleared mid-dip was revoked again by the *first* low check after being re-named, and a track cleared by duplicate resolution kept a full bucket for the player it had just lost — which the evidence winner then re-proposed, flip-flopping the track every two checks and restarting its shot lock each time.
+
 ### 5. Closed-set assignment
 
-In closed-set mode with two or more visible tracks, `resolveClosedSetIdentities()` solves the assignment for all visible tracks together: it ranks every (track, player) pair by score, with small bonuses for margin, keeping the current identity, accumulated evidence and supporting angles, and assigns greedily so each player gets at most one track. Visible tracks left without a player become unknown.
+In closed-set mode with two or more visible tracks, `resolveClosedSetIdentities()` solves the assignment for all visible tracks together: it ranks every (track, player) pair by score, with small bonuses for margin, keeping the current identity, accumulated evidence and supporting angles, and assigns greedily so each player gets at most one track.
+
+What it may assign is the whole question, and it is bounded by three rules — without them a greedy pass over the raw rankings silently overrode every accept threshold, both streak counters and the latch, whenever a second person was on screen:
+
+| Rule | Why |
+| --- | --- |
+| Only candidates that clear the accept floors are considered — the threshold plus any [range penalty](#box-range-and-the-far-band) with `reid`, or 0.48 and each part ≥ 0.24 without | The resolver chooses *among* credible candidates; it does not manufacture one. A bystander whose best score is 0.07 offers nothing to assign |
+| A track whose top two candidates are inside the accept margin offers nothing | That is a tie, and which name lands on which person would be decided by the sort order. Waiting is the documented behaviour |
+| A track already holding a name offers only that name | Changing an identity is the switch hysteresis' job (4 agreeing checks). A greedy pass that reassigns on one check is how a look-alike takes a name |
+
+A track the resolver does not assign **keeps whatever the per-track logic left it**, latched name included — the resolver used to clear it, which overrode the "check finds no candidate → identity is kept" rule in the table above for no better reason than that someone else was in frame. The one case that still clears is the one the resolver exists for: the track holds a player this resolution has just given to a better-supported track.
+
+The bound on the third rule is worth being precise about: it governs *when* a name may change, not whether a track may ever be reassigned. A track that has lost its name is a free agent on the next check, and giving it its next-best unclaimed player is exactly what closed-set assignment is for.
 
 ### 6. Duplicate resolution
 
