@@ -76,7 +76,7 @@ Browsers only allow audio after you've tapped something. Sound is enabled when y
 ## Hosting
 
 **`docker` isn't recognised on Windows.**
-Docker Desktop may not be on your `PATH`. Run `scripts/add-docker-path.ps1`, or use `scripts/docker.ps1`, which finds Docker on its own. See [Windows helper scripts](operations/windows-scripts.md).
+Docker Desktop may not be on your `PATH`. Use `scripts/docker.ps1`, which finds Docker on its own. See [Windows helper scripts](operations/windows-scripts.md).
 
 **Models or the detector fail to load ("Could not start: …").**
 The client loads MediaPipe's `.mjs`, `.wasm`, `.tflite` and `.task` files from `/vendor/tasks-vision/`, and ONNX Runtime Web's `.mjs`/`.wasm` from `/vendor/ort/`. Behind a custom web server, check they're served with the correct MIME types (`text/javascript` for `.mjs`, `application/wasm` for `.wasm`). The bundled nginx config already does this; see [Docker setup](operations/docker.md#nginx).

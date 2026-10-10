@@ -27,7 +27,6 @@
 //      correlates a tracked box's movement on screen with each player's own accelerometer. It
 //      is not part of the per-sample score in matchGallery; the Tracker nudges a track's typical
 //      score for a player up or down when that player's phone clearly does or doesn't move with
-//      it (the `scoreAdjust` option, motion-identity.js), and fuseMotion then confirms or vetoes
 //      the identity a track carries, so it can back up a weak appearance match or veto a
 //      bystander who happens to dress like a player.
 //
@@ -923,8 +922,6 @@ function identityConfidence(track, now) {
 // view, not "a different person stepped in": a player at 0.84-0.87 with a three-check burst at
 // 0.55 was revoked outright, losing their name, their evidence and the whole reid history the
 // median was built from, and then spending ~600 ms unidentified while it rebuilt from one sample.
-// Under ?motion=on the two were further apart still, since acceptance saw median + motionAdjust
-// and revocation saw neither.
 //
 // So the raw score stays as the fast *trigger* - it is what notices promptly, and nothing is
 // revoked without it - and the median is the *authority*: the name goes only once the quantity
@@ -957,9 +954,8 @@ function median(values) {
 
 // Records this check's re-identification scores in the track's history and returns the rankings
 // with each player's score replaced by its median over REID_HISTORY_MS (the latest stays in
-// `rawScore`, for the debug overlay and revokedByReid), plus `scoreAdjust(track, playerId)`: the
-// motion evidence for that player, kept in `motionAdjust`.
-function smoothRankings(track, rankings, now, scoreAdjust) {
+// `rawScore`, for the debug overlay and revokedByReid).
+function smoothRankings(track, rankings, now) {
   track.reidHistory ??= new Map();
   for (const [id, list] of track.reidHistory) {
     while (list.length && list[0].t < now - REID_HISTORY_MS) list.shift();
@@ -970,8 +966,7 @@ function smoothRankings(track, rankings, now, scoreAdjust) {
     const list = track.reidHistory.get(r.id) ?? [];
     list.push({ t: now, score: r.score });
     track.reidHistory.set(r.id, list);
-    const motionAdjust = scoreAdjust?.(track, r.id) ?? 0;
-    return { ...r, rawScore: r.score, motionAdjust, score: median(list.map((h) => h.score)) + motionAdjust };
+    return { ...r, rawScore: r.score, score: median(list.map((h) => h.score)) };
   });
 }
 
@@ -1280,7 +1275,7 @@ export class Tracker {
     players,
     selfId,
     now = performance.now(),
-    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false, scoreAdjust = null } = {},
+    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false } = {},
   ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
@@ -1397,7 +1392,7 @@ export class Tracker {
       // non-reid rankings untouched, so running it unconditionally is safe on every path.
       const smoothed = () =>
         latest?.rankings
-          ? decideRankings(smoothRankings(track, latest.rankings, now, scoreAdjust), selfId, { includeRejected: true, closedSet })
+          ? decideRankings(smoothRankings(track, latest.rankings, now), selfId, { includeRejected: true, closedSet })
           : latest;
       let match = smoothed();
       track.rankings = match?.rankings ?? (match ? [match] : []);

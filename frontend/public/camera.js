@@ -236,7 +236,10 @@ async function startCamera() {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera API not available');
   video.srcObject = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+    // frameRate is `ideal`, never `min`: an unmeetable `min` makes getUserMedia throw
+    // OverconstrainedError, i.e. no camera at all. The detection loop only runs on a new
+    // video.currentTime, so whatever the camera delivers is a hard ceiling on the cadence.
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
   });
   await video.play();
 }

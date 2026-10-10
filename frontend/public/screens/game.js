@@ -69,6 +69,8 @@ const ID_TARGET_HZ = Math.round(1000 / RECHECK_MS);
 // frame capture wants the main thread. Anything that reads `state.boxes` on this screen only
 // draws with it (drawScan), so none of this can reach an enrolled signature.
 const SCAN_PREVIEW_DETECT_INTERVAL_MS = 150;
+// During the rotation the frame capture owns the thread; the box is a reassurance, not a measurement.
+const RECORDING_PREVIEW_DETECT_INTERVAL_MS = 400;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
@@ -111,13 +113,16 @@ function scaleBoxes(boxes, scaleX, scaleY) {
   }));
 }
 
-// See SCAN_PREVIEW_DETECT_INTERVAL_MS. `recordingScan` is the recording window specifically, not
-// the whole scan: the countdown still wants the box, because that is when the player is being
-// asked to stand fully visible and the box is the confirmation that they are.
+// See SCAN_PREVIEW_DETECT_INTERVAL_MS. The box runs through the recording too, at a slower
+// cadence: it used to be skipped entirely there on the grounds that the player has been told to
+// turn in a circle and nobody is looking at the screen. In practice the box vanishing reads as a
+// fault, so it stays - but at RECORDING_PREVIEW_DETECT_INTERVAL_MS, because recordRotationVideo
+// is capturing a frame every ROTATION_RECORD_FRAME_MS on the same thread and a dropped capture
+// costs a usable angle in the gallery, which matters more than the box does.
 function refreshScanPreview() {
-  if (state.recordingScan) return;
   const now = performance.now();
-  if (now - state.lastScanPreviewAt < SCAN_PREVIEW_DETECT_INTERVAL_MS) return;
+  const interval = state.recordingScan ? RECORDING_PREVIEW_DETECT_INTERVAL_MS : SCAN_PREVIEW_DETECT_INTERVAL_MS;
+  if (now - state.lastScanPreviewAt < interval) return;
   state.lastScanPreviewAt = now;
   const { source, scaleX, scaleY } = gameplayInferenceSource();
   state.boxes = scaleBoxes(detectTrackedPeopleFast(state.detector, source, now), scaleX, scaleY);

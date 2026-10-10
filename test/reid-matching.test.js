@@ -121,7 +121,7 @@ test('the threshold can be tuned in the field (?reid=)', async () => {
 
 // Feeds one tracked box a sequence of re-identification scores against Rex, one check every
 // 300 ms, and returns the track after each check.
-async function trackScores(scores, { scoreAdjust = null } = {}) {
+async function trackScores(scores) {
   const { Tracker } = await import('../frontend/public/identify.js');
   const video = { videoWidth: 640, videoHeight: 480 };
   const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
@@ -131,7 +131,7 @@ async function trackScores(scores, { scoreAdjust = null } = {}) {
   let now = 1000;
   return scores.map((score) => {
     current = similarTo(rexReid, score);
-    const track = tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true, scoreAdjust })[0];
+    const track = tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
     return { playerId: track.playerId, score: track.score };
   });
 }
@@ -151,17 +151,6 @@ test('a player who usually scores high keeps their name and stays shootable thro
   }
 });
 
-test('motion widens the gap: matching movement lifts a player over the threshold, contradicting movement keeps a look-alike out', async () => {
-  const lukewarm = [0.6, 0.61, 0.59, 0.6, 0.61, 0.6];
-  assert.ok((await trackScores(lukewarm)).every((s) => s.playerId == null), 'appearance alone is not enough');
-  const moving = await trackScores(lukewarm, { scoreAdjust: (track, id) => (id === 'rex' ? 0.06 : 0) });
-  assert.equal(moving.at(-1).playerId, 'rex');
-
-  const lookAlike = [0.69, 0.7, 0.68, 0.69, 0.7, 0.69];
-  assert.equal((await trackScores(lookAlike)).at(-1).playerId, 'rex', 'appearance alone names them');
-  const contradicted = await trackScores(lookAlike, { scoreAdjust: (track, id) => (id === 'rex' ? -0.08 : 0) });
-  assert.ok(contradicted.every((s) => s.playerId == null), JSON.stringify(contradicted));
-});
 
 test('a new track needs INITIAL_STREAK agreeing checks, which is a duration not a count', async () => {
   const { Tracker } = await import('../frontend/public/identify.js');
