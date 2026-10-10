@@ -64,10 +64,11 @@ function threshold(name, mirrored) {
 const MIN_SHAPE_SCORE = threshold('MIN_SHAPE_SCORE', 0.36);
 const EVIDENCE_MIN_PART = threshold('EVIDENCE_MIN_PART', 0.24);
 const EVIDENCE_MIN_SCORE = threshold('EVIDENCE_MIN_SCORE', 0.42);
-// The live-matching height gate (identify.js:79) and the far floor a far-re-identification path
-// would add below it. The gate is mirrored from source; the floor is an *assumption* - no such
-// constant exists yet - and is what `--floor` overrides.
+// The live-matching height gate and the far-re-identification height floor below it, both now
+// real exports. `--floor` still overrides the floor, so a sweep can bracket a value that is not
+// the shipped one.
 const MIN_MATCH_HEIGHT_RATIO = threshold('MIN_MATCH_HEIGHT_RATIO', 0.18);
+const FAR_REID_MIN_HEIGHT_RATIO = threshold('FAR_REID_MIN_HEIGHT_RATIO', 0.09);
 
 const FRAME = { width: 640, height: 480 };
 const ENROLLED_PLAYERS = 4; // a typical game
@@ -495,7 +496,14 @@ function scaleSweep(seed, farFloor) {
         for (let k = 0; k < SWEEP_SIGHTINGS_PER_PERSON; k++) {
           const { box, signature } = sighting(p, random, { heightRatio: between(random, lo, hi), ...options });
           const gateRefused = signature.usable === false;
-          const admitted = { ...signature, usable: true };
+          // Two gates have to be neutralised, not one. `usable: false` is the old 0.18 refusal;
+          // `rangePenalty > 0` is the far band, and bestAngleScore drops every non-reid match in
+          // it outright (a band box is re-identification-only by design). Since this sweep forces
+          // the colour-only path, leaving the penalty on would empty every sub-gate bucket and
+          // look like a measurement rather than a tautology. Stripping both is what makes the row
+          // mean "what the matcher's arithmetic would decide at this box size"; what the shipped
+          // code actually does is the `gate refuses` column.
+          const admitted = { ...signature, usable: true, rangePenalty: 0 };
           recordScale(tally, matchGallery(admitted, roster, null, { includeRejected: true }), p, gateRefused, box);
         }
       }

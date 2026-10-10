@@ -51,13 +51,13 @@ const SCAN_PREVIEW_DETECT_INTERVAL_MS = 150;
 // The height-ratio thresholds the range readout draws its reference line at. Read off identify.js
 // so a retune there cannot leave the overlay quoting a number the matcher stopped using.
 //
-// TODO(range-instrumentation): identify.js does not export either of these yet - the far-range
-// branch adds MIN_MATCH_HEIGHT_RATIO and introduces the far floor. Until that lands, 0.18 is
-// mirrored from identify.js:79 and the floor is simply *absent* from the line rather than
-// invented, so the readout never shows a threshold nothing enforces. Delete the mirror - not the
-// lookup - when the export arrives.
-const MATCH_HEIGHT_GATE = matcher.MIN_MATCH_HEIGHT_RATIO ?? 0.18;
-const FAR_HEIGHT_FLOOR = matcher.MIN_FAR_MATCH_HEIGHT_RATIO ?? matcher.FAR_MATCH_MIN_HEIGHT_RATIO ?? null;
+// Both come from identify.js, so a retune there cannot leave the overlay quoting a number the
+// matcher stopped using. The far floor is the *height* floor specifically: FAR_REID_MIN_WIDTH_RATIO
+// is the one that actually binds for a standing person (a 1:2.5 body against a 1:2 model input
+// means width is upsampled hardest), but the readout prints height ratios, so quoting the width
+// floor beside them would invite exactly the wrong comparison. See docs/client/identification.md.
+const MATCH_HEIGHT_GATE = matcher.MIN_MATCH_HEIGHT_RATIO;
+const FAR_HEIGHT_FLOOR = matcher.FAR_REID_MIN_HEIGHT_RATIO ?? null;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
