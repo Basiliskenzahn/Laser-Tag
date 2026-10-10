@@ -38,9 +38,20 @@ from .transport import (
 MAX_BODY_BYTES = 1024 * 1024  # a 24-sample scan with re-identification embeddings is ~210 KB
 
 
+def compact_dumps(data):
+    """Serialise without the whitespace ``json.dumps`` adds by default.
+
+    A poll response can carry a player's whole appearance gallery - thousands of
+    numbers - and the default ``", "``/``": "`` separators add about 13% to that
+    for the benefit of nobody: no human reads these bodies. The SSE encoder in
+    :func:`events` has always done this; this makes the polling path match.
+    """
+    return json.dumps(data, separators=(",", ":"))
+
+
 def json_response(data, status=200):
     """JSON with caching off - every payload here is a point-in-time game state."""
-    return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
+    return web.json_response(data, status=status, dumps=compact_dumps, headers={"Cache-Control": "no-store"})
 
 
 async def api_connect(request):
