@@ -8,7 +8,7 @@
 // acceptance rate, against 34% for the colour + MobileNet signature. This is a *game-level*
 // number (several checks, the tracker's hysteresis, 20 bystanders at once); identify.js's
 // REID_DEFAULT_THRESHOLD comment gives the *per-single-check* figures the threshold was
-// picked from (at 0.76: 71% recognised / 3.1% bystanders accepted per check) - the two
+// picked from (at 0.70: 87% recognised / 10.8% bystanders accepted per check) - the two
 // aren't the same measurement, so don't expect them to match if you're comparing numbers.
 //
 // Because of that, it overrides the other appearance signals outright rather than being blended

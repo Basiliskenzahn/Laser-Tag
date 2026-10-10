@@ -21,6 +21,9 @@ const MOTION_HISTORY_MS = 12_000;
 const TARGET_LOCK_MS = 350;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
+// How far motion moves a person's re-identification score for one player (motionScoreAdjustment).
+const MOTION_SCORE_BONUS = 0.06;
+const MOTION_SCORE_PENALTY = 0.08;
 
 
 export function startMotion() {
@@ -77,6 +80,25 @@ function motionChecks(track) {
   return checks;
 }
 
+function refreshMotionChecks(track, now) {
+  if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
+    track.motionAt = now;
+    track.motionChecks = motionChecks(track);
+  }
+}
+
+// The tracker's `scoreAdjust` (identify.js adds it to a person's typical score for a player): up
+// when that player's phone moves the way the person on screen does, down when it clearly doesn't.
+// Real games put players at 0.70-0.80+ and non-players at 0.60-0.65, so whenever people move this
+// widens the gap: a player scoring 0.66 who walks gets named, a look-alike scoring 0.74 whose
+// movement doesn't match the player's phone doesn't. Standing still leaves the score alone.
+export function motionScoreAdjustment(track, playerId, now = performance.now()) {
+  if (MOTION_OFF) return 0;
+  refreshMotionChecks(track, now);
+  const status = track.motionChecks?.[playerId]?.status;
+  return status === 'consistent' ? MOTION_SCORE_BONUS : status === 'inconsistent' ? -MOTION_SCORE_PENALTY : 0;
+}
+
 function isStableTarget(track, now = performance.now()) {
   // A re-identification match has already cleared its own threshold; the colour-part minimums
   // below are for the colour signature, and lighting can push them down for the right person.
@@ -124,10 +146,7 @@ function classifierOpinion(track, now) {
 // prompts, outgoing samples and remote motion history.
 export function resolveIdentity(track, now = performance.now()) {
   if (MOTION_OFF) return appearanceOnlyIdentity(track, now);
-  if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
-    track.motionAt = now;
-    track.motionChecks = motionChecks(track);
-  }
+  refreshMotionChecks(track, now);
   const opponents = (state.game?.players ?? [])
     .filter((p) => p.id !== localSelfId())
     .map((p) => ({ id: p.id, name: p.name, alive: p.alive !== false }));

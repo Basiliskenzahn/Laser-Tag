@@ -8,7 +8,7 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
+import { motionDebugLine, motionScoreAdjustment, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
 import { getReidThreshold } from '../identify.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
@@ -102,6 +102,7 @@ function refreshGameDetection({ forcePose = false } = {}) {
     embedder: state.embedder,
     reid: state.reid,
     closedSet: true,
+    scoreAdjust: motionScoreAdjustment,
   });
   recordTrackMotion(state.tracks, t0);
   state.lastGameDetectAt = t0;
@@ -421,9 +422,11 @@ function drawGame({ vw, vh, toScreen }) {
     ctx.setLineDash([]);
     // In debug mode every box also shows its best match and score, for tuning ?reid= in the field.
     const best = DEBUG ? (track.rankings ?? []).find((r) => r.id !== localSelfId()) : null;
-    // Typical (median) score, then this check's in brackets when it differs.
+    // Typical (median) score including motion, this check's in brackets when it differs, and the
+    // motion part when there is one.
     const latestNote = best?.rawScore != null && Math.abs(best.rawScore - best.score) >= 0.005 ? ` (now ${best.rawScore.toFixed(2)})` : '';
-    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${latestNote}${best.hasReid ? '' : ' colour'}]` : '';
+    const motionNote = best?.motionAdjust ? ` motion${best.motionAdjust > 0 ? '+' : ''}${best.motionAdjust.toFixed(2)}` : '';
+    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${latestNote}${motionNote}${best.hasReid ? '' : ' colour'}]` : '';
     const label = (known
       ? `${id.name}${dead ? ' down' : id.source === 'both' ? ' (moves)' : ''}`
       : id.reason === 'vetoed' && DEBUG

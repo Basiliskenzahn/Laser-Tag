@@ -19,7 +19,7 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
 
-Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
+Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It isn't part of the per-check appearance score, but it nudges a track's typical score for a player: +0.06 when that player's phone moves with the person on screen, −0.08 when it clearly doesn't (`motionScoreAdjustment()` in `motion-identity.js`). Real games put players at 0.70–0.80+ and non-players at 0.60–0.65, so this widens the gap whenever people move.
 
 Both models are optional. `createReid()` failures are caught in `app.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking.
 
@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.76 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`) | `score` |
+| Overall score | ≥ 0.70 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:

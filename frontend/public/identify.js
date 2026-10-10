@@ -25,9 +25,11 @@
 //      weights), and it is the weakest of the three by a wide margin.
 //   4. Phone motion (motion/sensor.js + motion/matching.js). Orthogonal to appearance: it
 //      correlates a tracked box's movement on screen with each player's own accelerometer. It
-//      deliberately does *not* feed the score here. It is a confirm/veto layer on top, applied
-//      by app.js (fuseMotion) to the identity a track already carries, so it can back up a weak
-//      appearance match or veto a bystander who happens to dress like a player.
+//      is not part of the per-sample score in matchGallery; the Tracker nudges a track's typical
+//      score for a player up or down when that player's phone clearly does or doesn't move with
+//      it (the `scoreAdjust` option, motion-identity.js), and fuseMotion then confirms or vetoes
+//      the identity a track carries, so it can back up a weak appearance match or veto a
+//      bystander who happens to dress like a player.
 //
 // So: signals 1-3 produce one per-sample score in matchGallery, 1 overriding 2 overriding 3; the
 // Tracker then wants several agreeing samples over time, with hysteresis, before it puts a name
@@ -124,11 +126,11 @@ const MIN_SHAPE_SCORE = 0.36;
 //
 //
 // Real phones score players lower than the benchmark (the scan is taken by another phone, in other
-// light): 0.80 recognised nobody in a real test and 0.72 let bystanders through, so the default is 0.76. Evidence and soft
-// labels are now tied to it (they used to name anyone above fixed 0.62 / 0.66 and let false
+// light): 0.80 recognised nobody in a real test. With the median below, real games put players at
+// 0.70-0.80+ and non-players at 0.60-0.65, so the default is 0.70. Evidence and soft labels are now tied to it (they used to name anyone above fixed 0.62 / 0.66 and let false
 // positives through regardless of the threshold). Tune it in the field with ?reid=0.70 in the
 // address (env.js); ?debug shows each person's best score on their box.
-const REID_DEFAULT_THRESHOLD = 0.76;
+const REID_DEFAULT_THRESHOLD = 0.7;
 let reidMatchThreshold = REID_DEFAULT_THRESHOLD;
 
 export function setReidThreshold(value) {
@@ -679,8 +681,9 @@ function median(values) {
 
 // Records this check's re-identification scores in the track's history and returns the rankings
 // with each player's score replaced by its median over REID_HISTORY_MS (the latest stays in
-// `rawScore`, for the debug overlay and revokedByReid).
-function smoothRankings(track, rankings, now) {
+// `rawScore`, for the debug overlay and revokedByReid), plus `scoreAdjust(track, playerId)`: the
+// motion evidence for that player, kept in `motionAdjust`.
+function smoothRankings(track, rankings, now, scoreAdjust) {
   track.reidHistory ??= new Map();
   for (const [id, list] of track.reidHistory) {
     while (list.length && list[0].t < now - REID_HISTORY_MS) list.shift();
@@ -691,7 +694,8 @@ function smoothRankings(track, rankings, now) {
     const list = track.reidHistory.get(r.id) ?? [];
     list.push({ t: now, score: r.score });
     track.reidHistory.set(r.id, list);
-    return { ...r, rawScore: r.score, score: median(list.map((h) => h.score)) };
+    const motionAdjust = scoreAdjust?.(track, r.id) ?? 0;
+    return { ...r, rawScore: r.score, motionAdjust, score: median(list.map((h) => h.score)) + motionAdjust };
   });
 }
 
@@ -886,7 +890,7 @@ export class Tracker {
     players,
     selfId,
     now = performance.now(),
-    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false } = {},
+    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false, scoreAdjust = null } = {},
   ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
@@ -983,7 +987,7 @@ export class Tracker {
       const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
       const smoothed = () =>
         latest?.hasReid && latest.rankings
-          ? decideRankings(smoothRankings(track, latest.rankings, now), selfId, { includeRejected: true, closedSet })
+          ? decideRankings(smoothRankings(track, latest.rankings, now, scoreAdjust), selfId, { includeRejected: true, closedSet })
           : latest;
       let match = smoothed();
       track.rankings = match?.rankings ?? (match ? [match] : []);
