@@ -18,9 +18,11 @@ import json
 import unittest
 import uuid
 
+import aiohttp
 from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 
-from backend.app import create_app
+from backend import transport
+from backend.app import MAX_BODY_BYTES, create_app
 
 GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 
@@ -142,6 +144,17 @@ class PollingClient:
         self.poll_bytes = 0
         self.token = None
         self._task = None
+        #: How the poll loop ended, which is the only way this phone ever learns
+        #: that it has lost its session - the real client reconnects on exactly
+        #: this signal and on nothing else (frontend/public/transport.js treats
+        #: any non-ok response as fatal). ``None`` while the loop is still
+        #: running, so a test can tell "still polling" from "told to go away".
+        self.closed_status = None
+        self.closed_reason = None
+
+    @property
+    def closed(self):
+        return self.closed_status is not None
 
     async def start(self):
         resp = await self.client.post("/api/connect")
@@ -154,6 +167,13 @@ class PollingClient:
             while True:
                 resp = await self.client.get("/api/poll", params={"token": self.token})
                 if resp.status != 200:
+                    body = {}
+                    try:
+                        body = await resp.json()
+                    except (ValueError, aiohttp.ContentTypeError):
+                        pass
+                    self.closed_reason = body.get("reason")
+                    self.closed_status = resp.status
                     return
                 raw = await resp.read()
                 self.poll_bytes += len(raw)
