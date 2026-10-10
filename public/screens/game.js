@@ -6,9 +6,9 @@
 // shot is simply "whose hitbox is in the middle of the screen right now", with a fresh detection
 // forced first if the last one is too old to trust, and the server is the judge of the damage.
 
-import { DEBUG, REQUIRE_MOTION, canvas, ctx, video, $ } from '../env.js';
+import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { identity, recordTrackMotion } from '../identity.js';
+import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../identity.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
@@ -223,7 +223,7 @@ function targetUnderCrosshair(px, py) {
   const now = performance.now();
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
-    const id = identity(t, now);
+    const id = resolveIdentity(t, now);
     if (!id.playerId || !isAlivePlayer(id.playerId)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head', identity: id };
     if (contains(bodyBox(t.box), px, py)) bodyHit = { track: t, zone: 'body', identity: id };
@@ -327,7 +327,7 @@ export function loop() {
             )
             .join(' | ')}`
         : '') +
-      `\n${motionDebugLine(now)}` +
+      `\n${motionDebugLine(now, visibleTracks)}` +
       (rejected.length
         ? `\nRejected ${rejected
             .map(
@@ -337,21 +337,6 @@ export function loop() {
             .join(' ')}`
         : '');
   }
-}
-
-function motionDebugLine(now) {
-  const sensor = state.motion ? (state.motion.receiving ? 'on' : 'no data') : 'off';
-  const players = [...state.remoteMotion.keys()].map((id) => gamePlayer(id)?.name ?? id.slice(0, 4));
-  const tracks = state.tracks
-    .filter((t) => isLiveTrack(t, now))
-    .map((t) => {
-      const id = identity(t, now);
-      const corr = Object.entries(t.motionChecks ?? {})
-        .map(([pid, c]) => `${gamePlayer(pid)?.name ?? '?'}:${c.correlation == null ? c.reason : c.correlation.toFixed(2)}`)
-        .join(',');
-      return `#${t.id} ${id.name ?? '-'} ${id.reason}${corr ? ` [${corr}]` : ''}`;
-    });
-  return `motion ${sensor}${REQUIRE_MOTION ? ' strict' : ''} · from ${players.join(',') || 'nobody'}${tracks.length ? `\nMotion ${tracks.join(' | ')}` : ''}`;
 }
 
 function fitCanvas() {
@@ -398,7 +383,7 @@ function drawGame({ vw, vh, toScreen }) {
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
     // The classifier's identity, confirmed or vetoed by motion: a vetoed guess shows as a person.
-    const id = identity(track, now);
+    const id = resolveIdentity(track, now);
     const known = Boolean(id.playerId);
     const dead = known && isDeadPlayer(id.playerId);
     const alive = known && !dead;

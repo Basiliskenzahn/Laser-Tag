@@ -2,15 +2,16 @@
 //
 // identify.js matches body appearance and proposes a name. Separately, every phone shares how
 // much it is being moved (motion/sensor.js) and motion/matching.js checks whose phone rises and
-// falls with the person the camera is watching. identity() fuses the two, so a confident
-// look-alike can still be vetoed, and ?motion=strict insists on the motion confirmation. The
-// sending and collecting of those motion samples lives here as well, since nothing else needs it.
+// falls with the person the camera is watching. resolveIdentity() fuses the two and is the only
+// way the rest of the app asks "who is that?" - all of the motion plumbing is deliberately
+// sealed in this one file, so the game loop never has to know motion exists. ?motion=strict
+// demands the motion confirmation; ?motion=off skips the fusion entirely.
 
 import { fuseMotion, motionCheck, visualActivity } from './motion/matching.js';
 import { MotionSensor } from './motion/sensor.js';
-import { REQUIRE_MOTION } from './env.js';
+import { MOTION_OFF, REQUIRE_MOTION } from './env.js';
 import { send } from './net.js';
-import { localSelfId } from './roster.js';
+import { gamePlayer, localSelfId } from './roster.js';
 import { state } from './state.js';
 
 const MOTION_SEND_INTERVAL_MS = 500;
@@ -105,8 +106,22 @@ function classifierOpinion(track, now) {
   };
 }
 
-// Who a tracked person is: the classifier's identification, confirmed or vetoed by motion.
-export function identity(track, now = performance.now()) {
+// Who a tracked person is: the classifier's identification, confirmed or vetoed by motion. This
+// is the single seam where motion matching enters the game, and the only thing the game loop and
+// the shot calls.
+//
+// Be aware of what fuseMotion() is allowed to do here, because it decides whether a shot lands:
+// when a player's phone motion is judged *inconsistent* with the person under the crosshair it
+// either vetoes a correct, classifier-confident identification - the shot then silently does not
+// register - or retargets the shot to a different candidate on motion correlation alone. Both
+// verdicts rest on correlating accelerometer streams from separate phones, so ordinary field
+// conditions that the matching tests do not simulate (clock drift between phones, a phone in a
+// pocket rather than held, a backgrounded tab throttling its sensor) can produce them from noise
+// alone. ?motion=off takes the whole mechanism out of the loop so that can be measured instead
+// of guessed at; this phone keeps sharing its own motion either way, so turning it off changes
+// nothing for the other players and the comparison stays honest.
+export function resolveIdentity(track, now = performance.now()) {
+  if (MOTION_OFF) return appearanceOnlyIdentity(track, now);
   if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
     track.motionAt = now;
     track.motionChecks = motionChecks(track);
@@ -115,4 +130,31 @@ export function identity(track, now = performance.now()) {
     .filter((p) => p.id !== localSelfId())
     .map((p) => ({ id: p.id, name: p.name, alive: p.alive !== false }));
   return fuseMotion({ classifier: classifierOpinion(track, now), opponents, checks: track.motionChecks, requireMotion: REQUIRE_MOTION });
+}
+
+// ?motion=off: the identification the game used before motion matching existed, in the same shape
+// fuseMotion returns so nothing downstream can tell the difference. The old code gated a shot on
+// `isStableTarget(track, now) && isAlivePlayer(track.playerId)` with the round playing, and
+// targetUnderCrosshair still applies the aliveness and status halves itself, so naming the track
+// whenever the classifier is stable reproduces that gate exactly.
+function appearanceOnlyIdentity(track, now) {
+  if (track.selfRejected || track.playerId === localSelfId()) return { playerId: null, reason: 'self' };
+  return isStableTarget(track, now)
+    ? { playerId: track.playerId, name: track.name, verified: false, source: 'classifier', reason: 'motion-off' }
+    : { playerId: null, reason: 'unconfirmed' };
+}
+
+// The debug overlay's motion line: this phone's sensor, who is sharing, and what the matching
+// made of each person on screen. `liveTracks` is the loop's already-filtered list.
+export function motionDebugLine(now, liveTracks) {
+  const sensor = state.motion ? (state.motion.receiving ? 'on' : 'no data') : 'off';
+  const players = [...state.remoteMotion.keys()].map((id) => gamePlayer(id)?.name ?? id.slice(0, 4));
+  const tracks = liveTracks.map((t) => {
+    const id = resolveIdentity(t, now);
+    const corr = Object.entries(t.motionChecks ?? {})
+      .map(([pid, c]) => `${gamePlayer(pid)?.name ?? '?'}:${c.correlation == null ? c.reason : c.correlation.toFixed(2)}`)
+      .join(',');
+    return `#${t.id} ${id.name ?? '-'} ${id.reason}${corr ? ` [${corr}]` : ''}`;
+  });
+  return `motion ${MOTION_OFF ? 'off (bypassed)' : sensor}${REQUIRE_MOTION ? ' strict' : ''} · from ${players.join(',') || 'nobody'}${tracks.length ? `\nMotion ${tracks.join(' | ')}` : ''}`;
 }
