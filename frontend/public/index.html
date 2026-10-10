@@ -16,7 +16,7 @@
     <video id="video" playsinline muted autoplay hidden></video>
     <canvas id="overlay" hidden></canvas>
 
-    <main id="join-screen" class="screen">
+    <main id="join-screen">
       <h1>Laser Tag</h1>
       <p class="tagline">Point. Shoot. Phones only.</p>
       <form id="join-form">
@@ -34,7 +34,7 @@
       <p class="hint">Everyone enters the same room code. The lobby shows who still needs to be scanned before launch.</p>
     </main>
 
-    <main id="lobby-screen" class="screen" hidden>
+    <main id="lobby-screen" hidden>
       <section id="lobby-panel">
         <p id="lobby-connection" class="connection-problem" role="alert" hidden></p>
         <div id="lobby-heading">
@@ -52,18 +52,17 @@
       </section>
     </main>
 
-    <main id="scan-screen" class="screen" hidden>
+    <main id="scan-screen" hidden>
       <button id="scan-cancel-btn" type="button" aria-label="Cancel scan">✕</button>
       <div id="scan-panel">
         <p id="scan-connection" class="connection-problem" role="alert" hidden></p>
         <div id="scan-countdown" hidden></div>
         <p id="scan-instruction">Stand where your whole body is visible, then face the camera.</p>
-        <div id="scan-thumbs"></div>
         <p class="hint">Hand the phone to someone else so it can see your whole body, then turn slowly once; the game keeps the best angles.</p>
       </div>
     </main>
 
-    <main id="game-screen" class="screen" hidden>
+    <main id="game-screen" hidden>
       <div id="damage"></div>
       <div id="crosshair"></div>
 
@@ -77,7 +76,10 @@
       <div id="popups"></div>
 
       <button id="fire-btn" aria-label="Fire">FIRE</button>
-      <pre id="debug" hidden></pre>
     </main>
+
+    <!-- Last child of <body>, not inside #game-screen: every screen is `hidden` until it is the
+         one showing, so an overlay nested in one of them could only ever be read during a round. -->
+    <pre id="debug" hidden></pre>
   </body>
 </html>
