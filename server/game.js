@@ -5,7 +5,7 @@ export const MAX_PLAYERS = 8;
 export const MAX_HP = 100;
 export const DAMAGE = { body: 20, head: 50 };
 export const SHOT_COOLDOWN_MS = 350;
-export const COUNTDOWN_MS = 5000;
+export const COUNTDOWN_MS = 3000;
 
 export class Room {
   constructor(code, { now = Date.now } = {}) {

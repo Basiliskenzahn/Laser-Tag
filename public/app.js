@@ -23,7 +23,7 @@ const SCAN_OUTLIER_SIMILARITY = 0.36;
 const SCAN_VIEW_AVERAGE_SIMILARITY = 0.74;
 const SCAN_DIVERSITY_WEIGHT = 0.42;
 const ROTATION_SCAN_COUNTDOWN_MS = 5_000;
-const GAME_LAUNCH_COUNTDOWN_MS = 5_000;
+const GAME_LAUNCH_COUNTDOWN_MS = 3_000; // mirrors server/game.js's COUNTDOWN_MS
 const ROTATION_SCAN_DURATION_MS = 12_000;
 const ROTATION_RECORD_FRAME_MS = 180;
 const ROTATION_FRAME_MAX_WIDTH = 1024;
@@ -996,6 +996,18 @@ function beginPlayerScan(player) {
     if (state.mode === 'scan' && state.scanTargetId === player.id) runAutoScan();
   });
 }
+
+// recordRotationVideo/processRotationVideo/runAutoScan all check state.autoScanning on every
+// loop iteration and bail cleanly when it goes false, so cancelling is just flipping that flag
+// and leaving the scan screen - their own `finally` blocks notice state.mode is no longer
+// 'scan' and skip touching the UI again.
+function cancelScan() {
+  state.autoScanning = false;
+  state.postProcessingScan = false;
+  showLobby('Scan cancelled.');
+}
+
+$('scan-cancel-btn').addEventListener('click', cancelScan);
 
 function saveCurrentScan(message = `Saved scan for ${scanPersonName()}.`) {
   if (!state.scanTargetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
