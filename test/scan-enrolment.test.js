@@ -334,11 +334,12 @@ test('only the frames behind the chosen samples are still alive during the embed
 });
 
 test('starting a second scan mid-flight enrols exactly one gallery, under the right id', async () => {
-  // The run-token discipline, driven rather than asserted about. test/scan-run-token.test.js pins
-  // the shape of the fix in the source and says plainly that it cannot do this; now something
-  // can. A run superseded part-way through must send nothing - not its own gallery, and above all
-  // not its gallery under the id of the player who replaced it, which is what this cost before
-  // the token (a whole round of every phone labelling one player as another).
+  // The run-token discipline, driven rather than asserted about - this replaced a test that
+  // matched regexes against scan.js's source because scan.js could not then be imported. A run
+  // superseded part-way through must send nothing: not its own gallery, and above all not its
+  // gallery under the id of the player who replaced it, which is what this cost before the token
+  // (a whole round of every phone labelling one player as another). Dropping `run === scanRun`
+  // from runAutoScan's live() fails this test, which is what makes it the real guard.
   const { sent } = arrangeScan();
   scan.beginPlayerScan(selfPlayer);
   await dom.pump(30);

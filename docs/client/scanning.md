@@ -23,12 +23,11 @@ flowchart TD
   F --> G[Remove outliers<br/>and near-duplicates]
   G --> H{More than 24?}
   H -- yes --> I[Pick 24 diverse seeds,<br/>average each with similar neighbours]
-  H -- no --> J
-  I --> J[Order samples by view]
-  J --> K{At least 12?}
+  H -- no --> K
+  I --> K{At least 12?}
   K -- no --> L[Back to lobby with<br/>the most common problem]
   K -- yes --> M[OSNet embedding for the<br/>chosen samples only]
-  M --> N[Check no vector is blank,<br/>send scan, cache own scan,<br/>back to lobby]
+  M --> N[Send scan, cache own scan,<br/>back to lobby - correcting the line<br/>if it never arrived]
 ```
 
 The phases and roughly what each costs:
@@ -71,9 +70,13 @@ That is not merely wasteful. **iOS Safari discards canvas backing stores under m
 Two things follow from that, and both are in the code now:
 
 - **A frame is released the moment it has been described**, and a usable one is replaced first by `cropFrameToBox` — a crop of just its person box, clipped exactly the way `reid.js` clips, with the box rewritten into the crop's coordinates. That crop is all the deferred OSNet pass ever reads, so the frames behind the chosen samples are still alive after selection (which is the whole point of [deferring it](#5-deferred-work-and-what-it-saves)) while everything else is gone. Canvases are resized to 1×1 rather than merely dereferenced, so the store is freed there and then instead of at the next collection. The peak is still the end of the recording — nothing can release a frame that has not been looked at yet — but through selection, thumbnail-free sample assembly and the embedding pass the resident set is the chosen crops alone, roughly a tenth of it. `?debug` reports the recording peak as `peak N MB of frames`.
-- **The failure is detected rather than enrolled.** `frameLost()` scales a frame into an 8×8 probe and tests its **alpha**: a recorded frame is drawn from an opaque video frame, so a live one is alpha 255 everywhere whatever it looks like, and a discarded one is alpha 0. That is exact, and it is why the check is alpha and not brightness — a brightness test would fail a genuinely dark scan on a phone that is working fine. It guards every re-identification embed, which is the window that matters: OSNet answers a blank crop with a perfectly ordinary unit vector, identical for every blank crop and indistinguishable from a real appearance by any later check. A lost frame throws, which fails the whole scan with *"Could not process the rotation video: the browser discarded a recorded frame (out of memory)"* and enrols nothing.
+- **The failure is skipped rather than enrolled.** `frameLost()` scales a frame into an 8×8 probe and tests its **alpha**: a recorded frame is drawn from an opaque video frame, so a live one is alpha 255 everywhere whatever it looks like, and a discarded one is alpha 0. That is exact, and it is why the check is alpha and not brightness — a brightness test would fail a genuinely dark scan on a phone that is working fine. It guards every re-identification embed, which is the window that matters: OSNet answers a blank crop with a perfectly ordinary unit vector, identical for every blank crop and indistinguishable from a real appearance by any later check — and `reid` **overrides every other field** at match time, so enrolling a blank one is worse than enrolling none.
 
-A frame whose colour signature comes back all-zero fails the scan from the processing loop for the same reason, and `assertEnrollableGallery` re-checks the finished gallery before anything is sent or cached. Neither should be reachable — a fully blank frame fails the brightness gate first, and no average of describable frames is blank — which is exactly why they throw rather than filter.
+  A lost frame therefore contributes **no vector**. `attachSampleReid` drops empty ones, so a sample left with nothing simply has no `reid` — the same graceful degradation a phone whose OSNet never loaded already gets, and the colour signatures were extracted back in the processing loop, before anything could be taken away.
+
+  **This used to throw**, failing the whole rotation with *"Could not process the rotation video: the browser discarded a recorded frame (out of memory)"*. That was the wrong trade: the iOS discard it guards against had never been observed on a device, while a single false positive anywhere in the probe — a canvas with no alpha channel, a browser that composites differently, a crop landing outside its source — cost the player a fifteen-second rotation and showed them a message about memory. A guard on a hypothetical failure must not be able to cause a real one.
+
+A frame whose colour signature comes back all-zero is dropped by the processing loop for the same reason, counted as the `low-light` the brightness gate already calls a frame with nothing in it. It is one unusable frame among sixty, not a failed scan. There used to be a third check here, `assertEnrollableGallery`, which re-examined the finished gallery for blank vectors and threw; it has been deleted. It re-asked, after selection, a question the processing loop had already refused to produce a bad answer to, and its own comment called it unreachable.
 
 Measured by [driving a whole scan](#testing) at 640×360, a frame size the harness can afford: 62 frames recorded, 57 MB of backing store at the peak, and **4.2 MB still resident during the embedding pass** — 7% of the recording. At the phone resolution the constants actually ask for (1024×576) the same scan records ~146 MB. Before this, the figure resident during the embedding pass *was* the recording.
 
@@ -131,9 +134,7 @@ Candidate **quality** — used throughout selection — rewards boxes that are l
    - **Averaging** (`averagedRotationSample`): each seed is averaged with up to 3 other frames at least 0.74 similar to it (`SCAN_VIEW_AVERAGE_SIMILARITY`, `ROTATION_SAMPLE_AVERAGE_COUNT` 4 including the seed), ranked by similarity with a small quality tiebreak. `averageSignatures()` averages every vector field, re-normalising all of them except `shape` (which has to stay on its raw scale), which smooths out per-frame sensor noise. The sample keeps the seed's box and timestamp, and the group's mean quality.
 
      **The seed is always in its own average.** It used to be ranked alongside the others on `similarity + quality × 0.05` and then cut by the same `slice`, so four better-scoring candidates could push a seed out of its own group — while the sample still spread `...seed` over itself and kept the seed's frame and box, which is the frame the re-identification pass then embeds. A sample whose own seed frame is not in its signature is not what anything downstream assumes.
-5. **Order by view** (`orderRotationSamplesByView`): start with the best-quality sample and repeatedly append the most similar remaining one, which roughly reconstructs the order the player turned in.
-
-   Worth knowing that this step now has no consumer. Its reason for existing was a readable thumbnail strip, and [the strip is gone](#thumbnails-removed-not-hidden); matching reads every sample regardless of order, and the server stores the array as it arrives. It is kept because it is 24 samples' worth of arithmetic and it makes a gallery dump legible to a person, but it is cosmetic, and anything that depends on gallery order is depending on nothing.
+There used to be a fifth step, `orderRotationSamplesByView`, which walked the samples into roughly the order the player had turned in — best-quality first, then repeatedly the most similar remaining one. **It has been deleted.** Nothing read that order: matching scores every sample and sorts by score (`bestAngleScore`), and the server stores the array as it arrives. Its one consumer had been a readable thumbnail strip, and [the strip is gone](#thumbnails-removed-not-hidden). So it was 20 lines of similarity arithmetic plus a renderer yield per sample, spent permuting an array nobody looks at — and it was the only reader of each candidate's `time`, which went with it, along with the `{image, time}` wrapper around every recorded frame. Anything that depends on gallery order is depending on nothing.
 
 Note the asymmetry: with ≤24 clean candidates every sample is a single frame, and with >24 every sample is an average of up to 4. Both are valid galleries.
 
@@ -145,13 +146,25 @@ One thing is computed only for the samples that survived selection, because only
 
   The embeddings are **dispatched four at a time** (`REID_DISPATCH_BATCH`) with a renderer yield between batches, rather than one at a time with a yield in front of each. `reid.js` runs OSNet in a Web Worker (`ort.env.wasm.proxy`) and queues one inference at a time internally, so the only main-thread cost of an `embed()` call is the crop it snapshots synchronously before handing over — which meant the old shape left the worker idle for most of a renderer frame per embedding, about half a second of nothing across a 30-frame scan. Batching keeps the worker fed; the batch size is only about how long an uninterrupted run of snapshots may be. What lands in the gallery is identical, and `test/scan-reid.test.js` embeds a fixed fixture through both this and a serial reference and compares the vectors, because that is the regression that would matter.
 
-  Each embed is guarded by `frameLost()` first: this is the longest window in which a frame can be taken away, and the one case nothing downstream could catch. See [How much of the recording is alive at once](#how-much-of-the-recording-is-alive-at-once).
+  Each embed is guarded by `frameLost()` first, and a frame that fails it is skipped rather than embedded: this is the longest window in which a frame can be taken away, and a blank `reid` is the one case nothing downstream could catch. See [How much of the recording is alive at once](#how-much-of-the-recording-is-alive-at-once).
 
 #### Thumbnails: removed, not hidden
 
 A 48×64 JPEG used to be cropped from every chosen sample's frame, measured as its own phase, stored in `state.scanThumbs`, and persisted into the cache. **None of it could ever be seen.** `#scan-thumbs` lives inside `#scan-screen`, and every exit from a scan goes through `showLobby()`, which hides that screen — including the too-few-angles path, where a comment claimed the strip was the feedback. `loadScanCache`'s only consumer reads `cache.gallery`; `cache.thumbs` was `Array.isArray`-checked and never read. So up to 24 JPEG encodes, their timing, and their storage bought nothing.
 
-Given the choice between making them visible and not computing them, they are gone. Making them visible means a post-scan review screen — a feature with its own design, not a repair — and the strip's one interaction (`appendScanThumb`'s click handler: *"tap to redo this and later angles"*) belongs to the retired incremental-capture flow and is meaningless for a single rotation. A deliberate, visible version can be added later; silently computing one was the thing to stop. `#scan-thumbs` and its CSS are still in the page, unused, because they are not this change's files to remove.
+Given the choice between making them visible and not computing them, they are gone. Making them visible means a post-scan review screen — a feature with its own design, not a repair — and the strip's one interaction (`appendScanThumb`'s click handler: *"tap to redo this and later angles"*) belongs to the retired incremental-capture flow and is meaningless for a single rotation. A deliberate, visible version can be added later; silently computing one was the thing to stop.
+
+**What is left to remove, and where.** `state.scanThumbs` is now written in three places and read in none; the markup and CSS behind it are also dead. None of these files belong to the scan path, so they are named here rather than edited:
+
+| File | Dead thing |
+| --- | --- |
+| `frontend/public/state.js` | `scanThumbs: []` (the field itself, and its comment claiming a "reusable debug cache") |
+| `frontend/public/screens/lobby.js` | `state.scanThumbs = []` and `$('scan-thumbs').innerHTML = ''` |
+| `frontend/public/screens/join.js` | `state.scanThumbs = []` |
+| `frontend/public/index.html` | `<div id="scan-thumbs"></div>` inside `#scan-screen` |
+| `frontend/public/style.css` | the `#scan-thumbs` and `#scan-thumbs img` rules, and `#scan-screen.countdown #scan-thumbs` |
+
+`deprecated/public-dead-code.js` also touches `state.scanThumbs`, which is where the retired implementation already lives and wants no change.
 
 This ordering is what makes the embedding affordable. OSNet is the single most expensive inference in the app, and selection cannot see its output, so embedding every usable frame meant paying for it on every frame that selection then threw away. The gallery is unchanged — the same frames are embedded and averaged the same way — but far fewer frames are embedded.
 
@@ -188,6 +201,10 @@ The preview counts are a rate estimate, not a measurement: the old code ran once
 
 With `?debug`, `scanCostLine()` puts the **actual** counts and per-phase timings on the overlay after every scan, so this can be read off a real phone rather than estimated: see [Debug mode](../development/debug-mode.md#startup-and-scan-costs).
 
+> **Does this bookkeeping earn its keep?** Honestly, barely. `scanCost`, `resetScanCost()` and `scanCostLine()` are ~45 lines of `screens/scan.js`, plus eleven counter increments threaded through the hot path, and they exist for one `?debug` line. They are the largest single thing in that file that is there for a *measurement* rather than for a scan, and they are a fair part of why the file grew while two modules were being extracted out of it.
+>
+> They have not been removed because `scanCostLine()` is imported by `frontend/public/screens/game.js` (the debug overlay, around the `drawScan` import and the overlay text), and that file belongs to another change. Removing it means deleting the import and the overlay line there in the same commit. The counters and the `?debug` tests in `test/scan-enrolment.test.js` go with it. Recommended, not done.
+
 #### What was considered and rejected
 
 **Moving the MobileNet embedding after selection**, the way OSNet's was. Selection genuinely cannot see `signature.embed` — `signatureSimilarity()` averages `hist`, `lower` and `grid` only — so this is sound in principle, and it is the obvious next move. It does not pay here. MobileNet runs on every *usable* frame, ~55 of 60; the frames backing the chosen samples are ~30 of those; so the saving is ~55 → ~30 embeddings. But there is no way to ask `identify.js` for *only* the embedding of a frame — `personEmbedding()` is private, and `extractSignature()` computes the colour features and the embedding together or neither (`appearance: false` skips both). So the deferred pass would have to call `extractSignature()` again for each of ~30 frames, recomputing colour features that were already computed and thrown away, including three `getImageData` read-backs each. Trading ~25 MobileNet inferences for ~30 redundant colour-feature extractions is not obviously a win and may be a loss. Doing it properly needs a narrower seam in `identify.js`.
@@ -202,11 +219,17 @@ The resolution change is more modest than it looks. EfficientDet-Lite0, the pose
 
 ### 6. Result
 
-- **12 or more samples** (`SCAN_MIN_SAMPLES`): every sample is checked for a blank vector (`assertEnrollableGallery`), the gallery is sent to the server as `{type: 'scan', targetId, gallery}`, and the phone returns to the lobby with *"Saved scan for &lt;name&gt; with N angles."* If the scanned player is the local one, the gallery is also kept in `state.localGallery` and [cached](#local-cache).
+- **12 or more samples** (`SCAN_MIN_SAMPLES`): the gallery is sent to the server as `{type: 'scan', targetId, gallery}`, and the phone returns to the lobby with *"Saved scan for &lt;name&gt; with N angles."* If the scanned player is the local one, the gallery is also kept in `state.localGallery` and [cached](#local-cache).
 
-  *"Saved scan"* used to be said whether or not the gallery ever left the phone. `send()` hands the message to whatever connection is there, so a scan sent down one that had gone away was a twelve-second rotation the player was told had worked and that no other phone ever saw — and the local cache made it look right on this phone too. `saveCurrentScan` now takes whatever `send()` reports back and corrects the lobby line if the scan turns out not to have arrived, while the player is still reading it.
+  *"Saved scan"* used to be said whether or not the gallery ever left the phone. `send()` hands the message to whatever connection is there, so a scan sent down one that had gone away was a twelve-second rotation the player was told had worked and that no other phone ever saw — and the local cache made it look right on this phone too.
+
+  `send()` resolves **true** once the server has the message and **false** if it could not be delivered; it retries a transient failure twice itself, never rejects, and no longer tears the connection down ([`transport.js`](../../frontend/public/transport.js)). `saveCurrentScan` takes that answer and corrects the lobby line to *"&lt;name&gt;'s scan could not be sent. Check the connection and rescan."* if the gallery never arrived — but only while the player is still reading the line that claimed it (`replaceLobbyMessage` checks `state.mode === 'lobby'`).
+
+  Rescanning really is the only recovery, which is why the message says so. A reconnect **adopts** this phone's existing seat, and the server ignores the `gallery` on that path (`Session._join` in [`backend/transport.py`](../../backend/transport.py) returns as soon as it has adopted the requested id), so `sendJoin`'s gallery re-publishes nothing. Only a fresh seat takes a gallery from a join.
+
+  Two things the `false` does **not** mean. It is not a server refusal: the server answering *"Lobby is already running"* is a 200 for `/api/send`, so delivery is true and the refusal arrives separately as an `error` message, which `net.js` writes into the lobby line itself. And `scanSaved` — the server's acknowledgement — overwrites the richer *"Saved scan for &lt;name&gt; with N angles"* with a plain *"Scan saved."*, which is a cosmetic wart in `net.js` rather than anything to do with delivery.
 - **Fewer than 12:** the phone returns to the lobby with *"Only got N/12 usable angles from U/T frames: &lt;hint&gt;. Try again slower."* — where `U` is usable frames, `T` total recorded, and the hint is the message for the **most frequent** problem code (`mostCommonProblem`), falling back to the last one seen. Nothing is sent or cached. The player-facing version of this list is in [How to play](../how-to-play.md#scanning-a-player).
-- **An exception anywhere** in recording or processing: *"Could not process the rotation video: &lt;error&gt;."* A failed OSNet inference lands here, so one model error fails the whole scan rather than producing a gallery with some embeddings missing — and so does a [frame the browser took away](#how-much-of-the-recording-is-alive-at-once), which is the whole point of that check: the alternative is not a failed scan, it is a successful one describing a blank rectangle.
+- **An exception anywhere** in recording or processing: *"Could not process the rotation video: &lt;error&gt;."* A failed OSNet inference lands here, so one model error fails the whole scan rather than producing a gallery with some embeddings missing. A [frame the browser took away](#how-much-of-the-recording-is-alive-at-once) no longer does — it costs its own embedding and nothing else.
 
 ## What a gallery sample contains
 
@@ -250,10 +273,19 @@ That `live()` predicate is now handed to the recording, processing, selection an
 too, so a superseded run stops at its next loop iteration instead of spending the phone's one
 thread on a gallery its caller is going to throw away.
 
-`test/scan-run-token.test.js` pins the shape of the fix in the source, and says plainly that it
-cannot drive the sequence. `test/scan-enrolment.test.js` now can: it starts a scan of one player,
-starts a scan of another mid-flight, and asserts exactly one gallery is sent, under the live run's
-id, with no self gallery or cache left behind by the run that was replaced.
+`test/scan-enrolment.test.js` drives this: it starts a scan of one player, starts a scan of another
+mid-flight, and asserts exactly one gallery is sent, under the live run's id, with no self gallery
+or cache left behind by the run that was replaced. Dropping `run === scanRun` from `live()` fails
+that test, which is the property that matters.
+
+There used to also be a `test/scan-run-token.test.js` asserting regexes against this file's own
+source text, on the stated grounds that `screens/scan.js` could not be imported under Node. The
+fake-DOM harness removed that excuse and the test is gone. One assertion went with it and is worth
+naming: that `saveCurrentScan` is handed the **captured** `targetId` rather than re-reading
+`state.scanTargetId`. Reading it live mutates green, because `live()` is re-checked with no await
+between it and the call, so a superseded run cannot reach `saveCurrentScan` at all. The capture is
+kept — it is one line and it states the intent — but it is belt and braces behind a guard that *is*
+covered, not an independent property, and no test can tell the two apart.
 
 Up to `REID_DISPATCH_BATCH` (4) in-flight OSNet inferences may still finish after a cancel — they are awaited, not abortable — but their results are discarded and no further batch is dispatched. The lobby appears immediately regardless: `cancelScan()` changes the screen synchronously, and the draining happens behind it.
 
@@ -271,7 +303,7 @@ So, in a room with two Sams: you scan the *other* Sam on your phone, and `saveSc
 
 A second, smaller defect sat in the same two functions: the key lower-cased the name and the check compared it case-sensitively, so "Alex" and "alex" shared one slot and each silently invalidated the other's cache.
 
-The fix is that identity is the **player id**, consulted in exactly one place — `cacheableScan({targetId, selfId})`, which is true only for your own scan — and the key is the room alone. The id is deliberately *not* in the key either: the room hands out a fresh id whenever the resume id has gone, which is precisely the reload the cache exists to survive. *"The owner of this phone, in this room"* is the honest identity for the only entry anybody reads. The name is still stored, for the debug overlay, and is never an identity check again.
+The fix is that identity is the **player id**, consulted in exactly one place — `saveScanCache` returns unless `targetId === localSelfId()`, so only your own scan is ever written — and the key is the room alone. (That condition was briefly its own exported `cacheableScan({targetId, selfId})` helper in `scan-cache.js`; it is inlined now, because a one-line predicate behind an import was harder to read than the line itself. The behaviour is the part that matters and it is unchanged.) The id is deliberately *not* in the key either: the room hands out a fresh id whenever the resume id has gone, which is precisely the reload the cache exists to survive. *"The owner of this phone, in this room"* is the honest identity for the only entry anybody reads. The name is still stored, for the debug overlay, and is never an identity check again.
 
 Two consequences worth knowing:
 
@@ -321,24 +353,23 @@ On top of them:
 
 | File | What it covers |
 | --- | --- |
-| [`test/scan-enrolment.test.js`](../../test/scan-enrolment.test.js) | Whole scans. Who the gallery is sent and cached under, what a shared name does and does not do, a rotation whose frames were discarded, a frame lost between selection and the embedding pass, a red-free frame *not* being mistaken for a lost one, how much canvas is still resident during the embedding pass, a superseded run, and a cancel. |
+| [`test/scan-enrolment.test.js`](../../test/scan-enrolment.test.js) | Whole scans. Who the gallery is sent and cached under, what a shared name does and does not do, a rotation whose frames were discarded, a frame lost during the embedding pass being *skipped*, a red-free frame not being mistaken for a lost one, how much canvas is still resident during the embedding pass, a superseded run, a cancel, and whether a delivered scan is reported as delivered. |
 | [`test/scan-cache.test.js`](../../test/scan-cache.test.js) | `scan-cache.js` directly: the key, what may be cached, and every way a sample can be blank. Its bounds are the test's own numbers, not the screen's constants. |
 | [`test/scan-select.test.js`](../../test/scan-select.test.js) | `scan-select.js` directly: that the pass yields and yields more as the pool grows, that a cancel produces nothing, that carrying `nearest` forward picks the same seeds a recomputing reference picks, and that a seed is in its own sample. |
 | [`test/scan-reid.test.js`](../../test/scan-reid.test.js) | `scan-reid.js`: that the batched pass produces byte-for-byte the gallery the serial one did, and what a cancel or a failed inference does. |
-| [`test/scan-run-token.test.js`](../../test/scan-run-token.test.js) | The run-token discipline, as assertions on the shipped source — the properties the fix rests on, each of which would silently regress the bug. |
 
 Note what is real in the enrolment tests and what is not. Real: `scan.js`, `scan-select.js`, `scan-cache.js`, `identify.js`, `detector.js`'s box plumbing, and every threshold. Faked: the camera's pixels, the object detector's answer, the OSNet embedder, and the clock.
 
-Two things these tests deliberately do **not** prove, because nothing can reach them from outside: the processing loop's all-zero-signature throw and `assertEnrollableGallery`. A fully blank frame fails the brightness gate first, and no average of describable frames is blank, so both are invariants rather than reachable paths — which is why they throw instead of filtering. Their predicate (`degenerateSignature`) is unit-tested.
+One thing these tests deliberately do **not** prove, because nothing can reach it from outside: the processing loop's all-zero-signature drop. A fully blank frame fails the brightness gate first, so it is an invariant rather than a reachable path — which is why it now drops the frame instead of throwing: an unreachable guard that can still abort a scan is all cost and no cover. Its predicate (`degenerateSignature`) is unit-tested.
 
 ### Mutation-check anything added here
 
 Every test in this area was written by breaking the behaviour it claims to guard, watching it fail, and restoring. That is not ceremony: on the pass that produced these files, **13 of 45** mutations ran green first time. Seven were tests asserting less than they looked like they did; five were code that turned out to be redundant; one was a badly built mutation that never reintroduced the bug it named. Two of the test holes worth remembering:
 
 - A memory ceiling expressed as *a fraction of the recording* passed with every candidate's crop still alive, because the crops are small enough that keeping all of them still came in under the fraction. Expressed against the number of frames the embedding pass actually reads, it fails.
-- `frameLost` reading a colour channel instead of alpha passed everything, because a discarded canvas is zero in every channel. Only a *live* frame with no red in it separates the two.
+- `frameLost` reading a colour channel instead of alpha passed everything, because a discarded canvas is zero in every channel. Only a *live* frame with no red in it separates the two. That test then had to be rewritten when the guard stopped throwing: while a lost frame failed the scan, "a gallery was sent" caught a red-reading probe, but once a lost frame is merely skipped the same probe enrols the full colour gallery with every `reid` silently missing — which the old assertions called a pass. It now pins the reid vectors themselves.
 
-And two mutations that ran green because the code they broke was genuinely redundant, which is worth knowing rather than papering over: `cancelScan()`'s `scanRun++` and `live()`'s `state.autoScanning` check are two halves of one guarantee — every path that clears the flag also starts a run that retires the token — so either alone stops a parked run. Both are kept as belt and braces, but no test can distinguish them, and one claiming to would be asserting nothing.
+And three mutations that ran green because the code they broke was genuinely redundant, which is worth knowing rather than papering over. `cancelScan()`'s `scanRun++` and `live()`'s `state.autoScanning` check are two halves of one guarantee — every path that clears the flag also starts a run that retires the token — so either alone stops a parked run. The third is `runAutoScan`'s capture of `targetId`, above. All three are kept as belt and braces, but no test can distinguish them, and one claiming to would be asserting nothing.
 
 ## Server-side limits
 
