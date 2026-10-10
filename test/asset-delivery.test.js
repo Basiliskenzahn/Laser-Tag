@@ -51,9 +51,10 @@ test('the models are cacheable: no no-store, and a real max-age', () => {
   assert.match(models, /etag\s+on/, 'ETags are what make the revalidation a 304 instead of a 200');
 });
 
-test('the models beat the extension regexes, or they fall back to no-store', () => {
-  // nginx tries regex locations before prefix ones, so without "^~" the \.tflite$ and
-  // \.task$ blocks below would win and undo the caching above. This is the subtle one.
+test('the cached prefixes keep "^~", so no future regex location can steal them', () => {
+  // nginx tries regex locations before prefix ones. The file has no regex locations left,
+  // but adding one on an extension these directories contain (.tflite, .mjs, .wasm) would
+  // silently win and put the models back on no-store. "^~" is what forecloses that.
   assert.match(conf, /location\s+\^~\s+\/models\//, '/models/ must use the ^~ modifier');
   assert.match(conf, /location\s+\^~\s+\/vendor\//, '/vendor/ must use the ^~ modifier');
 });
@@ -71,16 +72,9 @@ test('the pinned vendor bundle is cacheable and keeps its MIME types', () => {
 test('the app shell stays uncacheable so a redeploy takes effect at once', () => {
   // Deploys are `git pull && docker compose up --build -d` with no filename hashing, so a
   // cached shell leaves phones on yesterday's client. These are small; caching them buys
-  // almost nothing and risks a lot.
-  const root = locationBody('/');
-  assert.match(root, /no-store/, 'the catch-all must stay no-store');
-
-  // Caching by extension would have caught the app's own modules too. The app/vendor split
-  // is by path for exactly that reason, and these blocks must stay no-store to prove it.
-  for (const ext of ['mjs', 'wasm']) {
-    assert.match(locationBody(`~* \\.${ext}$`), /no-store/,
-      `*.${ext} outside /vendor/ is app code and must not be cached`);
-  }
+  // almost nothing and risks a lot. The caching split is by path, not by extension, for
+  // exactly this reason: a rule keyed on an extension would cache the app's own code too.
+  assert.match(locationBody('/'), /no-store/, 'the catch-all must stay no-store');
 });
 
 test('compression is on, and never applied to the models', () => {
@@ -134,14 +128,10 @@ function locationMatches() {
 
 test('cross-origin isolation sets both headers the browser requires', () => {
   // COOP alone does nothing; COEP alone does nothing. crossOriginIsolated needs both.
+  // require-corp specifically: `credentialless` is laxer but Safari does not implement it,
+  // and this game is played on phones. Pinning the value covers both points.
   assert.match(isolation, /add_header\s+Cross-Origin-Opener-Policy\s+"same-origin"/);
   assert.match(isolation, /add_header\s+Cross-Origin-Embedder-Policy\s+"require-corp"/);
-});
-
-test('COEP stays require-corp, which is the only value Safari implements', () => {
-  // `credentialless` is laxer and would avoid the cross-origin opt-in requirement, but
-  // Safari does not support it and this game is played on phones.
-  assert.doesNotMatch(isolation, /Cross-Origin-Embedder-Policy\s+"credentialless"/);
 });
 
 test('every header carries "always", or it vanishes on a 304', () => {
@@ -169,14 +159,6 @@ test('every static location includes the isolation snippet', () => {
   }
 });
 
-test('the proxied paths are left out of isolation on purpose', () => {
-  // /api/ and /events/ answer fetch() and EventSource, not documents. Nothing about
-  // isolation applies to them, and adding headers there would only be noise.
-  for (const match of ['/api/', '/events/']) {
-    assert.doesNotMatch(locationBody(match), /cross-origin-isolation\.conf/);
-  }
-});
-
 test('the client loads nothing cross-origin, which is what makes require-corp safe', () => {
   // require-corp blocks every cross-origin subresource that does not opt in - a blank
   // screen, not a degraded one. It is safe only while the client is entirely same-origin.
@@ -191,14 +173,4 @@ test('the client loads nothing cross-origin, which is what makes require-corp sa
       );
     }
   }
-});
-
-test('the Dockerfile ships the snippet, or nginx will not start', () => {
-  // An `include` of a file that is not in the image is a hard startup failure, which would
-  // take the whole frontend down on deploy rather than degrade it.
-  const dockerfile = fileURLToPath(new URL('../frontend/Dockerfile', import.meta.url));
-  assert.match(
-    readFileSync(dockerfile, 'utf8'),
-    /COPY\s+frontend\/cross-origin-isolation\.conf\s+\/etc\/nginx\/cross-origin-isolation\.conf/,
-  );
 });

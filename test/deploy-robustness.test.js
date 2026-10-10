@@ -203,15 +203,8 @@ test('the cert is regenerated on expiry, not merely when the file is missing', (
 
 test('a half-written cert or key cannot wedge the container forever', () => {
   // If openssl was killed mid-write, the old existence-only guard passed forever and nginx
-  // failed to start on every boot, with no fix but `docker volume rm`.
-  // `-checkend` exits non-zero on an unparseable cert as well as on a near-expired one, so
-  // the cert half is covered by the check above - but a truncated KEY is invisible to it.
-  assert.match(
-    ENTRYPOINT,
-    /openssl\s+pkey\s+-in/,
-    'the key must be validated separately: `-checkend` on the cert says nothing about it',
-  );
-  // And the write itself should be atomic, so the bad state stops being reachable.
+  // failed to start on every boot, with no fix but `docker volume rm`. So openssl writes to
+  // temporary names and the pair is published with mv; rename(2) in the volume is atomic.
   assert.match(
     ENTRYPOINT,
     /^\s*mv\s+/m,
@@ -226,6 +219,26 @@ test('a half-written cert or key cannot wedge the container forever', () => {
       `openssl writes straight to ${path}, so a kill mid-write leaves a truncated file in place`,
     );
   }
+});
+
+test('the SAN marker is cleared before the renames and written after both', () => {
+  // Two renames are not one atomic operation: a kill between them leaves a NEW key beside
+  // the OLD cert - two individually valid, individually parseable files that nginx refuses
+  // to start on ("key values mismatch"). Nothing about either file reveals it, so the marker
+  // doubles as the commit record for the pair. Only this order works: writing it before the
+  // mv's, or never clearing it, reopens the wedge. (An `openssl pkey` probe on the key was
+  // tried instead and does not help - the new key parses perfectly.)
+  const marker = ENTRYPOINT.match(/^(\w+)="\$CERT_DIR\/cert\.sans"/m);
+  assert.ok(marker, 'the entrypoint must keep a marker file alongside the pair');
+  const rm = ENTRYPOINT.search(new RegExp(`^\\s*rm\\s+-f\\s+"\\$${marker[1]}"`, 'm'));
+  const mvs = [...ENTRYPOINT.matchAll(/^\s*mv\s+.*$/gm)];
+  const write = ENTRYPOINT.search(new RegExp(`>\\s*"\\$${marker[1]}"`, 'm'));
+
+  assert.notEqual(rm, -1, `${marker[1]} must be cleared before the pair is republished`);
+  assert.equal(mvs.length, 2, 'expected the key and the cert to each be moved into place');
+  assert.notEqual(write, -1, `${marker[1]} must be written after a successful generation`);
+  assert.ok(rm < mvs[0].index, 'the marker must be cleared before the first mv');
+  assert.ok(write > mvs[1].index, 'the marker must be written after the last mv');
 });
 
 test('the cert carries a subjectAltName, which is the only name a browser reads', () => {

@@ -72,17 +72,26 @@ There is deliberately **no `npm ci`**. No test in the suite resolves a bare spec
 | --- | --- |
 | `/models/` | The four model files, `application/octet-stream`. **Cacheable** — `public, max-age=300` plus an ETag. Uses the `^~` modifier (see the warning below). Never compressed. |
 | `/vendor/` | The pinned MediaPipe and ONNX Runtime files. **Cacheable** — `public, max-age=86400` plus an ETag. A `types` block inside restates `.mjs` → `text/javascript` and `.wasm` → `application/wasm`. Also `^~`. |
-| `*.mjs` | Served as `text/javascript`. Browsers refuse to load a module script with the wrong MIME type. Now only matches **outside** `/vendor/`, i.e. app-owned modules, and stays `no-store`. |
-| `*.wasm` | Served as `application/wasm`, needed for WebAssembly streaming compilation. Also only matches outside `/vendor/`, and stays `no-store`. |
-| `*.task`, `*.tflite` | Served as `application/octet-stream`, `no-store`. Dead in practice now that every model lives under `/models/`; kept so a model dropped somewhere else gets the safe default rather than silently being cached. |
 | `/api/` | Proxied to `http://backend:4000`, buffering off, **gzip off**, 60 s read timeout (polls are held for up to 20 s), `client_max_body_size 2m` so a gallery upload with re-identification embeddings (~210 KB) has room to spare |
 | `/events/` | Proxied to the backend, buffering and caching off, **gzip off**, 1 h read timeout for long-lived SSE streams |
 | `/` | Static files — the app shell. `no-store`, ETags off. |
 
-> **Careful with `/models/` and `/vendor/`:** both need the `^~` modifier. nginx tries regex
-> locations *before* prefix ones, so plain `location /models/` would lose to the `\.tflite$`
-> and `\.task$` regexes further down the file and the models would quietly go back to
-> `no-store`. `test/asset-delivery.test.js` asserts the modifier is still there.
+There used to be four more blocks — `~* \.mjs$`, `\.wasm$`, `\.task$` and `\.tflite$` — setting
+a MIME type and `no-store` by extension. They were deleted because they matched **nothing**:
+every `.task`/`.tflite`/`.onnx` file lives under `/models/` and every `.mjs`/`.wasm` under
+`/vendor/`, both of which are `^~` prefixes that beat a regex location anyway. The app's own
+28 modules are all `.js`, which nginx's stock `mime.types` maps to `application/javascript`.
+
+> **Careful with `/models/` and `/vendor/`:** keep the `^~` modifier on both. nginx tries regex
+> locations *before* prefix ones, so if anyone adds a `location ~* \.tflite$` (or `.mjs`,
+> `.wasm`) it would win over a plain `location /models/` and quietly put the models back on
+> `no-store`. `^~` forecloses that. `test/asset-delivery.test.js` asserts it is still there.
+>
+> One consequence of dropping those blocks: nginx's stock `mime.types` has **no entry for
+> `.mjs`** (it maps `js` and `wasm`, verified against nginx 1.27.3's `conf/mime.types`). So an
+> app-owned `.mjs` added *outside* `/vendor/` would be served as `application/octet-stream` and
+> the browser would refuse it as a module. Keep app modules on `.js`, or put the file under
+> `/vendor/`, whose `types` block names `mjs` explicitly.
 
 ### Caching policy, and why the app shell is the exception
 
@@ -96,9 +105,9 @@ Two tiers, split **by path rather than by file extension**:
 - **The models and the vendor runtimes are cached.** They are the ~18 MB (models) plus
   11–14 MB (WASM) that used to be re-downloaded on *every* page load, reload and rejoin.
 
-The split has to be by path because `.mjs` and `.wasm` are used by both sides: the vendor
-bundle under `/vendor/`, and potentially the app's own modules. A rule keyed on the
-extension would cache the app's own code and break the deploy.
+The split has to be by **path**, not by extension: `.mjs` and `.wasm` could belong to either
+side — the pinned vendor bundle, or the app's own code — and a rule keyed on the extension
+would cache the app's own modules and break the deploy.
 
 **How a model update reaches a player who has already played.** This is the reason the
 policy revalidates instead of using `immutable`. Models are committed under fixed names and
@@ -224,13 +233,14 @@ It regenerates when **any** of these is true, which is the part that used to be 
 
 | Condition | Why |
 | --- | --- |
-| either file is missing or empty | the original case |
+| either file is missing or empty | the original case, and what catches a truncated key |
+| `/certs/cert.sans` is missing or does not match `CERT_HOSTS` | two things at once: editing `CERT_HOSTS` would otherwise silently do nothing for the life of the volume, **and** a generation that did not run to completion is detected (see below) |
 | the cert expires within 30 days | the old guard tested only *existence*. With `-days 365`, on day 366 nginx still started and still served 443 — with an expired certificate, which mobile browsers refuse far less forgivingly than an untrusted-but-valid one, and nothing reported it |
 | the cert does not parse | `openssl x509 -checkend` exits non-zero on an unparseable file as well as a near-expired one, so this comes free |
-| the key does not parse | a truncated *key* is invisible to a check on the cert, and nginx needs both |
-| `CERT_HOSTS` changed since the cert was written | otherwise editing it would silently do nothing for the life of the volume |
 
-Generation writes to `/certs/.cert.pem.new` and `/certs/.key.pem.new` and `mv`s both into place. `rename(2)` within the volume is atomic, so a container killed mid-`openssl` leaves the previous usable pair rather than a truncated file. (Before this, a kill mid-write left two files that satisfied the existence guard forever, after which nginx failed to start on *every* boot with no fix but `docker volume rm`.)
+Generation clears `cert.sans`, writes to `/certs/.cert.pem.new` and `/certs/.key.pem.new`, `mv`s both into place, and writes `cert.sans` last. `rename(2)` within the volume is atomic, so a container killed mid-`openssl` leaves whole files rather than truncated ones.
+
+**`cert.sans` is the commit record for the pair, which is the part that is easy to delete by mistake.** Two renames are not one atomic operation: a kill *between* them leaves a new key next to the old cert — two individually valid, individually parseable files that nginx refuses to start on (`key values mismatch`). No check on the files themselves can see that. Because the marker is removed before the renames and written after both, its absence is what makes the next boot regenerate instead of wedging. An `openssl pkey -in key.pem` probe was tried here and removed: it cannot detect a mismatched pair (the new key parses perfectly), and the `-s` check above already covers the truncated-key case it was added for.
 
 ### subjectAltName
 
