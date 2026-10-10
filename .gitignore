@@ -31,3 +31,6 @@ npm-debug.log*
 
 # Python
 __pycache__/
+
+# Claude Code agent worktrees and local session state - never belongs in the repo.
+.claude/
