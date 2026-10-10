@@ -43,4 +43,4 @@ jobs:
           ssh -i ~/.ssh/deploy_key \
             -p "$SSH_PORT" \
             "$SSH_USER@22-direct.viscon-hackathon.ch" \
-            'cd /home/viscon/Laser-Tag && git checkout main && git pull && docker compose down && docker compose up -d'
+            'cd /home/viscon/Laser-Tag && git checkout main && git pull && docker compose up --build -d'
