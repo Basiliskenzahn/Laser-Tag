@@ -142,12 +142,12 @@ test('a player who usually scores high keeps their name and stays shootable thro
 });
 
 test('motion widens the gap: matching movement lifts a player over the threshold, contradicting movement keeps a look-alike out', async () => {
-  const lukewarm = [0.66, 0.67, 0.65, 0.66, 0.67, 0.66];
+  const lukewarm = [0.63, 0.64, 0.62, 0.63, 0.64, 0.63];
   assert.ok((await trackScores(lukewarm)).every((s) => s.playerId == null), 'appearance alone is not enough');
   const moving = await trackScores(lukewarm, { scoreAdjust: (track, id) => (id === 'rex' ? 0.06 : 0) });
   assert.equal(moving.at(-1).playerId, 'rex');
 
-  const lookAlike = [0.74, 0.75, 0.73, 0.74, 0.75, 0.74];
+  const lookAlike = [0.72, 0.73, 0.71, 0.72, 0.73, 0.72];
   assert.equal((await trackScores(lookAlike)).at(-1).playerId, 'rex', 'appearance alone names them');
   const contradicted = await trackScores(lookAlike, { scoreAdjust: (track, id) => (id === 'rex' ? -0.08 : 0) });
   assert.ok(contradicted.every((s) => s.playerId == null), JSON.stringify(contradicted));

@@ -96,7 +96,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `LIVE_TRACK_MS` | 520 | A track counts as visible for this long after last being seen |
-| `TARGET_LOCK_MS` | 350 | How long an identity must be held before it's targetable |
+| `TARGET_LOCK_MS` / `TARGET_LOCK_REID_MS` | 350 / 150 | How long an identity must be held before it's targetable (colour signature / re-identification) |
 | `TARGET_MIN_SCORE` | 0.48 | Minimum overall match score (colour signature) |
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
 | `reidTargetMinScore()` (identify.js) | threshold − 0.01 | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
@@ -165,7 +165,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.70 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65. |
+| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.68 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 had no false positives. |
 | `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
 | `MOTION_SCORE_BONUS` / `MOTION_SCORE_PENALTY` (motion-identity.js) | +0.06 / −0.08 | Added to a track's typical score for a player when that player's phone motion is consistent / inconsistent with the person on screen. 0 with `?motion=off` or while nobody moves. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |

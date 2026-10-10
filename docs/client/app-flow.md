@@ -103,7 +103,7 @@ A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Be
 | **Motion-confirmed** | Unless `?motion=off`: the target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
 | **Classifier-only** | No usable motion data, and the appearance identity is "confident on its own": `isStableTarget()` below. Unavailable with `?motion=strict`. |
 
-With motion enabled, a motion-confirmed identity is targetable immediately, with no lock-time requirement - only liveness (`LIVE_TRACK_MS`) applies. `isStableTarget(track)` (in `motion-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 350 ms (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
+With motion enabled, a motion-confirmed identity is targetable immediately, with no lock-time requirement - only liveness (`LIVE_TRACK_MS`) applies. `isStableTarget(track)` (in `motion-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 150 ms with re-identification (`TARGET_LOCK_REID_MS`) or 350 ms on the colour signature (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
 
 | | Score floor | Per-part floors |
 | --- | --- | --- |

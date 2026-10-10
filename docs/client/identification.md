@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.70 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
+| Overall score | ≥ 0.68 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:

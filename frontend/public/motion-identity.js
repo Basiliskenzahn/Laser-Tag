@@ -19,6 +19,9 @@ const MOTION_SEND_INTERVAL_MS = 500;
 const MOTION_CHECK_MS = 300;
 const MOTION_HISTORY_MS = 12_000;
 const TARGET_LOCK_MS = 350;
+// Re-identification names already need two agreeing checks on a 3 s median score (identify.js),
+// so the extra hold before a shot can be short: 350 ms here was a third of the time to shootable.
+const TARGET_LOCK_REID_MS = 150;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
 // How far motion moves a person's re-identification score for one player (motionScoreAdjustment).
@@ -90,7 +93,7 @@ function refreshMotionChecks(track, now) {
 // The tracker's `scoreAdjust` (identify.js adds it to a person's typical score for a player): up
 // when that player's phone moves the way the person on screen does, down when it clearly doesn't.
 // Real games put players at 0.70-0.80+ and non-players at 0.60-0.65, so whenever people move this
-// widens the gap: a player scoring 0.66 who walks gets named, a look-alike scoring 0.74 whose
+// widens the gap: a player scoring 0.63 who walks gets named, a look-alike scoring 0.72 whose
 // movement doesn't match the player's phone doesn't. Standing still leaves the score alone.
 export function motionScoreAdjustment(track, playerId, now = performance.now()) {
   if (MOTION_OFF) return 0;
@@ -106,7 +109,7 @@ function isStableTarget(track, now = performance.now()) {
     return Boolean(
       track.playerId &&
         Number.isFinite(track.identifiedAt) &&
-        now - track.identifiedAt >= TARGET_LOCK_MS &&
+        now - track.identifiedAt >= TARGET_LOCK_REID_MS &&
         track.score >= reidTargetMinScore(),
     );
   }
