@@ -1,6 +1,6 @@
 # Stage 1: just to get the browser runtimes (MediaPipe tasks-vision, ONNX Runtime Web) onto disk -
 # nginx has no npm, and the frontend doesn't need anything else from node_modules.
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
