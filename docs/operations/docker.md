@@ -58,9 +58,11 @@ Uses the `test` profile, so `docker compose up` doesn't start it. Run it explici
 docker compose run --rm tests
 ```
 
-It mounts the repo into a `node:22-bookworm-slim` container, masks `node_modules` with an empty `test-node-modules` volume (so it never touches your host folder), and runs `npm test`. See [Testing](../development/testing.md).
+It mounts the repo into a `node:22-bookworm-slim` container and runs `npm test`. See [Testing](../development/testing.md).
 
-There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. It also deletes `node_modules` before installing, so the volume cached nothing between runs either. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+
+There used to be an empty `test-node-modules` volume mounted over `/app/node_modules` to mask the host's copy. It was deleted along with `npm ci`: it cached nothing (`npm ci` deletes `node_modules` first anyway), and since no test resolves a bare specifier there is nothing for the host's copy to shadow. One less named volume to clean up.
 
 `backend-tests` is the Python half, and `scripts/test.ps1` runs both and checks both exit codes.
 
@@ -72,17 +74,26 @@ There is deliberately **no `npm ci`**. No test in the suite resolves a bare spec
 | --- | --- |
 | `/models/` | The four model files, `application/octet-stream`. **Cacheable** — `public, max-age=300` plus an ETag. Uses the `^~` modifier (see the warning below). Never compressed. |
 | `/vendor/` | The pinned MediaPipe and ONNX Runtime files. **Cacheable** — `public, max-age=86400` plus an ETag. A `types` block inside restates `.mjs` → `text/javascript` and `.wasm` → `application/wasm`. Also `^~`. |
-| `*.mjs` | Served as `text/javascript`. Browsers refuse to load a module script with the wrong MIME type. Now only matches **outside** `/vendor/`, i.e. app-owned modules, and stays `no-store`. |
-| `*.wasm` | Served as `application/wasm`, needed for WebAssembly streaming compilation. Also only matches outside `/vendor/`, and stays `no-store`. |
-| `*.task`, `*.tflite` | Served as `application/octet-stream`, `no-store`. Dead in practice now that every model lives under `/models/`; kept so a model dropped somewhere else gets the safe default rather than silently being cached. |
 | `/api/` | Proxied to `http://backend:4000`, buffering off, **gzip off**, 60 s read timeout (polls are held for up to 20 s), `client_max_body_size 2m` so a gallery upload with re-identification embeddings (~210 KB) has room to spare |
 | `/events/` | Proxied to the backend, buffering and caching off, **gzip off**, 1 h read timeout for long-lived SSE streams |
 | `/` | Static files — the app shell. `no-store`, ETags off. |
 
-> **Careful with `/models/` and `/vendor/`:** both need the `^~` modifier. nginx tries regex
-> locations *before* prefix ones, so plain `location /models/` would lose to the `\.tflite$`
-> and `\.task$` regexes further down the file and the models would quietly go back to
-> `no-store`. `test/asset-delivery.test.js` asserts the modifier is still there.
+There used to be four more blocks — `~* \.mjs$`, `\.wasm$`, `\.task$` and `\.tflite$` — setting
+a MIME type and `no-store` by extension. They were deleted because they matched **nothing**:
+every `.task`/`.tflite`/`.onnx` file lives under `/models/` and every `.mjs`/`.wasm` under
+`/vendor/`, both of which are `^~` prefixes that beat a regex location anyway. The app's own
+28 modules are all `.js`, which nginx's stock `mime.types` maps to `application/javascript`.
+
+> **Careful with `/models/` and `/vendor/`:** keep the `^~` modifier on both. nginx tries regex
+> locations *before* prefix ones, so if anyone adds a `location ~* \.tflite$` (or `.mjs`,
+> `.wasm`) it would win over a plain `location /models/` and quietly put the models back on
+> `no-store`. `^~` forecloses that. `test/asset-delivery.test.js` asserts it is still there.
+>
+> One consequence of dropping those blocks: nginx's stock `mime.types` has **no entry for
+> `.mjs`** (it maps `js` and `wasm`, verified against nginx 1.27.3's `conf/mime.types`). So an
+> app-owned `.mjs` added *outside* `/vendor/` would be served as `application/octet-stream` and
+> the browser would refuse it as a module. Keep app modules on `.js`, or put the file under
+> `/vendor/`, whose `types` block names `mjs` explicitly.
 
 ### Caching policy, and why the app shell is the exception
 
@@ -96,9 +107,9 @@ Two tiers, split **by path rather than by file extension**:
 - **The models and the vendor runtimes are cached.** They are the ~18 MB (models) plus
   11–14 MB (WASM) that used to be re-downloaded on *every* page load, reload and rejoin.
 
-The split has to be by path because `.mjs` and `.wasm` are used by both sides: the vendor
-bundle under `/vendor/`, and potentially the app's own modules. A rule keyed on the
-extension would cache the app's own code and break the deploy.
+The split has to be by **path**, not by extension: `.mjs` and `.wasm` could belong to either
+side — the pinned vendor bundle, or the app's own code — and a rule keyed on the extension
+would cache the app's own modules and break the deploy.
 
 **How a model update reaches a player who has already played.** This is the reason the
 policy revalidates instead of using `immutable`. Models are committed under fixed names and
@@ -169,9 +180,9 @@ keep them safe:
    regardless — adding `gzip_proxied any` later still cannot break them, because of (1).
 3. `proxy_buffering off` is unchanged, and the backend also sends `X-Accel-Buffering: no`.
 
-Verified end to end against the real backend: the SSE response carries **no
-`Content-Encoding`** and its first payload byte arrives in **0.68 ms** while the stream stays
-open, and `/api/poll` returns `application/json` with no `Content-Encoding`.
+Verified end to end: with `Accept-Encoding: gzip` on the request, the SSE response still carries
+**no `Content-Encoding`** and its first payload byte arrives in **0.75 ms** while the stream stays
+open for another 1.2 s, and `/api/` returns `application/json` with no `Content-Encoding`.
 `test/asset-delivery.test.js` fails if either `gzip off` or `proxy_buffering off` is removed.
 
 ### No preload hints
@@ -224,13 +235,14 @@ It regenerates when **any** of these is true, which is the part that used to be 
 
 | Condition | Why |
 | --- | --- |
-| either file is missing or empty | the original case |
+| either file is missing or empty | the original case, and what catches a truncated key |
+| `/certs/cert.sans` is missing or does not match `CERT_HOSTS` | two things at once: editing `CERT_HOSTS` would otherwise silently do nothing for the life of the volume, **and** a generation that did not run to completion is detected (see below) |
 | the cert expires within 30 days | the old guard tested only *existence*. With `-days 365`, on day 366 nginx still started and still served 443 — with an expired certificate, which mobile browsers refuse far less forgivingly than an untrusted-but-valid one, and nothing reported it |
 | the cert does not parse | `openssl x509 -checkend` exits non-zero on an unparseable file as well as a near-expired one, so this comes free |
-| the key does not parse | a truncated *key* is invisible to a check on the cert, and nginx needs both |
-| `CERT_HOSTS` changed since the cert was written | otherwise editing it would silently do nothing for the life of the volume |
 
-Generation writes to `/certs/.cert.pem.new` and `/certs/.key.pem.new` and `mv`s both into place. `rename(2)` within the volume is atomic, so a container killed mid-`openssl` leaves the previous usable pair rather than a truncated file. (Before this, a kill mid-write left two files that satisfied the existence guard forever, after which nginx failed to start on *every* boot with no fix but `docker volume rm`.)
+Generation clears `cert.sans`, writes to `/certs/.cert.pem.new` and `/certs/.key.pem.new`, `mv`s both into place, and writes `cert.sans` last. `rename(2)` within the volume is atomic, so a container killed mid-`openssl` leaves whole files rather than truncated ones.
+
+**`cert.sans` is the commit record for the pair, which is the part that is easy to delete by mistake.** Two renames are not one atomic operation: a kill *between* them leaves a new key next to the old cert — two individually valid, individually parseable files that nginx refuses to start on (`key values mismatch`). No check on the files themselves can see that. Because the marker is removed before the renames and written after both, its absence is what makes the next boot regenerate instead of wedging. An `openssl pkey -in key.pem` probe was tried here and removed: it cannot detect a mismatched pair (the new key parses perfectly), and the `-s` check above already covers the truncated-key case it was added for.
 
 ### subjectAltName
 
@@ -255,7 +267,7 @@ docker volume rm laser-tag_certs
 docker compose up --build
 ```
 
-`docker compose down -v` also works, but it removes the test `node_modules` volume too.
+`docker compose down -v` also works, but it removes the `backend-pip-cache` volume too.
 
 ## Line endings
 
@@ -269,7 +281,18 @@ The model files (`*.tflite`, `*.task`, `*.onnx`, `*.wasm`) are pinned `binary`, 
 
 Both images build from the repo root (`context: .`).
 
-`.dockerignore` patterns are matched against each path in the context, and **a pattern with no separator matches only at the top level**. A bare `node_modules` therefore missed every nested copy — including `.claude/worktrees/*/node_modules`, and `.claude/` is ~1 GB on a machine with agent worktrees (15 × ~181 MB). The context went from ~45 MB to ~1 GB. That is local build speed only, since `.gitignore` keeps `.claude/` off the VM, but every local `docker compose build` paid it. Hence `**/node_modules`, `.claude/` and `**/.git`.
+`.dockerignore` patterns are matched against each path in the context, and **a pattern with no separator matches only at the top level** — so a bare `node_modules` missed every nested copy. `**/` matches *zero* or more directories, so `**/node_modules` covers the top-level copy as well as `.claude/worktrees/*/node_modules`. Hence `**/node_modules`, `.claude/` and `**/.git`.
+
+Measured on this machine (`tar -cf - .` over the context, with and without the exclusions):
+
+| | Bytes |
+| --- | --- |
+| whole tree, no exclusions | 383,109,120 (**365 MiB**) |
+| with `.dockerignore` applied | 19,445,760 (**18.5 MiB**) |
+
+A 20× reduction, and it is `node_modules` (181 MB), `.claude/` (152 MB) and `.git` (20 MB) that account for essentially all of it. Of the 18.5 MiB that remains, **~18 MB is the four committed model files** — the rest of the source tree is only about 1.4 MB. So there is nothing further worth excluding: any additional pattern would be shaving at 1.4 MB while risking a `COPY` that silently matches nothing.
+
+The `.claude/` figure moves around a lot (it was ~1 GB at 15 agent worktrees, 152 MB at 8). It is local build speed only — `.gitignore` keeps it off the VM — but every local `docker compose build` pays it.
 
 `**/__pycache__`, `**/*.pyc` and `backend/test_*.py` are excluded for a different reason: `backend/Dockerfile` is `COPY backend/ ./backend/`, so the production image was shipping the test files plus 176 KB of **cpython-314** bytecode into a `python:3.12-slim` image, where it is not even loadable. `frontend/public/*.test.js` likewise — `COPY frontend/public/ /usr/share/nginx/html/` published it, and `GET /identify.test.js` answered **200** on the production origin (measured).
 
@@ -322,10 +345,11 @@ documents, so isolation does not apply to them.
 isolation does not take effect, `crossOriginIsolated` is false and `reid.js` falls back to one
 thread — today's behaviour. There is no path where this is slower.
 
-**Verified** with nginx 1.30.5 against the unmodified shipped configs: `nginx -t` passes, and on
-the wire `index.html`, `app.js` and `/models/*` all carry the three headers while `/api/` carries
-none. **Not verified:** the `nginx:1.27-alpine` image specifically, and the real thread count on a
-phone — `?debug` reports it.
+**Verified** with nginx 1.30.5 against the byte-identical shipped configs, served over a doc root
+mirroring the image layout: `nginx -t` passes, and on the wire `index.html`, `app.js`, every
+`/models/*` and every `/vendor/*` carries all three headers, while `/api/` carries none. A **304**
+revalidation on a model still carries them, which is what `always` is for. **Not verified:** the
+`nginx:1.27-alpine` image specifically, and the real thread count on a phone — `?debug` reports it.
 
 ## Common commands
 

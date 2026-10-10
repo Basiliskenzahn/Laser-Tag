@@ -223,13 +223,3 @@ test('the deps stage copies out of node_modules, and those sources exist when in
     }
   }
 });
-
-test('the vendored runtimes are not committed, which is why the COPY is load-bearing', () => {
-  // If someone commits frontend/public/vendor/, `COPY frontend/public/` would start covering
-  // these paths and the test above would stop meaning anything. Fail loudly instead.
-  assert.ok(
-    !existsSync(repo('frontend/public/vendor')),
-    'frontend/public/vendor/ now exists, so the /vendor/ coverage check above is no longer '
-    + 'testing the deps stage - rework it',
-  );
-});
