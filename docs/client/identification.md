@@ -7,7 +7,7 @@ Detection only says "there's a person here". With more than two players, a phone
 3. **The tracker**: follow people across frames so identity is stable and matching doesn't run on every frame (`identify.js`).
 4. **Motion confirmation**: check the person's on-screen movement against what each player's own phone reports, and confirm or veto the answer (`motion/matching.js`, `motion/sensor.js`).
 
-Everything runs on the phone. Players' galleries come from the server's `roster` message; their motion comes from the server's `motion` relay.
+Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once. Their motion comes from the server's `motion` relay.
 
 ## The signals, in order of strength
 

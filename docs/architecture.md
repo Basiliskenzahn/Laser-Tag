@@ -99,7 +99,7 @@ before deploying - see [Streamlining](streamlining.md).
 | State | Owner | Notes |
 | --- | --- | --- |
 | Rooms, players, HP, wins, status, countdown | Server, in memory | Lost on restart. No database. |
-| Player galleries (scans) | Server, in memory | Sent to every phone in the room as the roster. |
+| Player galleries (scans) | Server, in memory | Sent to every phone in the room as the roster, but each gallery only once per phone — see [the roster delta](server/protocol.md#the-roster-delta). |
 | Camera frames, detections, tracks | Each phone | Never leave the device. |
 | Motion activity | Each phone, relayed by the server | One number per 100 ms per phone. The server only forwards it to the other players in the room and keeps no history. |
 | Name, room, own scan, active lobby | Phone `localStorage` | Lets a phone rejoin after a reload. |

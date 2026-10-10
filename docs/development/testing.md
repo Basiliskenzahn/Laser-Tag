@@ -25,7 +25,7 @@ npm test
 node --test test/*.test.js frontend/public/identify.test.js
 ```
 
-That is: the two browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
+That is: the browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`.
 
 ## Running the Python suite
 
@@ -56,23 +56,42 @@ like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ### `backend/test_models.py`: game rules
 
-Unit tests for the `Room` class, 14 cases: starting needs 2 players and full scans, room capacity,
+Unit tests for the `Room` class, 18 cases: starting needs 2 players and full scans, room capacity,
 no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
 unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
 it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round, that
 `roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
 directions.
 
+Plus the bookkeeping behind [the roster delta](../server/protocol.md#the-roster-delta): a roster
+entry can omit its gallery while still carrying the identity half; every gallery write moves
+`gallery_rev` and a refused scan does not; and a clone's `mirrored_gallery_rev()` moves exactly
+when the owner's gallery does, which is what stops a phone matching a clone against a replaced
+scan.
+
 ### `backend/test_protocol.py`: HTTP/SSE protocol
 
 Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
-phones), 14 cases: joining and starting, launching only once everyone is scanned, resuming with a
+phones), 19 cases: joining and starting, launching only once everyone is scanned, resuming with a
 remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
 being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
 room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
 reaching both players over their poll loops and producing an SSE `health` event, a three-player
 free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
 everyone except the sender.
+
+Five of those cover [the roster delta](../server/protocol.md#the-roster-delta), with realistically
+sized (~190 KB) galleries so the cost assertions mean something: a scan reaching every phone while
+costing the room one gallery per phone rather than N×N — asserted both as a count of galleries on
+the wire and in bytes off `poll_bytes`, which is the guard against the quadratic fan-out coming
+back; joins and leaves updating membership without re-shipping scans; a reconnecting phone being
+sent the roster complete and current; back-to-back rescans converging everywhere on the later one;
+and a rescanned owner updating the clone's entry on every phone.
+
+Because the roster is a delta, `last_roster()` in that file merges the whole message history the
+way the client's `mergeRoster()` does, rather than reading the last message. Every roster
+assertion is therefore about what a phone *holds*, not which bytes one message carried — and
+`client.since(mark)` is how the cost assertions ask what an action actually sent.
 
 `rooms`/`connections`/`pollers`/`sse_clients` in `backend.transport` are module-level globals
 shared by the whole test process (there's no per-test app state to reset) - every test uses a
@@ -91,6 +110,19 @@ Checks that when two visible tracks carry the same player id, only the higher-sc
 Drives `matchGallery()` and `averageSignatures()` with synthetic 512-dimensional unit vectors at chosen cosine similarities, and colour parts deliberately set to look like a perfect match so only the `reid` score can decide. Covers: the re-identification score deciding when both sides have one; a bystander being rejected in closed-set mode *despite* matching colours; two players scoring alike being a tie rather than a guess; galleries without `reid` falling back to the old colour behaviour; and averaged scan samples keeping a normalised embedding.
 
 This is the suite that pins down the priority rules described in [Identification](../client/identification.md#the-signals-in-order-of-strength) — it needs no browser because the embedding is just a vector by the time matching sees it.
+
+### `test/roster.test.js`: folding in the roster delta
+
+Drives `mergeRoster()` from `frontend/public/roster.js`, the client half of [the roster
+delta](../server/protocol.md#the-roster-delta). Covers: an entry without a `gallery` keeping the
+one the phone holds; membership arriving wholesale so leavers and joiners land correctly; a player
+never seen before whose gallery was withheld reading as simply unscanned; an explicit `gallery: []`
+*not* being mistaken for a withheld one (which would resurrect a scan the room no longer has); a
+full roster replacing everything, as a reconnect receives; and the merge not mutating its input.
+
+`roster.js` imports `state.js`, which imports `env.js`, which reads the query string and the
+camera elements at import time — so the test stubs `location` and `document` rather than standing
+up a DOM. `mergeRoster` itself is pure.
 
 ### `test/motion.test.js`: motion matching
 
