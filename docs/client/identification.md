@@ -225,17 +225,38 @@ The game adds the local player's own gallery to the candidate list under the lab
 
 ### 1. Associating boxes with tracks
 
-Each existing track predicts where it is now from its velocity. Every (track, box) pair is scored as 0.5 × IoU + 0.35 × centre closeness + 0.15 × size similarity. Pairs scoring at least 0.3 are matched greedily, best first. A matched track's box is smoothed toward the new box (68% new), and its velocity updated.
+Each existing track predicts where it is now by projecting its last *measured* centre along its velocity (not its drawn box, which is smoothed and so always a little behind the measurements it is predicting). Every (track, box) pair is scored as 0.5 × IoU + 0.35 × centre closeness + 0.15 × size similarity. Pairs scoring at least 0.3 are matched greedily, best first.
 
-Unmatched boxes start new tracks. Tracks not seen for 900 ms are dropped.
+Unmatched boxes start new tracks. Tracks not seen for 900 ms are dropped; in between they coast on a damped velocity, and `missedFrames` says for how many detections.
+
+#### Movement, and why it is written in seconds
+
+Three filters run on every matched track, and all three are time constants (`1 - exp(-dt/tau)`) rather than per-detection blend factors, because the detection interval is neither fixed nor the same on every phone: 50 ms while something is being searched for, 100 ms once everything is found and named, longer on a slow device, and longer again across a missed detection.
+
+| | | |
+|---|---|---|
+| `BOX_SMOOTHING_TAU_MS` | 40 ms | the drawn box, which `game.js` also shoots |
+| `VELOCITY_SMOOTHING_TAU_MS` | 180 ms | `track.vx/vy`, measured from raw detection centres |
+| `COAST_VELOCITY_TAU_MS` | 600 ms | how fast an unseen track's velocity fades |
+
+Position and velocity are filtered **independently**, and velocity from the raw centres rather than from the smoothed box. They used to be one number, which meant any reduction in display lag was paid for in association quality and in aim.
+
+A time constant is not quite free of the detection rate, and it is worth knowing which way each one bends when the rate goes up:
+
+- **Position gets laggier.** A one-pole filter sampled every `dt` settles `v · dt · (1-a)/a` behind a target, which grows toward `v · tau` as `dt` shrinks. At the old 120 ms interval `tau = 60 ms` trailed 7.5 px at 400 px/s; at 50 ms the same tau trails 15.4 px. `tau = 40 ms` restores the tuned figure (8.0 px at 50 ms, 3.6 px at 100 ms) for less box noise than the old operating point had.
+- **Velocity is flat.** The noise of a filtered difference quotient is `(a/dt) · sigma · sqrt(2/(2-a))`, and `a/dt → 1/tau` as `dt` shrinks: the extra differencing noise is paid for by the extra averaging. 120 ms → 50 ms costs 11%, against a 19% asymptote. Unchanged.
+- **Coasting was rate-coupled, and that was a real regression.** It used to be a flat ×0.82 per update — a 419 ms half-life at the 120 ms interval it was tuned at, but a 175 ms half-life at the 50 ms interval a coasting track now forces (`missedFrames > 0` picks the fast tier). A person stepping behind a pillar for 300 ms came back with 30% of their velocity instead of 61%, so the prediction under-shot and the track was likelier to be dropped and re-created as a stranger. `600 ms` is `-120 / ln(0.82)` rounded, so it means at 50 ms what 0.82 meant at 120 ms, and the same thing at every other interval.
+
+Two bounds stay in wall-clock units on purpose. `VELOCITY_MAX_GAP_MS` (400 ms) is how long a gap may be before the straight line across it stops being a velocity — a bound on how fast a person can reverse, which no detection rate changes. `MIN_FRAME_DT_S` (16 ms) is one video frame, and exists only for the detection the shot path can force a millisecond after a scheduled one.
+
+The association threshold stays at 0.3. A faster rate raises every *correct* pair's score, since boxes move less between frames, but that is not a reason to tighten it: a wrong pair's score is set by how close the two people are, not by the interval, so the margin improved rather than narrowed. And the threshold is not what decides a crossing — pairs are taken best-first, and when both candidates clear 0.3 comfortably (two people close enough to confuse are) the ordering decides and the gate is never consulted. What resolves a crossing is the velocity prediction; `test/track-motion.test.js` shows two people walking through each other staying on their own tracks, and swapping when the prediction is taken away. Raising the gate leaves that outcome untouched and costs a correct re-association after an occlusion.
 
 ### 2. Deciding when to re-identify
 
 Matching only runs on a track that was seen this frame and:
 
-- has no identity yet, **or**
-- is in its first 6 checks (to identify new people fast), **or**
-- hasn't been checked for 250 ms.
+- has no identity yet (such a track is due on every detection), **or**
+- hasn't been checked for `RECHECK_MS` (100 ms).
 
 Between checks, identity simply rides along with the track.
 
