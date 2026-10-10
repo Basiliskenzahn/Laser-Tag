@@ -46,13 +46,8 @@ pip install -r backend/requirements.txt
 python -m unittest discover -s backend -p "test_*.py" -v
 ```
 
-`backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the Node
-implementation's archived test suites (`deprecated/server/game.test.js`,
-`deprecated/server/realtime.test.js`) against the Python backend that's actually deployed -
-written when it turned out, during an unrelated cleanup, that `backend/` had no tests of its own
-at all (see [Streamlining](../streamlining.md) for that history). `test_models.py` uses
-`unittest.TestCase` with a fake clock (`room.now = lambda: t`, since `Room.now()` isn't
-constructor-injectable in Python the way the Node version was); `test_protocol.py` uses
+`test_models.py` uses `unittest.TestCase` with a fake clock (`room.now = lambda: t`, since
+`Room.now()` isn't constructor-injectable); `test_protocol.py` uses
 `aiohttp.test_utils.AioHTTPTestCase` to drive the real `create_app()` with polling clients, exactly
 like phones do - no mocking of `Room`/`Session` internals in either suite.
 

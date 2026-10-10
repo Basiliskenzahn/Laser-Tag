@@ -41,7 +41,6 @@ backend/                Python game server (Docker, production, and local dev - 
 test/                   Browser-free client tests (motion, reid matching)
 scripts/                Windows PowerShell helpers
 docs/                   You are here
-deprecated/             Archived code, not built/run/tested - see deprecated/README.md
 docker-compose.yml
 .github/workflows/      Deploy job
 ```

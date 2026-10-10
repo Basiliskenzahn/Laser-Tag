@@ -79,20 +79,15 @@ All realtime traffic uses ordinary HTTP:
 
 This works unchanged through reverse proxies, SSO gateways, Cloudflare tunnels and self-signed local HTTPS, which were all part of the hackathon's hosting setup. There is no WebSocket code path. See [Networking](client/networking.md) and [Protocol](server/protocol.md).
 
-## One backend (there used to be two)
+## One backend
 
 `backend/` (Python) is the only server implementation - game rules in `backend/models.py`,
-protocol in `backend/app.py`/`backend/transport.py`. A second, Node implementation
-(`server/game.js` + `server/realtime.js`) used to exist purely so `npm start`/`npm run dev` could
-run the whole game without Docker; it's archived under `deprecated/server/` (see
-[Streamlining](streamlining.md)) and no longer built, run, or tested.
+protocol in `backend/app.py`/`backend/transport.py`. It is covered by
+`backend/test_models.py`, `backend/test_protocol.py` and `backend/test_transport.py` - see
+[Testing](development/testing.md).
 
-That archiving briefly made things worse before it made them better: the Node implementation's
-tests (now `deprecated/server/*.test.js`) were the only automated coverage this game's rules and
-protocol ever had, and they tested the Node copy, not the Python one that's actually deployed.
-`backend/test_models.py` and `backend/test_protocol.py` port that coverage to the real backend -
-see [Testing](development/testing.md). What's still missing: CI doesn't run either test suite
-before deploying - see [Streamlining](streamlining.md).
+What's still missing: CI doesn't run either test suite before deploying - see
+[Open items](open-items.md).
 
 ## State: who owns what
 
