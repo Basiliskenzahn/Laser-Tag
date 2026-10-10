@@ -213,13 +213,12 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 | `MIN_SHAPE_SCORE` | 0.36 — **deliberately unchanged**, see below |
 
 `MIN_SHAPE_SCORE` is worth a paragraph, because its value does not mean what the others' do. Until
-[the normalisation fix](../shape-feature-bug.md), `shape` returned 0 for everyone, so 0.36 had
+the normalisation fix, `shape` returned 0 for everyone, so 0.36 had
 never gated anything and was chosen against a dead feature. The fix made the gate *reachable*
 without retuning it: that is the conservative state to leave it in, since lowering or raising it
 both need a real distribution of colour-only `s` scores, and the only numbers that exist are
-[synthetic](../shape-normalisation-evaluation.md) (on which 0.36 rejects 0% of correct pairs and
-0% of wrong-person ones). Collect real values with `?debug` on a device where OSNet does not load
-before moving it. The same applies to `EVIDENCE_MIN_PART` below.
+synthetic. Collect real values with `?debug` on a device where OSNet does not load before moving
+it. The same applies to `EVIDENCE_MIN_PART` below. See [Open items](../open-items.md).
 
 `MIN_SHAPE_SCORE`, `EVIDENCE_MIN_PART` and `EVIDENCE_MIN_SCORE` are **exported** from
 `identify.js`, so anything measuring against them reads the live value rather than a copy.

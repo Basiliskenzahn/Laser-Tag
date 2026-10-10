@@ -104,9 +104,13 @@ scan or round left behind: a stale reading looks exactly like a live one.
 The implementation is `frontend/public/range-readout.js` — pure, DOM-free and unit-tested
 (`test/range-readout.test.js`), reached only from inside the `if (DEBUG)` branch of the frame loop.
 `test/range-readout-cost.test.js` holds that last property down, so the readout costs nothing at
-all when `?debug` is absent. For the offline counterpart — what admitting smaller boxes does to
-accuracy, and why the synthetic answer cannot be trusted — see
-[box scale and range](../box-scale-evaluation.md).
+all when `?debug` is absent.
+
+This readout is what should decide any change to the size gate, because it is the one measurement
+that can tell a *refusal* from a missing *detection* for the people actually in front of the
+camera — and those have opposite fixes. Synthetic fixtures cannot answer it: flat-colour test
+people have almost no detail to lose, so their accuracy curve stays flat at every box scale no
+matter how small the box gets.
 
 ### The input readout
 

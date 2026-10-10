@@ -8,7 +8,7 @@ Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Po
 
 Built during a 42-hour hackathon.
 
-**Full documentation lives in [`docs/`](docs/README.md)** - architecture, how identification actually works (colour signature → learned re-identification embedding → motion confirmation), the wire protocol, configuration/tuning, and known structural issues worth revisiting ([`docs/streamlining.md`](docs/streamlining.md)). This file is just enough to get it running.
+**Full documentation lives in [`docs/`](docs/README.md)** - architecture, how identification actually works (colour signature → learned re-identification embedding → motion confirmation), the wire protocol, configuration/tuning, and the decisions still open on purpose ([`docs/open-items.md`](docs/open-items.md)). This file is just enough to get it running.
 
 ## Running it
 

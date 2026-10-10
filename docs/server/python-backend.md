@@ -44,7 +44,7 @@ On its own it serves no client. To play against it locally, put something in fro
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
 | `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
 | `broadcast_*`, `roster_for`, `process_hit` | `transport.py` | Fan-out of `state`, `roster`, SSE events and hit messages. `roster_for()` is the per-connection roster [delta](protocol.md#the-roster-delta) |
-| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead - see [Streamlining](../streamlining.md). Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
+| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead. Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
 | `evict`, `displace`, `poller_for` | `transport.py` | Ending one conversation without touching the room: marks a mailbox, drops its queue and delivery record, and wakes its parked poll so the phone is told `410`. See [Seat handover](protocol.md#seat-handover) |
 | `api_*`, `events`, `health`, `create_app` | `app.py` | HTTP handlers and app assembly - the entrypoint |
 | `sweep_once` / `sweep_pollers` | `transport.py` | One reaping pass, and the loop that runs it every 5 s: closes sessions not seen for 30 s |

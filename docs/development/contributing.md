@@ -47,10 +47,10 @@ docker-compose.yml
 
 ## Workflow
 
-1. Branch off `main`.
-2. Run locally: `docker compose up --build`, or `npm run dev` for faster iteration on the client.
+1. Branch off `dev`.
+2. Run locally: `docker compose up --build`.
 3. Test: `docker compose run --rm tests` (or `npm test`). For anything involving the camera, also test by hand with [`?debug`](debug-mode.md), ideally on a real phone.
-4. Open a pull request into `main`. Merging (or closing) it **deploys automatically** to the hackathon server. See [Deployment](../operations/deployment.md).
+4. Open a pull request into `dev`. Closing it - merged **or not** - **deploys automatically** to the hackathon server. See [Deployment](../operations/deployment.md).
 
 ## Conventions
 
@@ -71,19 +71,19 @@ When you change rules, messages, validation or limits:
 2. Add or update a case in `backend/test_models.py` or `backend/test_protocol.py`.
 3. Update [Protocol](../server/protocol.md) and [Game rules](../server/game-rules.md).
 
-Nothing runs these in CI yet - see [Streamlining](../streamlining.md) - so also check by hand
+Nothing runs these in CI yet - see [Open items](../open-items.md) - so also check by hand
 against the Python backend in Docker (`?debug` helps) before relying on the suite alone.
 
 ## Changing the signature format
 
 If you add, remove or resize a signature field in `identify.js`:
 
-- bump `SCAN_CACHE_VERSION` in `screens/scan.js` so phones discard old cached scans;
+- bump `SCAN_CACHE_VERSION` in `scan-cache.js` so phones discard old cached scans;
 - update `GALLERY_FIELDS` in `backend/sanitize.py`, or the new field is silently dropped;
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES` (and nginx's `client_max_body_size`);
 - update the scan cache validator `validScanCache()` if the field is required;
 - round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
-- decide whether `averageSignatures()` should L2-normalise it. The default (`averageVectors`) does, and that is free for anything compared with `cosine()`. A field compared any other way may need the raw mean (`meanVector`) instead — `shape` is compared as a log ratio of aspects and does, which is [what went wrong](../shape-feature-bug.md) when it didn't. Changing a field's scale is itself a format change: bump the cache version for it.
+- decide whether `averageSignatures()` should L2-normalise it. The default (`averageVectors`) does, and that is free for anything compared with `cosine()`. A field compared any other way may need the raw mean (`meanVector`) instead — `shape` is compared as a log ratio of aspects and does, which is [what went wrong](../client/identification.md#the-signature) when it didn't. Changing a field's scale is itself a format change: bump the cache version for it.
 - decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `motion-identity.js` too.
 
 `reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
@@ -107,7 +107,7 @@ Useful starting points if you're looking for something to work on:
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.
 - **Solo scanning:** a scan needs a second person holding the phone. A front-camera or mirror mode would remove that.
 - **iOS vibration:** Safari doesn't support `navigator.vibrate`.
-- **No CI tests:** the deploy job doesn't run either test suite first - see [Streamlining](../streamlining.md).
+- **No CI tests:** the deploy job doesn't run either test suite first - see [Open items](../open-items.md).
 - **Large galleries:** the colour fields are still sent at full float precision, so a full gallery is ~210 KB against a 1 MB limit. Fine now, worth watching.
 - **SSE events are unused** by the client beyond debug logging.
 - **In-memory state:** restarting the server ends all games.
