@@ -11,7 +11,7 @@ import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
 import { localSelfId, scannedGallery } from './roster.js';
-import { onRemoteMotion } from './identity.js';
+import { onRemoteMotion } from './motion-identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';

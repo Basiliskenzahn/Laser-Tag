@@ -53,7 +53,7 @@ docker-compose.yml
 
 ## Keep both backends in sync
 
-The game server exists twice: `backend/app.py` (production) and `server/game.js` + `server/realtime.js` (dev and tests). They must behave the same. When you change rules, messages, validation or limits:
+The game server exists twice: `backend/` (`models.py` + `transport.py` + `app.py`, production) and `server/game.js` + `server/realtime.js` (dev and tests). They must behave the same. When you change rules, messages, validation or limits:
 
 1. Make the change in both.
 2. Add or update a test in `server/*.test.js`.
@@ -66,12 +66,12 @@ Known small differences are listed in [Python backend → Differences](../server
 
 If you add, remove or resize a signature field in `identify.js`:
 
-- bump `SCAN_CACHE_VERSION` in `app.js` so phones discard old cached scans;
+- bump `SCAN_CACHE_VERSION` in `screens/scan.js` so phones discard old cached scans;
 - update `GALLERY_FIELDS` in **both** servers, or the new field is silently dropped;
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES` (and nginx's `client_max_body_size`);
 - update the scan cache validator `validScanCache()` if the field is required;
 - round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
-- decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `app.js` too.
+- decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `motion-identity.js` too.
 
 `reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
 
@@ -79,7 +79,7 @@ If you add, remove or resize a signature field in `identify.js`:
 
 - Model files live in `public/models/` and are referenced by URL constants at the top of `detector.js` (MediaPipe models) and `reid.js` (the OSNet `.onnx`).
 - `@mediapipe/tasks-vision` and `onnxruntime-web` are pinned in `package.json`. After bumping either, run `npm install` to update `package-lock.json`. The frontend image copies both packages out of `node_modules` (to `/vendor/tasks-vision/` and `/vendor/ort/`), and the Node dev server serves them from there.
-- New file types need a MIME type in `frontend/common-locations.conf` and in the `MIME` table in `server/index.js`. (`.onnx` is currently served as `application/octet-stream` by the fallback in both, which browsers are happy with.)
+- New file types need a MIME type in `frontend/common-locations.conf` and in the `MIME` table in `server/index.js`. (`.onnx` is currently served as `application/octet-stream` by the fallback in both, which browsers are happy with.) New files under `public/` don't need any Docker change - `frontend/Dockerfile` copies the whole directory.
 - Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring `REID_MATCH_THRESHOLD` — a wrong pre-processing step degrades accuracy silently rather than failing.
 
 ## Known issues and loose ends
@@ -88,7 +88,6 @@ Useful starting points if you're looking for something to work on:
 
 - **Trust model:** the shooter's phone decides hits and the server trusts it, so a modified client can cheat.
 - **Similar outfits:** much better since the [re-identification model](../client/identification.md#the-re-identification-embedding-reidjs) landed, but a phone where it fails to load falls back to the colour signature, where players dressed alike are still often left unidentified.
-- **`COUNTDOWN_MS` differs between the backends:** 3000 in `server/game.js`, 5000 in `backend/app.py`. Harmless (phones correct from `startsInMs`) but it should be one number.
 - **Re-identification latency:** the model is asynchronous and a track isn't identified at all until its first embedding arrives, which costs a moment on a newly visible player. A second in-flight inference, or a worker, would cut it.
 - **Motion needs permission and movement:** iOS only prompts inside a tap, and two players standing still produce no usable correlation, so motion is a bonus signal rather than something that can be relied on.
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.

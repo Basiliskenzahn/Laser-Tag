@@ -7,7 +7,7 @@
 
 import { $ } from './env.js';
 import { keepScreenOn } from './camera.js';
-import { startMotion } from './identity.js';
+import { startMotion } from './motion-identity.js';
 import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';

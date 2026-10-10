@@ -18,7 +18,7 @@ MAX_PLAYERS = 8
 MAX_HP = 100
 DAMAGE = {"body": 20, "head": 50}
 SHOT_COOLDOWN_MS = 350
-COUNTDOWN_MS = 5000
+COUNTDOWN_MS = 3000
 
 #: Suffix that marks the second, fake player a phone can add to a room for
 #: single-device testing. See :meth:`Room.clone_owner_id`.

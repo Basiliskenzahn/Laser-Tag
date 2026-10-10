@@ -34,7 +34,8 @@ flowchart LR
 
 | Component | Location | Responsibility | Docs |
 | --- | --- | --- | --- |
-| UI and game loop | `public/app.js`, `index.html`, `style.css` | Screens, camera, render loop, scanning, shooting, HUD | [App flow](client/app-flow.md) |
+| UI and game loop | `public/app.js` (entrypoint), `public/state.js`, `public/env.js`, `public/roster.js`, `public/camera.js`, `public/net.js`, `public/screens/*.js`, `index.html`, `style.css` | Screens, camera, render loop, scanning, shooting, HUD | [App flow](client/app-flow.md) |
+| Motion-aware identity | `public/motion-identity.js` | Fuses the appearance classifier's answer with phone-motion confirmation into a final "who is this" verdict (`resolveIdentity()`) | [App flow](client/app-flow.md#who-counts-as-a-target) |
 | Transport | `public/transport.js` | Long-polling connection to the server | [Networking](client/networking.md) |
 | Detection | `public/detector.js` | Runs MediaPipe models, produces person boxes and hitboxes | [Detection](client/detection.md) |
 | Identification | `public/identify.js` | Appearance signatures, gallery matching, multi-frame tracker | [Identification](client/identification.md) |
@@ -42,7 +43,7 @@ flowchart LR
 | Motion matching | `public/motion/sensor.js`, `public/motion/matching.js` | Each phone shares its accelerometer activity; a tracked person's on-screen motion confirms or vetoes who the classifier thinks they are | [Identification](client/identification.md#motion-confirmation-motion) |
 | Sound | `public/sound.js` | Synthesised sound effects | [Feedback](client/feedback.md) |
 | Models | `public/models/` | EfficientDet-Lite0, Pose Landmarker Lite, MobileNetV3 embedder, OSNet x0.25 | [Detection](client/detection.md#models) |
-| Python backend | `backend/app.py` | Production game server | [Python backend](server/python-backend.md) |
+| Python backend | `backend/` (`app.py` entrypoint, `models.py`, `transport.py`, `sanitize.py`) | Production game server | [Python backend](server/python-backend.md) |
 | Node dev server | `server/` | Local dev server and test target | [Node dev server](server/node-dev-server.md) |
 | nginx frontend | `frontend/` | Static files, TLS, reverse proxy | [Docker setup](operations/docker.md) |
 
@@ -83,13 +84,13 @@ This works unchanged through reverse proxies, SSO gateways, Cloudflare tunnels a
 
 The same protocol and game rules are implemented twice:
 
-| | Python (`backend/app.py`) | Node (`server/`) |
+| | Python (`backend/`) | Node (`server/`) |
 | --- | --- | --- |
 | Used by | Docker and production | `npm start` / `npm run dev`, and all automated tests |
 | Serves static files | No (nginx does) | Yes |
 | TLS | No (nginx does) | Yes, self-signed via `selfsigned` |
-| Game rules | `Room` class in the same file | `server/game.js` |
-| Protocol | aiohttp handlers in the same file | `server/realtime.js` |
+| Game rules | `Room` class in `backend/models.py` | `server/game.js` |
+| Protocol | aiohttp handlers in `backend/app.py`, session/poller/broadcast plumbing in `backend/transport.py` | `server/realtime.js` |
 
 They're meant to behave identically. **Any change to rules or the protocol has to be made in both**, and the tests only cover the Node version. See [Contributing](development/contributing.md#keep-both-backends-in-sync).
 

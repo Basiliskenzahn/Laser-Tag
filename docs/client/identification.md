@@ -265,9 +265,9 @@ The 6-second window and the 0.75 threshold come from simulation (random walk/sta
 | nobody | several or no phones match | nobody | `ambiguous` / `unrecognised` |
 | self-match | — | nobody | `self` |
 
-"Confident on its own" is `isStableTarget()` in `app.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. So with no motion data at all (nobody granted permission, or everyone is standing still), the behaviour is exactly the pre-motion behaviour.
+"Confident on its own" is `isStableTarget()` in `motion-identity.js` — the same lock time and score minimums the [targeting rules](app-flow.md#shooting) use. With no motion data at all (nobody granted permission, or everyone is standing still), the `classifier-only`/`unconfirmed` rows apply and behaviour matches the pre-motion behaviour - but note that's *not* true of the `corrected`/`vetoed` rows: if motion data exists and disagrees with a correct, confident classifier answer (which real sensor noise - clock drift, a pocketed phone, a throttled background tab - can cause, independent of whether the shooter personally granted motion permission, since other players' shared samples are what gets checked), the shot can be silently discarded or retargeted even though the pre-motion logic alone would have gotten it right.
 
-With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are.
+With `?motion=strict` in the URL, `requireMotion` is set and the `classifier-only` fallback is removed: a shot then only counts when the target's own phone confirms who they are. Conversely, **`?motion=off`** skips `fuseMotion()` entirely for this phone's own targeting, falling back unconditionally to the pre-motion gate (`isStableTarget()` alone) - the way to check whether motion fusion itself is responsible for a targeting problem.
 
 ### How the client drives it
 

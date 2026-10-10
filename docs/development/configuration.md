@@ -14,17 +14,18 @@ Published Docker ports (`8080`, `3443`) are set in `docker-compose.yml`.
 
 ## URL parameters
 
-Read once at startup in `public/app.js`:
+Read once at startup in `public/env.js`:
 
 | Parameter | Effect |
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
 | `?room=<code>` | Pre-fills the room code on the join screen |
 | `?motion=strict` | Sets `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
+| `?motion=off` | Sets `MOTION_OFF`: skips motion fusion entirely for this phone's own targeting and restores the pre-motion-matching behaviour (appearance identity + `isStableTarget()` only - no veto, no retargeting). Useful for isolating whether motion fusion is the cause of a targeting problem; motion samples are still shared with other phones either way. |
 
 ## Game rules
 
-Defined in **both** `server/game.js` and `backend/app.py`. Change them together.
+Defined in **both** `server/game.js` and `backend/models.py`. Change them together.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -33,15 +34,13 @@ Defined in **both** `server/game.js` and `backend/app.py`. Change them together.
 | `MAX_HP` | 100 | Starting HP |
 | `DAMAGE` | body 20, head 50 | Damage per hit zone |
 | `SHOT_COOLDOWN_MS` | 350 | Server-side minimum time between shots |
-| `COUNTDOWN_MS` | 3000 (Node) / 5000 (Python) | Countdown before a round |
+| `COUNTDOWN_MS` | 3000 | Countdown before a round |
 
-> **The two backends currently disagree on `COUNTDOWN_MS`**: `server/game.js` uses 3000 and `backend/app.py` uses 5000. The client's `GAME_LAUNCH_COUNTDOWN_MS` (3000) matches the Node value, so against the Python backend the local countdown reaches "GO!" early and is then corrected by the server's `startsInMs` in the next `state` message. Pick one value and set all three.
-
-The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350) and `GAME_LAUNCH_COUNTDOWN_MS` (3000) in `public/app.js`. Keep them equal to the server values.
+The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `public/screens/lobby.js`). Keep them equal to the server values.
 
 ## Networking
 
-In both `server/realtime.js` and `backend/app.py`:
+In both `server/realtime.js` and `backend/transport.py`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -81,7 +80,7 @@ Wider boxes are more forgiving but count more near-misses as hits.
 
 Model options that aren't separate constants but are worth knowing about, inside `createDetector()`: the object detector takes `maxResults: 8` and the `person` category only; the pose landmarker takes `numPoses: 8` and detection/presence/tracking confidence `0.18`; the embedder is created with `l2Normalize: true, quantize: false`.
 
-`public/app.js`:
+`public/screens/game.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -93,7 +92,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 
 ## Targeting
 
-`public/app.js`. These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
+`public/motion-identity.js` (`LIVE_TRACK_MS` is the exception - it stays in `public/screens/game.js`, since only the game loop's own liveness check needs it). These decide when an identified person may be shot without motion confirmation, and are the main guard against crediting the wrong player.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -107,7 +106,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 
 ## Scanning
 
-`public/app.js`:
+`public/screens/scan.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -244,7 +243,7 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 | `inconsistentAt` | 0.30 | Correlation at or below which an active pair contradicts it |
 | `gapMs` (in `resample`) | 350 | How far a sample may be from a grid point and still be interpolated |
 
-`public/app.js`:
+`public/motion-identity.js`:
 
 | Constant | Default | Effect |
 | --- | --- | --- |
@@ -258,4 +257,5 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
 - **Motion never confirms anyone:** check the overlay's `motion` line. `off` means permission wasn't granted (iOS only asks inside a tap), `no data` means no `devicemotion` events are arriving, and `from nobody` means no other phone is sending samples.
+- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** play with `?motion=off`, which bypasses `fuseMotion()` entirely and restores the pre-motion-matching targeting gate (appearance identity + `isStableTarget()` only, no motion veto/correction). Comparing behaviour with and without it is the fastest way to tell whether motion fusion or something else is at fault.
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

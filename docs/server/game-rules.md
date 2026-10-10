@@ -3,7 +3,7 @@
 The rules live in a `Room` class with no networking, implemented twice with the same behaviour:
 
 - `server/game.js` (Node, unit-tested in `server/game.test.js`)
-- the `Room` class in `backend/app.py` (Python, used in production)
+- the `Room` class in `backend/models.py` (Python, used in production)
 
 ## Constants
 
@@ -15,9 +15,7 @@ The rules live in a `Room` class with no networking, implemented twice with the 
 | `DAMAGE.body` | 20 | Body hit damage |
 | `DAMAGE.head` | 50 | Headshot damage |
 | `SHOT_COOLDOWN_MS` | 350 | Minimum time between a player's accepted shots |
-| `COUNTDOWN_MS` | 3000 (Node) / 5000 (Python) | Countdown before a round starts |
-
-> The two implementations currently disagree on `COUNTDOWN_MS`: `server/game.js` has 3000, `backend/app.py` has 5000, and the client's local countdown mirrors the Node value. Phones self-correct from the server's `startsInMs`, so nothing breaks, but the number should be the same in all three. See [Configuration → Game rules](../development/configuration.md#game-rules).
+| `COUNTDOWN_MS` | 3000 | Countdown before a round starts |
 
 ## Room states
 

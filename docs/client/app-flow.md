@@ -1,15 +1,24 @@
 # App flow and screens
 
-`public/app.js` is the client's entry point. It owns the screens, the camera, the render loop, scanning, shooting and the HUD, and wires together the other modules:
+`public/app.js` is now just the entry point: it wires DOM events to the four screens and resumes an active lobby on load. Everything it used to own directly has moved into focused modules:
 
 | Module | Used for |
 | --- | --- |
+| `env.js` | URL-parameter flags (`DEBUG`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
+| `state.js` | The one shared `state` object and the `localStorage` helpers |
+| `roster.js` | Read-only lookups over the server's roster/game snapshot |
+| `camera.js` | Starting the camera and the on-device models, once |
+| `motion-identity.js` | All phone-motion plumbing plus `resolveIdentity()` - the one seam where motion fusion decides who a track is (see [Shooting](#who-counts-as-a-target) below) |
+| `net.js` | Reconnect/resume and what each server message does to the screens, built on `transport.js`'s long-polling connection |
+| `screens/join.js` | The join form and camera/model startup |
+| `screens/lobby.js` | Lobby list, launch, leave |
+| `screens/scan.js` | The rotation scan: recording, scoring, outlier/duplicate removal, the cache |
+| `screens/game.js` | The frame loop, overlay, HUD/countdown and shooting |
 | [`detector.js`](detection.md) | Creating the MediaPipe models and finding people in frames |
 | [`identify.js`](identification.md) | Signatures, matching and the `Tracker` |
 | [`reid.js`](identification.md#the-re-identification-embedding-reidjs) | The OSNet person re-identification embedding, the strongest identification signal when it loads |
 | [`motion/sensor.js`](identification.md#what-each-phone-shares-motionsensorjs) | This phone's own accelerometer/gyroscope activity |
 | [`motion/matching.js`](identification.md#motion-confirmation-motion) | Checking a tracked person's on-screen motion against each player's phone, and fusing that with the classifier |
-| [`transport.js`](networking.md) | The long-polling connection |
 | [`sound.js`](feedback.md) | Sound effects |
 
 `public/index.html` contains all four screens as sibling `<main>` elements; only one is visible at a time. A single `<video>` element and an overlay `<canvas>` are shared by the scan and game screens, so the camera is only requested once.
@@ -85,7 +94,7 @@ Motion itself runs on its own timers rather than in the loop: this phone's new s
 
 ### Who counts as a target
 
-`targetUnderCrosshair()` walks the live tracks and asks `identity(track)` who each one is. That function is the join between the two identification layers: it takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `identity()` returns a `playerId` the server says is alive.
+`targetUnderCrosshair()` (in `screens/game.js`) walks the live tracks and asks `resolveIdentity(track)` (in `motion-identity.js`) who each one is. That function is the join between the two identification layers: it takes the tracker's appearance answer and runs it through [`fuseMotion()`](identification.md#fusing-it-with-the-classifier-fusemotion) with the motion checks for that track. A track is shootable when `resolveIdentity()` returns a `playerId` the server says is alive. `?motion=off` skips the fusion entirely and falls back to the pre-motion gate below on its own - useful for telling whether motion fusion itself is the cause of a targeting problem.
 
 A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Beyond that there are two ways to get a usable identity:
 
@@ -94,7 +103,7 @@ A track must be seen within 520 ms (`LIVE_TRACK_MS`) to be considered at all. Be
 | **Motion-confirmed** | The target's own phone reports motion that correlates with the person on screen (or, where appearance said nothing, exactly one phone does). No score minimum — the confirmation is the evidence. |
 | **Classifier-only** | No usable motion data, and the appearance identity is "confident on its own": `isStableTarget()` below. Unavailable with `?motion=strict`. |
 
-`isStableTarget(track)` requires the identity to have been held for at least 350 ms (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
+Note the asymmetry: a motion-confirmed identity is targetable immediately, with no lock-time requirement - only liveness (`LIVE_TRACK_MS`) applies. `isStableTarget(track)` (in `motion-identity.js`, alongside the `TARGET_*` constants) requires the identity to have been held for at least 350 ms (`TARGET_LOCK_MS`), plus a score floor that depends on which signal decided:
 
 | | Score floor | Per-part floors |
 | --- | --- | --- |

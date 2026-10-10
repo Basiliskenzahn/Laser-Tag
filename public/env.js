@@ -13,7 +13,7 @@ export const DEBUG = params.has('debug');
 export const REQUIRE_MOTION = params.get('motion') === 'strict';
 // ?motion=off: ignore phone motion completely and aim on appearance alone, exactly as the game
 // did before motion matching was added. An escape hatch for testing whether motion fusion is
-// what is making shots unreliable - see resolveIdentity() in identity.js.
+// what is making shots unreliable - see resolveIdentity() in motion-identity.js.
 export const MOTION_OFF = params.get('motion') === 'off';
 
 export const video = $('video');

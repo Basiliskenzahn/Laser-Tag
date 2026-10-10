@@ -8,7 +8,7 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../identity.js';
+import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
