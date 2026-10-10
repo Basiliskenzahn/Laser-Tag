@@ -85,12 +85,21 @@ test('a named track whose re-identification no longer fits its player loses the 
   assert.equal(track.playerId, 'rex');
 
   // Someone else steps into the same spot: the box carries on, but they look nothing like Rex.
+  //
+  // Revocation now needs REID_REVOKE_CHECKS consecutive raw misses *and* the median - the score
+  // that granted the name, and that grants the shot - to have stopped clearing the accept floor
+  // (identify.js revokedByReid). On this series the median crosses on the fourth bad check, so
+  // the name goes one check later than it used to. That check is also the first on which the
+  // substitute stops being shootable, which is the point of tying the two together: the name and
+  // the shot are no longer lost 1-2 checks apart. The counterpart is the next test, where a real
+  // player's three-check dip no longer costs them the name at all.
   current = similarTo(rexReid, 0.3);
   track = step();
   track = step();
-  assert.equal(track.playerId, 'rex', 'two bad checks are not enough');
   track = step();
-  assert.equal(track.playerId, null, 'three in a row drop the name');
+  assert.equal(track.playerId, 'rex', 'three bad checks with the median still holding are not enough');
+  track = step();
+  assert.equal(track.playerId, null, 'the check the median concedes on drops the name');
 });
 
 test('the threshold can be tuned in the field (?reid=)', async () => {
