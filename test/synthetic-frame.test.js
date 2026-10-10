@@ -63,7 +63,13 @@ test('sensorGrid freezes per-pixel noise instead of redrawing it on every read',
   // many independent noise samples as a 300-px one and averaged them away just as well. That is
   // exactly the advantage a distant crop does not have.
   let calls = 0;
-  const noisy = [{ box: BOX, paint: bands({ head: [128, 128, 128], shirt: [128, 128, 128], accent: [128, 128, 128], trousers: [128, 128, 128], noise: () => (calls++ % 2 ? 40 : -40) }) }];
+  const grey = [128, 128, 128]; // flat, so only the noise can change a read
+  const noisy = [
+    {
+      box: BOX,
+      paint: bands({ head: grey, shirt: grey, accent: grey, trousers: grey, noise: () => (calls++ % 2 ? 40 : -40) }),
+    },
+  ];
 
   const analytic = frame(noisy);
   const a1 = analytic.pixel(BOX.x + 5.1, BOX.y + 5.1);

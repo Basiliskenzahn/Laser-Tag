@@ -24,7 +24,8 @@ const FLOOR = 0.1;
 
 // A live track at a given box height in frame pixels. `h` is what the whole readout turns on.
 function track(h, extra = {}) {
-  return { box: { x: 10, y: 10, w: Math.round(h / 2.4), h }, playerId: null, name: null, score: 0, reid: 0, hasReid: false, ...extra };
+  const box = { x: 10, y: 10, w: Math.round(h / 2.4), h };
+  return { box, playerId: null, name: null, score: 0, reid: 0, hasReid: false, ...extra };
 }
 
 const diagnostics = (over = {}) => ({ ok: 0, tooFar: 0, farReid: 0, belowFloor: 0, partialBody: 0, edgeClipped: 0, ...over });
