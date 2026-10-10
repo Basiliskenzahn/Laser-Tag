@@ -28,6 +28,23 @@ GALLERY_FIELDS = (
 #: An enrolment scan is one sample per angle; more than this is junk or abuse.
 MAX_GALLERY_SAMPLES = 24
 
+MAX_MOTION_SAMPLES = 32  # per relayed message (~3 s at 10 Hz)
+
+#: Ceiling on one activity sample, in m/s^2. "Activity" is the RMS of a phone's
+#: gravity-free acceleration over 100 ms (``motion/sensor.js``): walking reads
+#: about 1.8 and a hard shake tens, while phone accelerometers themselves
+#: saturate at 2-16 g. Anything above 16 g did not come from a phone being
+#: carried.
+#:
+#: Rejecting it is not tidiness. ``math.isfinite`` alone let a client send
+#: ``1e300``, which is finite and non-negative; squared inside the receiving
+#: phone's Pearson correlation it overflows to infinity, the correlation comes
+#: out as 0, and 0 is at or below ``inconsistentAt`` - so one crafted message
+#: makes the sender read as *contradicted* against every person on screen. Under
+#: ``?motion=strict`` that is enough to make the sender unshootable.
+MAX_MOTION_ACTIVITY = 160.0
+
+
 def clean_room_code(code):
     """Lowercase, alphanumeric-and-dash, max 16 chars, never empty."""
     cleaned = "".join(ch for ch in str(code or "demo").lower() if ch.isalnum() or ch == "-")[:16]
@@ -89,4 +106,36 @@ def clean_gallery(gallery):
             if required or vector:
                 item[name] = vector
         clean.append(item)
+    return clean
+
+
+def clean_motion_samples(samples):
+    """``[[t_ms, activity], ...]`` from a phone's motion sensor: finite numbers, capped length.
+
+    The cap keeps the **newest** samples, not the oldest. A phone normally sends
+    ~5 samples every 500 ms, but one that was backgrounded, throttled or briefly
+    disconnected flushes its whole backlog at once; truncating from the front
+    would then relay only the stale head of that backlog and drop exactly the
+    recent samples the matching needs, since ``motion/matching.js`` only
+    correlates the last 6 seconds.
+
+    Values are bounded as well as finite - see :data:`MAX_MOTION_ACTIVITY` for
+    why a merely finite number is not safe here. Timestamps are not bounded
+    against the clock: that would make this function depend on the time it runs
+    at, and the receiving phone is the one that can tell whether a sample is
+    inside its own history window, so it drops out-of-window stamps itself
+    (``onMotionMessage`` in ``motion/index.js``).
+    """
+    if not isinstance(samples, list):
+        return []
+    clean = []
+    for item in samples[-MAX_MOTION_SAMPLES:]:
+        if not isinstance(item, list) or len(item) < 2:
+            continue
+        try:
+            t, v = float(item[0]), float(item[1])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(t) and math.isfinite(v) and 0 <= v <= MAX_MOTION_ACTIVITY:
+            clean.append([int(t), round(v, 2)])
     return clean
