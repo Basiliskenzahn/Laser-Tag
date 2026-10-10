@@ -31,7 +31,6 @@ function trackedPerson(id, score, lastSeen = 1000) {
     missedFrames: 0,
     identifiedAt: lastSeen,
     identityHits: 2,
-    lastEnrichedAt: 0,
     selfRejected: false,
   };
 }

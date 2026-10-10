@@ -99,11 +99,6 @@ Two consequences are worth stating plainly, because they are what makes the band
 request one before matching and the result was discarded at the `usable` gate, so every too-small
 box in frame bought a full 128 × 256 inference on every check.
 
-`rangeDiagnostics()` returns counts of why live boxes were refused since the last
-`resetRangeDiagnostics()` — `{ ok, tooFar, farReid, belowFloor, partialBody, edgeClipped }`, one
-increment per check. `farReid` is a box the band got through; `tooFar` is one it refused, for want
-of an embedding or for failing the stricter bar.
-
 ## The re-identification embedding (`reid.js`)
 
 `reid.js` wraps **OSNet x0.25** (Zhou et al., *Omni-Scale Feature Learning for Person Re-Identification*), trained on MSMT17 by the Torchreid authors — MIT licence — and exported to ONNX as `frontend/public/models/osnet_x0_25_msmt17.onnx` (0.9 MB). Unlike the colour features and the generic MobileNet embedding, it was trained for exactly this job: deciding whether two crops of a person are the same person, across cameras, angles and lighting.

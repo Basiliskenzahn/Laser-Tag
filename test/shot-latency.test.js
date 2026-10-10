@@ -1,25 +1,19 @@
-// The shot path and the frame loop, driven for real: what fire() costs, what it resolves the shot
-// against, and whether a pending tap can get in front of a detection.
+// The shot path, driven for real: what fire() costs and what it resolves the shot against.
 //
-// The field complaint is "there is some kind of lag if i press the button since other stuff needs
-// to be processed as well", and the two halves of that are tested here:
-//
-//   fire() used to force a full synchronous detection - object detector, plus the pose model once
-//   two players were enrolled - before it resolved the shot, on the one path in the app where the
-//   player is waiting. These tests hold that off the shot path, and hold down the thing that makes
-//   removing it safe: the shot resolves against the same projected box the crosshair was set from.
-//
-//   loop() now skips a due detection while the browser has input waiting, so a tap is not queued
-//   behind an inference that had not started yet. These tests hold down both halves of that - that
-//   it actually skips, and that sustained input cannot stop detection happening.
+// The field complaint was "there is some kind of lag if i press the button since other stuff needs
+// to be processed as well". fire() used to force a full synchronous detection - object detector,
+// plus the pose model once two players were enrolled - before it resolved the shot, on the one path
+// in the app where the player is waiting. These tests hold that off the shot path, and hold down
+// the thing that makes removing it safe: the shot resolves against the same projected box the
+// crosshair was set from.
 //
 // Real here: screens/game.js, detector.js's box plumbing, identify.js's tracker, roster.js,
-// target.js and every threshold. Faked: the camera's pixels, the object detector's
-// answer, the clock, and `navigator.scheduling`.
+// target.js and every threshold. Faked: the camera's pixels, the object detector's answer and the
+// clock.
 //
 // `?debug` is OFF in this file (installFakeDom leaves location.search empty and ESM evaluates
-// env.js once per process), which makes it also the place to prove the instrumentation costs
-// nothing when it is absent. The with-?debug half lives in test/input-latency-debug.test.js.
+// env.js once per process), which makes it also the place to prove the debug overlay costs nothing
+// when it is absent.
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
@@ -102,13 +96,13 @@ function centredAt(cx, cy, { w = 60, h = 200 } = {}) {
 
 const hits = [];
 
-function arrangeRound({ detector = countingDetector(), tracks = [], detectedAt = null, scheduling = undefined } = {}) {
+function arrangeRound({ detector = countingDetector(), tracks = [], detectedAt = null } = {}) {
   hits.length = 0;
   globalThis.fetch = async (url, options) => {
     hits.push(JSON.parse(options.body));
     return { ok: true, text: async () => '' };
   };
-  Object.defineProperty(globalThis, 'navigator', { value: scheduling ? { scheduling } : {}, writable: true, configurable: true });
+  Object.defineProperty(globalThis, 'navigator', { value: {}, writable: true, configurable: true });
 
   dom.video.readyState = 2;
   // `currentTime` is deliberately never reset: loop() only detects on a video frame it has not
@@ -162,9 +156,6 @@ function frame() {
 beforeEach(() => {
   dom.element('debug').textContent = '';
   dom.element('crosshair').classes.clear();
-  // deferDetectionForInput keeps the "due since" clock in a module-level variable; a call with
-  // nothing pending clears it, so one test cannot rig the next.
-  game.deferDetectionForInput(dom.now, { pending: () => false });
 });
 
 // ---- the forced detection is off the shot path ----
@@ -267,112 +258,6 @@ test('a track the detector stopped seeing long ago is not shootable', () => {
   game.fire(dom.now);
 
   assert.equal(hits.length, 0);
-});
-
-// ---- the tap gets in front of the inference ----
-
-test('a due detection is skipped while the browser has a tap waiting', () => {
-  const { detector } = arrangeRound({
-    detectedAt: dom.now - 1000,
-    scheduling: { isInputPending: () => true },
-  });
-
-  frame();
-
-  assert.equal(detector.calls, 0, 'the inference started with input already pending');
-});
-
-test('the same frame detects normally once nothing is pending', () => {
-  // The control for the test above: without it, "0 calls" could just mean the loop never detects
-  // in this harness at all.
-  const { detector } = arrangeRound({
-    detectedAt: dom.now - 1000,
-    scheduling: { isInputPending: () => false },
-  });
-
-  frame();
-
-  assert.equal(detector.calls, 1);
-});
-
-test('a browser without isInputPending behaves exactly as it did before', () => {
-  // Chromium-only API. Everywhere else - every iPhone - this must degrade to today's behaviour
-  // rather than to "never detect".
-  const noScheduling = arrangeRound({ detectedAt: dom.now - 1000, scheduling: undefined });
-  frame();
-  assert.equal(noScheduling.detector.calls, 1, 'no navigator.scheduling stopped detection');
-
-  const emptyScheduling = arrangeRound({ detectedAt: dom.now - 1000, scheduling: {} });
-  frame();
-  assert.equal(emptyScheduling.detector.calls, 1, 'navigator.scheduling without the method stopped detection');
-});
-
-test('an isInputPending that throws does not take detection down with it', () => {
-  const { detector } = arrangeRound({
-    detectedAt: dom.now - 1000,
-    scheduling: {
-      isInputPending() {
-        throw new Error('not allowed in this context');
-      },
-    },
-  });
-
-  frame();
-
-  assert.equal(detector.calls, 1);
-});
-
-// ---- and cannot starve ----
-
-test('sustained input delays detection briefly, then detection wins', () => {
-  // A finger resting on the FIRE button produces input indefinitely. Unbounded deferral would
-  // freeze the boxes for as long as it rested there, which trades a laggy button for a blind one.
-  const { detector } = arrangeRound({
-    detectedAt: dom.now - 1000,
-    scheduling: { isInputPending: () => true },
-  });
-
-  // ~100 ms of frames with input pending the whole time: still held back.
-  for (let i = 0; i < 6; i++) {
-    frame();
-    dom.advance(16);
-  }
-  assert.equal(detector.calls, 0, 'detection was not deferred at all');
-
-  // ~300 ms in, still with input pending: it has run anyway.
-  for (let i = 0; i < 13; i++) {
-    frame();
-    dom.advance(16);
-  }
-  assert.ok(detector.calls >= 1, `detection starved under sustained input (${detector.calls} calls)`);
-});
-
-test('the deferral clock resets, so brief taps cannot add up to a freeze', () => {
-  // Pending input every other frame must not accumulate towards the bound: each time nothing is
-  // pending the detection runs, which also clears the clock.
-  let pending = true;
-  const { detector } = arrangeRound({ detectedAt: dom.now - 1000, scheduling: { isInputPending: () => pending } });
-
-  for (let i = 0; i < 40; i++) {
-    pending = i % 2 === 0;
-    frame();
-    dom.advance(16);
-    state.lastGameDetectAt = dom.now - 1000; // keep a detection due every frame
-  }
-
-  assert.ok(detector.calls >= 15, `only ${detector.calls} detections in 40 frames of alternating input`);
-});
-
-test('deferral is bounded from when the detection came due, not from the last pending frame', () => {
-  // The unit of the bound, driven directly. Pending throughout: held back at 100 ms, through at
-  // 300 ms, with no detection needed in between to reset anything.
-  const pending = () => true;
-  assert.equal(game.deferDetectionForInput(10_000, { pending }), true);
-  assert.equal(game.deferDetectionForInput(10_100, { pending }), true);
-  assert.equal(game.deferDetectionForInput(10_300, { pending }), false);
-  // And once it has let one through, the next pending frame starts a fresh bound rather than
-  // being waved through forever.
-  assert.equal(game.deferDetectionForInput(10_301, { pending }), true);
 });
 
 // ---- the ?debug instrumentation costs nothing when ?debug is absent ----

@@ -82,10 +82,10 @@ Model options that aren't separate constants but are worth knowing about, in `de
 | Constant | Default | Effect |
 | --- | --- | --- |
 | `GAME_DETECT_MAX_WIDTH` | 512 | Frame width for in-game inference. Higher is more accurate at range, but slower. |
-| `GAME_ACQUIRE_DETECT_INTERVAL_MS` | 120 | Detection interval while someone is unidentified |
-| `GAME_TRACK_DETECT_INTERVAL_MS` | 180 | Detection interval once everyone visible is identified |
+| `DETECT_INTERVAL_SEARCHING_MS` | 50 | Detection interval (20 fps) while anyone on screen is still being looked for — a track the detector just lost, or one with no identity yet. A target, not a promise: the duty cap and the camera's own frame rate both override it |
+| `DETECT_INTERVAL_SETTLED_MS` | 100 | Detection interval (10 fps) once every live track is identified and none is coasting. Paying this is what buys the searching tier its headroom; the boxes stay smooth because they are drawn from `liveBox()` every animation frame, not from the last detection |
 | `GAME_POSE_DETECT_INTERVAL_MS` | 520 | Minimum interval for the slower pose model |
-| `DETECT_INPUT_DEFER_MAX_MS` | 140 | How long a due detection may be held back while the browser has input waiting, before it runs regardless. See [Not detecting while input is pending](../client/app-flow.md#not-detecting-while-input-is-pending). |
+| `GAME_POSE_SEARCH_INTERVAL_MS` | 200 | Pose interval while a track is coasting (`detectTier()` returns `lost`). Bounded by construction rather than by a timer: a track coasts for at most `TRACK_TIMEOUT_MS` before it is dropped |
 | `SCAN_PREVIEW_DETECT_INTERVAL_MS` | 150 | Minimum interval for the scan screen's green highlight box — object detector only, on the `GAME_DETECT_MAX_WIDTH` copy, and skipped entirely while the rotation is recording. Purely cosmetic: nothing but `drawScan` reads it, so it cannot affect a gallery. Lower is a smoother-looking box and a hotter phone. |
 
 `frontend/public/camera.js` — the first-inference warm-up (see [App flow → Join](../client/app-flow.md#join-join-screen)):
@@ -212,8 +212,8 @@ it. The same applies to `EVIDENCE_MIN_PART` below. See [Open items](../open-item
 | --- | --- | --- |
 | `ASSOCIATION_MATCH` | 0.3 | Minimum score to link a box to an existing track |
 | `TRACK_TIMEOUT_MS` | 900 | Unseen tracks are dropped after this |
-| `RECHECK_MS` | 250 | Re-identification interval for established tracks |
-| `SETTLE_CHECKS` | 6 | New tracks are checked every detection for this many checks |
+| `RECHECK_MS` | 100 | Identity recheck interval for established tracks (10 Hz). Four check *counts* are calibrated against it — `REID_REVOKE_CHECKS`, `SWITCH_STREAK`, `INITIAL_STREAK` — so moving it means moving those to keep the durations they stand for |
+| `REID_REQUEST_MS` | 220 | How often a track may ask `reid.js` for a fresh embedding (~4.5 Hz). Separate from `RECHECK_MS` because `reid.request()` does a 128 × 256 `getImageData` readback on the main thread |
 | `INITIAL_STREAK` | 2 | Agreeing checks to name a new track |
 | `SWITCH_STREAK` | 4 | Agreeing checks to switch an existing identity |
 | `HIGH_CONFIDENCE_INITIAL_LOCK` | 0.66 | Colour score that names a new track immediately |
@@ -250,10 +250,6 @@ derived from OSNet's 128 × 256 input rather than picked, so if you move them, m
 the upscale factor you are willing to accept and say so — the arithmetic is in the comment beside
 them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0
 removes the band's protection entirely and is how it would start naming bystanders.
-
-`rangeDiagnostics()` is how you tune them in the field: it counts, per live check, how many boxes
-passed, were rescued by the band (`farReid`), were refused inside it (`tooFar`), or were under the
-floor (`belowFloor`).
 
 **Signature resolution:** `HUE_BINS` (12), `SAT_BINS` (4), `LUMA_BINS` (8), `SAT_DETAIL_BINS` (8), `GRID_W` (6), `GRID_H` (8), `GRID_FEATURES` (4), `EMBED_DIMS` (256), `EMBED_PRECISION` (10 000, i.e. 4 decimals). Changing any of these changes vector lengths: bump `SCAN_CACHE_VERSION` and check `GALLERY_FIELDS` limits on both servers.
 

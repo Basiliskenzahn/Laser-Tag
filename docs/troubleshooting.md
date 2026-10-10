@@ -65,7 +65,7 @@ Rescan the affected players in the playing area and check debug mode for the rej
 A player becomes targetable after they've been recognised steadily for a moment (0.15 s with re-identification, 0.35 s on the colour signature) with good confidence. Hold your aim a moment longer. Also check the outline isn't grey: knocked-out players can't be hit.
 
 **It's slow or laggy.**
-Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 120–180 ms (less often if the phone can't keep up); between detections the outlines are moved along with each person's recent motion.
+Open the game with `?debug` and look at the first overlay line. If it starts with `CPU` instead of `GPU`, the browser couldn't use the GPU for detection, and older phones will struggle. Closing other tabs and apps helps. The detector also runs on a downscaled frame and only every 50–100 ms (less often if the phone can't keep up); between detections the outlines are moved along with each person's recent motion.
 
 **No vibration when hit on iPhone.**
 Safari doesn't support the vibration API. iPhones get the red flash and sound only.

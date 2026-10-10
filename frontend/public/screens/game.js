@@ -1,22 +1,15 @@
 // The live round: the frame loop, the overlay, the HUD and the shot.
 //
-// One requestAnimationFrame loop drives every screen that shows the camera. It runs detection
-// only as often as the situation needs - slower once everyone on screen is already identified,
-// and on a shrunken copy of the frame, and not at all on a frame where the browser already has a
-// tap waiting - then draws the overlay for whichever screen is up. A shot is simply "whose hitbox
-// is in the middle of the screen right now", resolved against the same projected boxes the
-// crosshair was drawn from and with no inference of its own, and the server judges the damage.
+// One requestAnimationFrame loop drives every screen that shows the camera. It runs detection as
+// fast as the phone can stand - on a shrunken copy of the frame, aiming for the target cadence and
+// backing off only when the phone cannot keep up (see DETECT_MAX_BUSY_SHARE) - then draws the
+// overlay for whichever screen is up. A shot is simply "whose hitbox is in the middle of the screen
+// right now", resolved against the same projected boxes the crosshair was drawn from and with no
+// inference of its own, and the server judges the damage.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { getReidThreshold } from '../identify.js';
-// A namespace import alongside the named one above, deliberately. The range diagnostics are being
-// added to identify.js on a sibling branch, and a named import of an export that is not there yet
-// is not a soft failure - it is a link error that stops the whole app loading. Read through the
-// namespace and a missing one is just `undefined`, which the readout handles.
-import * as matcher from '../identify.js';
-import { rangeReadout } from '../range-readout.js';
-import { emptyInputStats, inputLatencyLine, recordBlock, recordShot } from '../input-latency.js';
+import { RECHECK_MS, getReidThreshold } from '../identify.js';
 import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
@@ -26,22 +19,42 @@ import { drawScan, scanCostLine } from './scan.js';
 
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
-const GAME_ACQUIRE_DETECT_INTERVAL_MS = 120;
-const GAME_TRACK_DETECT_INTERVAL_MS = 180;
+
+// -- detection cadence --
+// Two tiers, picked per frame by detectTier(). The fast one is the target the whole branch is
+// aimed at; the slow one is what the game actually needs when there is nothing to look for, and
+// paying it is what buys the fast tier its headroom.
+//
+// 50 ms is 20 fps. Worked through the duty cap below, any phone under ~35 ms per detection hits it
+// outright (35 / 0.7 = 50), and slower ones degrade smoothly rather than stuttering: 50 ms per
+// detection settles at 71 ms (14 fps), 70 ms at 100 ms (10 fps). The one measured figure in the
+// repo is 23 ms, which is 46% duty at this interval - headroom that the old 30 fps proposal did
+// not leave, and that the FIRE button needs.
+const DETECT_INTERVAL_SEARCHING_MS = 50;
+// 100 ms is 10 fps, and it is plenty when every live track is identified and none is coasting: the
+// boxes are drawn every animation frame from liveBox()'s velocity projection, not from the last
+// detection, so a slower detection rate costs smoothness almost nothing. It also still clears the
+// identification floor (RECHECK_MS), so names keep updating at the same rate either way.
+const DETECT_INTERVAL_SETTLED_MS = 100;
 // Detection may take at most this share of the time, so slower phones slow it down themselves
 // instead of starving the drawing and the shot.
 const DETECT_MAX_BUSY_SHARE = 0.7;
+
+// -- the pose landmarker, gameplay's second chance at a person the object detector missed --
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
+// While a track is coasting, let pose run sooner. That is precisely the job detector.js built it
+// for ("a pose nowhere near any surviving object box is a person the object detector missed"), and
+// it is bounded by construction rather than by a timer: a track coasts for at most
+// TRACK_TIMEOUT_MS (900 ms in identify.js) before it is dropped, so a lost person can hold the
+// faster pose rate for about a second and no longer.
+const GAME_POSE_SEARCH_INTERVAL_MS = 200;
+
 const GAME_DETECT_MAX_WIDTH = 512;
-// A detection that has come due may be held back this long while the browser has input waiting,
-// so a tap is not queued behind an inference that had not started yet. Bounded, because the
-// alternative starves detection: a finger resting on the FIRE button produces input events
-// indefinitely, and with no bound the boxes would stop updating for as long as it rested there.
-// Past this much lateness the detection runs regardless of what is pending.
-//
-// Sized just over one acquire interval, so at worst this halves the detection rate for as long as
-// input keeps arriving - the boxes get staler, and liveBox() projects further, but neither stops.
-const DETECT_INPUT_DEFER_MAX_MS = 140;
+
+// What the ?debug readout prints each achieved rate against. Derived, never typed twice: a retune
+// of either interval moves the target in the overlay with it.
+const DETECT_TARGET_FPS = Math.round(1000 / DETECT_INTERVAL_SEARCHING_MS);
+const ID_TARGET_HZ = Math.round(1000 / RECHECK_MS);
 // The scan screen's preview detection - the green box round whoever a scan would use. It used to
 // run on every new video frame, through detectScanPeople (object detector *plus* pose landmarker)
 // and on the full-resolution video, which made the idle scan screen by far the most expensive
@@ -56,17 +69,6 @@ const DETECT_INPUT_DEFER_MAX_MS = 140;
 // frame capture wants the main thread. Anything that reads `state.boxes` on this screen only
 // draws with it (drawScan), so none of this can reach an enrolled signature.
 const SCAN_PREVIEW_DETECT_INTERVAL_MS = 150;
-
-// The height-ratio thresholds the range readout draws its reference line at. Read off identify.js
-// so a retune there cannot leave the overlay quoting a number the matcher stopped using.
-//
-// Both come from identify.js, so a retune there cannot leave the overlay quoting a number the
-// matcher stopped using. The far floor is the *height* floor specifically: FAR_REID_MIN_WIDTH_RATIO
-// is the one that actually binds for a standing person (a 1:2.5 body against a 1:2 model input
-// means width is upsampled hardest), but the readout prints height ratios, so quoting the width
-// floor beside them would invite exactly the wrong comparison. See docs/client/identification.md.
-const MATCH_HEIGHT_GATE = matcher.MIN_MATCH_HEIGHT_RATIO;
-const FAR_HEIGHT_FLOOR = matcher.FAR_REID_MIN_HEIGHT_RATIO ?? null;
 
 export function enterGame() {
   $('scan-screen').hidden = true;
@@ -123,78 +125,66 @@ function refreshScanPreview() {
   frames++;
 }
 
-// Is there a tap (or key, or scroll) the browser has taken off the platform queue but not yet
-// dispatched to us? If so, starting a detection now would make it wait for the whole inference -
-// which is the reported bug: "there is some kind of lag if i press the button since other stuff
-// needs to be processed as well". Returning from the frame instead lets the browser dispatch it
-// first, and the detection runs on the next frame about 16 ms later.
+// Is there someone on screen we are still looking for? Two states count, and both are things the
+// app *knows* rather than guesses:
 //
-// Chromium-only (`navigator.scheduling.isInputPending`), so it is feature-detected rather than
-// assumed: on any browser without it - every iPhone - this reads false and the loop behaves
-// exactly as it did before. The try/catch is a second line of defence for a build where the
-// method exists but refuses to run (it is documented as restricted in some contexts).
+//   'lost'       a live track the detector did not find this cycle, coasting on liveBox()'s
+//                velocity (missedFrames > 0). We saw that person a moment ago, so this is a real
+//                missed detection, not an absence - and it is the one the player notices, because
+//                the box drifts off someone standing right in front of them.
+//   'acquiring'  a live track with no identity yet. Already the state the old two-tier split was
+//                built around.
 //
-// Those two guards overlap: the try/catch alone would also turn a missing method into `false`,
-// via a TypeError. The feature check stays because catching an exception on every frame of a
-// 60 Hz loop is not a way to answer a question you can answer with a typeof - but it does mean
-// removing either one on its own leaves the suite green, which is recorded deliberately in
-// test/helpers/mutate-input-latency.py rather than left for someone to discover.
-function inputPending() {
-  const scheduling = globalThis.navigator?.scheduling;
-  if (typeof scheduling?.isInputPending !== 'function') return false;
-  try {
-    return scheduling.isInputPending() === true;
-  } catch {
-    return false;
+// Deliberately NOT a third state for "an enrolled, alive player has no live track". From inside
+// the app that is indistinguishable from a player who has walked out of frame, and the mitigation
+// would be an escalation nothing can end: a player who leaves the area is missing forever, and the
+// phone would sit pinned at the fast tier with pose relaxed for the rest of the round. The settled
+// tier is 10 fps, which finds somebody walking back into frame within about 100 ms anyway.
+//
+// `null` means everything on screen is found and named, which is the tier the game can afford to
+// be slow in.
+export function detectTier(now = performance.now()) {
+  let acquiring = false;
+  for (const track of state.tracks) {
+    if (!isLiveTrack(track, now)) continue;
+    if ((track.missedFrames ?? 0) > 0) return 'lost'; // strongest signal, so it wins outright
+    if (!track.playerId) acquiring = true;
   }
+  return acquiring ? 'acquiring' : null;
 }
 
-// When the detection now due first became due, or 0 when it is not being held back. Only ever
-// set while input is pending, and cleared the moment the detection runs, so it cannot accumulate.
-let detectDueSince = 0;
-
-// Whether to skip this frame's detection because input is waiting. Bounded by
-// DETECT_INPUT_DEFER_MAX_MS from when the detection first came due, so sustained input delays
-// detection but cannot stop it.
-export function deferDetectionForInput(now, { pending = inputPending } = {}) {
-  if (!pending()) {
-    detectDueSince = 0;
-    return false;
-  }
-  if (!detectDueSince) detectDueSince = now;
-  if (now - detectDueSince >= DETECT_INPUT_DEFER_MAX_MS) {
-    detectDueSince = 0;
-    return false;
-  }
-  return true;
-}
-
-function gameDetectInterval(now) {
-  const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
-  const base =
-    liveTracks.length && liveTracks.every((track) => track.playerId) ? GAME_TRACK_DETECT_INTERVAL_MS : GAME_ACQUIRE_DETECT_INTERVAL_MS;
+function gameDetectInterval(now, tier = detectTier(now)) {
+  const base = tier ? DETECT_INTERVAL_SEARCHING_MS : DETECT_INTERVAL_SETTLED_MS;
   return Math.max(base, inferenceMs / DETECT_MAX_BUSY_SHARE);
 }
 
-function shouldUsePoseFallback(now) {
+// Pose costs the most of anything in the loop and it inflates `inferenceMs`, which feeds the duty
+// cap above - so the cycle *after* a pose cycle is stretched. That is the price of relaxing it, and
+// it is bounded: at the search interval roughly one cycle in four runs pose, and one stretched
+// interval in four at the measured 23 + pose costs under a tenth of the detection rate. Worth it
+// only while there is actually someone to find, which is why 'lost' is the only tier that relaxes
+// it - 'acquiring' gets the fast object-detection tier and nothing more, because a track that
+// exists does not need a second way to be found.
+function shouldUsePoseFallback(now, tier) {
   if (!state.poseDetector) return false;
   if (rosterCandidateCount() < 2) return false;
-  return now - state.lastGamePoseDetectAt >= GAME_POSE_DETECT_INTERVAL_MS;
+  const interval = tier === 'lost' ? GAME_POSE_SEARCH_INTERVAL_MS : GAME_POSE_DETECT_INTERVAL_MS;
+  return now - state.lastGamePoseDetectAt >= interval;
 }
 
-function detectGameplayPeople(source, timestamp) {
-  if (shouldUsePoseFallback(timestamp)) {
+function detectGameplayPeople(source, timestamp, tier) {
+  if (shouldUsePoseFallback(timestamp, tier)) {
     state.lastGamePoseDetectAt = timestamp;
     return detectTrackedPeople(state.detector, state.poseDetector, source, timestamp);
   }
   return detectTrackedPeopleFast(state.detector, source, timestamp);
 }
 
-function refreshGameDetection() {
+function refreshGameDetection(tier = detectTier()) {
   if (state.mode !== 'game' || video.readyState < 2) return false;
   const t0 = performance.now();
   const { source, scaleX, scaleY } = gameplayInferenceSource();
-  state.boxes = scaleBoxes(detectGameplayPeople(source, t0), scaleX, scaleY);
+  state.boxes = scaleBoxes(detectGameplayPeople(source, t0, tier), scaleX, scaleY);
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
     identifyOnce: false,
@@ -205,7 +195,21 @@ function refreshGameDetection() {
   state.lastGameDetectAt = t0;
   inferenceMs = performance.now() - t0;
   frames++;
+  if (DEBUG) countIdentifyChecks(t0);
   return true;
+}
+
+// Identification is throttled separately from detection (RECHECK_MS), so its achieved rate is its
+// own number and cannot be read off the detection rate. Counted as a fraction of (live track,
+// cycle) pairs that were a real check, which multiplied by the detection rate is the per-track
+// identification Hz - what the player actually experiences as "how often does the name update".
+// ?debug only; nothing here runs on a normal load.
+function countIdentifyChecks(t0) {
+  for (const track of state.tracks) {
+    if (!isLiveTrack(track, t0)) continue;
+    idTrackCycles++;
+    if (track.lastCheck === t0) idChecks++;
+  }
 }
 
 // ---- HUD ----
@@ -342,10 +346,7 @@ function targetUnderCrosshair(px, py) {
   return bodyHit;
 }
 
-// `firedAt` is the originating event's `timeStamp` (app.js), used only by the ?debug input
-// readout: it is when the browser created the tap, so the gap to here is how long the tap waited
-// for the main thread. Optional - the keyboard path and tests may omit it.
-export function fire(firedAt = null) {
+export function fire() {
   if (!canLocalPlayerFire()) return;
   const now = performance.now();
   if (now - state.lastShotAt < FIRE_COOLDOWN_MS) return;
@@ -366,9 +367,6 @@ export function fire(firedAt = null) {
   // object detection - plus the pose model once two players were enrolled - on the one path in
   // the app where the player is waiting.
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
-  if (DEBUG) {
-    recordShot(inputStats, { eventTimeStamp: firedAt, entryAt: now, resolvedAt: performance.now() });
-  }
   if (hit) postHit(hit.playerId, hit.zone);
 }
 
@@ -392,52 +390,31 @@ let frames = 0;
 let fps = 0;
 let fpsWindowStart = performance.now();
 let inferenceMs = 0;
-// The last complete second's range diagnostics, snapshotted on the same window as `fps`.
-let rangeWindow = null;
-// Input-latency samples for the ?debug readout. `null` without ?debug, so the object is never
-// even allocated on a normal load, and every recorder below is a no-op on null even if
-// one somehow escaped its `if (DEBUG)` branch.
-const inputStats = DEBUG ? emptyInputStats() : null;
-// Previous frame's timestamp, for the longest-blocking-chunk figure. Read and written only inside
-// the DEBUG branch of loop().
-let lastDebugFrameAt = performance.now();
+// Three rates, because they are three different things and the old single "fps" was read as
+// whichever one the reader had in mind. All ?debug only.
+//   drawFrames  animation frames, i.e. how smooth the overlay actually is. This is the one a
+//               player means by "fps", and the one that says whether a detection is starving the
+//               draw: the boxes are redrawn from liveBox() every frame, so this should stay near
+//               the display rate however slowly detection runs.
+//   frames      detections. What the old counter meant, and the number the cadence targets.
+//   idChecks    identification checks, over idTrackCycles live-track-cycles. See
+//               countIdentifyChecks.
+let drawFrames = 0;
+let drawFps = 0;
+let idChecks = 0;
+let idTrackCycles = 0;
+let idHz = 0;
 
-// `<pre id="debug">` lives inside `#game-screen` (index.html:80), which is `hidden` until a round
-// starts - so the overlay cannot be read on the join, lobby or scan screens even though join.js
-// unhides it. That is backwards for a range readout: measuring range means walking around with
-// the camera up, and the screen where the camera is up and detecting is the *scan* screen.
-//
-// So move it to <body> once, and only under ?debug. `position: fixed` and a z-index above the
-// screens (#game-screen and #scan-screen are z-index 1) because its containing block changes with
-// it. The tidy version of this is two lines of markup and CSS - see docs/development/debug-mode.md
-// - but neither index.html nor style.css is reachable from here, and this does the same thing.
-let debugOverlayMoved = false;
-function debugOverlay() {
-  const el = $('debug');
-  if (el && !debugOverlayMoved && document.body) {
-    debugOverlayMoved = true;
-    document.body.append(el);
-    el.style.position = 'fixed';
-    el.style.zIndex = '2';
-    el.style.maxWidth = 'calc(100% - 16px)';
-    el.style.whiteSpace = 'pre-wrap'; // long lines wrap instead of running off a phone screen
-  }
-  return el;
-}
-
-// Which screens are worth a reading is rangeReadout()'s own decision (DETECTING_MODES), so that
-// `state.mode` only has to be handed over rather than interpreted here, where nothing can test it.
-function rangeReadoutLine(visibleTracks) {
-  return rangeReadout({
-    mode: state.mode,
-    boxes: state.boxes,
-    tracks: visibleTracks,
-    videoHeight: video.videoHeight,
-    selfId: localSelfId(),
-    diagnostics: rangeWindow,
-    gate: MATCH_HEIGHT_GATE,
-    floor: FAR_HEIGHT_FLOOR,
-  });
+// `det 19/20 · id 9/10 Hz lost` - achieved against target for both rates, plus which cadence tier
+// is asking, so a phone running slow says why. `det` is detections per second, never the screen
+// frame rate: that is `draw`, printed separately, precisely because one number called "fps" got
+// read as the other. A `det` well under target with `ms` over ~35 is the duty cap holding the rate
+// down, which is correct behaviour and not a bug; a `det` at target with `id` under it means
+// identification is being throttled by RECHECK_MS rather than by the loop.
+function rateLine(now) {
+  const tier = detectTier(now);
+  const id = idTrackCycles || idHz ? `${idHz.toFixed(0)}/${ID_TARGET_HZ} Hz` : `-/${ID_TARGET_HZ} Hz`;
+  return `det ${fps.toFixed(0)}/${DETECT_TARGET_FPS} · id ${id}${tier ? ` ${tier}` : ''}`;
 }
 
 export function loop() {
@@ -449,9 +426,8 @@ export function loop() {
       refreshScanPreview();
     } else if (state.mode === 'game') {
       const now = performance.now();
-      if (now - state.lastGameDetectAt >= gameDetectInterval(now) && !deferDetectionForInput(now)) {
-        refreshGameDetection();
-      }
+      const tier = detectTier(now);
+      if (now - state.lastGameDetectAt >= gameDetectInterval(now, tier)) refreshGameDetection(tier);
     }
   }
 
@@ -460,34 +436,27 @@ export function loop() {
 
   if (DEBUG) {
     const now = performance.now();
-    // Frame-to-frame gap: how long the main thread was unavailable to anything, a tap included.
-    // Measured here, at the end of the frame, so the gap spans the previous frame's detection and
-    // draw rather than splitting them.
-    recordBlock(inputStats, now - lastDebugFrameAt, now);
-    lastDebugFrameAt = now;
+    drawFrames++;
     if (now - fpsWindowStart >= 1000) {
-      fps = (frames * 1000) / (now - fpsWindowStart);
+      const seconds = (now - fpsWindowStart) / 1000;
+      fps = frames / seconds;
+      drawFps = drawFrames / seconds;
+      // Checks per live track per second: the share of track-cycles that were a real check, at the
+      // rate those cycles happened. 0 when nothing was on screen, which prints as `-`.
+      idHz = idTrackCycles ? (idChecks / idTrackCycles) * fps : 0;
       frames = 0;
+      drawFrames = 0;
+      idChecks = 0;
+      idTrackCycles = 0;
       fpsWindowStart = now;
-      // identify.js keeps the range tallies as running totals. Snapshot and reset them on the
-      // same one-second window as fps, so the line says "here, at this distance, now" instead of
-      // a session total that never comes back down once you have walked closer. Snapshotting
-      // rather than reading live also stops the numbers flickering mid-window, exactly as fps
-      // does. One call a second, and only under ?debug.
-      rangeWindow = matcher.rangeDiagnostics?.() ?? null;
-      matcher.resetRangeDiagnostics?.();
     }
     const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
     const identified = visibleTracks.filter((t) => t.playerId && t.playerId !== localSelfId());
     const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
-    // Detected-but-refused vs never-detected, and the box heights the gate is judging.
-    const rangeLine = rangeReadoutLine(visibleTracks);
-    // Why the FIRE button feels laggy: the tap's queueing delay against what fire() itself costs.
-    const inputLine = inputLatencyLine(inputStats);
-    debugOverlay().textContent =
-      `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
+    $('debug').textContent =
+      `${state.delegate} · draw ${drawFps.toFixed(0)} fps · ${rateLine(now)} · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
       (state.mode === 'game'
         ? ` · ${identified.length} identified` +
@@ -500,8 +469,6 @@ export function loop() {
                 .join(' ')}`
             : '')
         : '') +
-      (rangeLine ? `\n${rangeLine}` : '') +
-      (inputLine ? `\n${inputLine}` : '') +
       (ranked.length
         ? `\nRanks ${ranked
             .map(

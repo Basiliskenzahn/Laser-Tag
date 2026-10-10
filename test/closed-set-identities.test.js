@@ -227,7 +227,11 @@ test('losing a player to a better-supported track does not relabel the loser in 
   };
 
   let frame;
-  for (let i = 0; i < 4; i++) frame = step([LEFT]);
+  // Six checks, not four: this track's 0.73 clears the accept threshold but not reidInitialLock(),
+  // so it can only be named by winning INITIAL_STREAK checks in a row. The assertion right after
+  // is the precondition - if a retune of INITIAL_STREAK outgrows this loop, it fails here, where
+  // the reason is obvious, instead of in the no-switch assertion further down.
+  for (let i = 0; i < 6; i++) frame = step([LEFT]);
   assert.equal(frame.left.playerId, 'rex', 'the left track holds Rex');
 
   // The real Rex walks in: a fresh track, so its median is not held back by any history.
@@ -517,7 +521,7 @@ test('a track the resolver displaces loses its revocation and evidence state too
   };
 
   let frame;
-  for (let i = 0; i < 4; i++) frame = step([LEFT]);
+  for (let i = 0; i < 6; i++) frame = step([LEFT]); // clear INITIAL_STREAK - see the note above
   assert.equal(frame.left.playerId, 'rex');
   assert.ok(frame.left.evidence.get('rex') > 0, 'with evidence banked for Rex');
 

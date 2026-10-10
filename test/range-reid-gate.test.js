@@ -20,8 +20,6 @@ const {
   averageSignatures,
   extractSignature,
   matchGallery,
-  rangeDiagnostics,
-  resetRangeDiagnostics,
   MIN_MATCH_HEIGHT_RATIO,
   FAR_REID_MIN_HEIGHT_RATIO,
   FAR_REID_MIN_WIDTH_RATIO,
@@ -302,71 +300,9 @@ test('the stricter bar survives the tracker smoothing its scores', () => {
   assert.equal(far.playerId, null);
 });
 
-// ---- Diagnostics ----
-
 // One box per refusal reason, laid out so the tracker associates each with its own track.
 const PARTIAL_BODY = { x: 600, y: 200, w: 300, h: 150, score: 0.9 }; // aspect 0.5
 const EDGE_CLIPPED = { x: 0, y: 200, w: 80, h: 200, score: 0.9 }; // touching the left edge
-
-test('the range diagnostics count each live check once, on the right path', () => {
-  resetRangeDiagnostics();
-  assert.deepStrictEqual(rangeDiagnostics(), {
-    ok: 0,
-    tooFar: 0,
-    farReid: 0,
-    belowFloor: 0,
-    partialBody: 0,
-    edgeClipped: 0,
-  });
-
-  // BAND_FAR is at x 400 and BAND_NEAR at x 400 too, so the two band boxes are told apart by
-  // width: the near one gets a score that clears its bar, the far one gets one that does not.
-  const strong = similarTo(REX_REID, 0.95);
-  const weak = similarTo(REX_REID, 0.68); // over 0.65, under BAND_FAR's 0.709
-  const vectorFor = (box) => (box.w === BAND_FAR.w ? weak : strong);
-
-  const boxes = [NEAR, BAND_NEAR, BAND_FAR, BELOW_FLOOR, PARTIAL_BODY, EDGE_CLIPPED];
-  const { tracks } = driveOnce(boxes, vectorFor);
-  assert.equal(tracks.length, boxes.length, 'each box should get its own track');
-
-  assert.deepStrictEqual(rangeDiagnostics(), {
-    ok: 1, // NEAR
-    tooFar: 1, // BAND_FAR: in the band, but 0.68 does not clear 0.709
-    farReid: 1, // BAND_NEAR: in the band and through it
-    belowFloor: 1, // BELOW_FLOOR
-    partialBody: 1, // PARTIAL_BODY
-    edgeClipped: 1, // EDGE_CLIPPED
-  });
-
-  // ...and the counters really are counts, not flags.
-  driveOnce([NEAR], () => strong);
-  assert.equal(rangeDiagnostics().ok, 2);
-
-  // The accessor hands out a copy: a caller cannot zero the game's counters by writing to it.
-  const snapshot = rangeDiagnostics();
-  snapshot.ok = 999;
-  assert.equal(rangeDiagnostics().ok, 2);
-
-  resetRangeDiagnostics();
-  assert.equal(rangeDiagnostics().ok, 0);
-});
-
-test('a band box that is refused for want of an embedding is still counted', () => {
-  // The tracker gives up before matchGallery when re-identification has nothing for the track
-  // yet, which is the commonest reason a far box goes unidentified. It must not fall out of the
-  // readout.
-  resetRangeDiagnostics();
-  driveOnce([BAND_FAR], () => null);
-  assert.deepStrictEqual(rangeDiagnostics(), {
-    ok: 0,
-    tooFar: 1,
-    farReid: 0,
-    belowFloor: 0,
-    partialBody: 0,
-    edgeClipped: 0,
-  });
-  resetRangeDiagnostics();
-});
 
 // ---- Retune tripwire ----
 
