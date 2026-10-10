@@ -160,12 +160,16 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(room.winner, "a")
         self.assertEqual(room.players["a"].wins, 1)
 
-    def test_roster_carries_gallery_snapshot_does_not(self):
+    def test_the_roster_carries_galleries_the_snapshot_and_a_light_entry_do_not(self):
         room, _ = make_room()
-        room.join("a", "Alice", [{"hist": [1, 0], "grid": [0.5]}])
-        roster = room.roster()
-        self.assertEqual(roster[0]["gallery"], [{"hist": [1, 0], "grid": [0.5]}])
+        room.join("a", "Alice", GALLERY)
+        self.assertEqual(room.roster()[0]["gallery"], GALLERY)
         self.assertNotIn("gallery", room.snapshot()["players"][0])
+        # A light entry is what lets the transport send a phone only the scans it
+        # hasn't got yet. The identity half always travels, so a roster message
+        # is always the whole room.
+        self.assertEqual(room.roster_entry(room.players["a"], gallery=False),
+                         {"id": "a", "name": "Alice"})
 
     def test_debug_clone_mirrors_its_owners_gallery(self):
         room, _ = make_room()
@@ -181,15 +185,6 @@ class RoomTests(unittest.TestCase):
         room.join("a:debug-clone", "Alice clone", [])
         room.set_gallery("a:debug-clone", GALLERY)
         self.assertEqual(room.players["a"].gallery, GALLERY)
-
-    def test_a_roster_entry_can_leave_out_the_gallery(self):
-        # What lets the transport send a phone only the scans it hasn't got yet. The identity
-        # half always travels, so a roster message is always the whole room.
-        room, _ = make_room()
-        room.join("a", "Alice", GALLERY)
-        light = room.roster_entry(room.players["a"], gallery=False)
-        self.assertEqual(light, {"id": "a", "name": "Alice"})
-        self.assertEqual(room.roster_entry(room.players["a"])["gallery"], GALLERY)
 
     def test_every_gallery_change_moves_the_revision(self):
         # The revision is how the transport tells "this phone already has it" from "this phone

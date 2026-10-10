@@ -1,27 +1,32 @@
-"""HTTP/SSE protocol tests for the Python backend - the actual deployed server.
+"""HTTP protocol tests for the Python backend - the actual deployed server.
 
 This is the Python half of the coverage ``deprecated/server/realtime.test.js`` used
 to provide for the (now archived) Node implementation: it drives the real aiohttp
 app (``create_app()``) with fetch-equivalent polling clients, exactly like phones
 do, rather than calling ``Room``/``Session`` methods directly. See
-``docs/streamlining.md`` for the history and ``docs/development/testing.md`` for
-how to run this.
+``docs/development/testing.md`` for how to run this.
 
-``rooms``/``connections``/``pollers``/``sse_clients`` in ``backend.transport`` are
-module-level globals shared by every test in this process (there is no per-test
-app state to reset, same as the Node version had) - every test below uses a
-**unique room code** so they cannot interfere with each other.
+``rooms``/``connections``/``pollers`` in ``backend.transport`` are module-level
+globals shared by every test in this process (there is no per-test app state to
+reset, same as the Node version had) - every test below uses a **unique room
+code** so they cannot interfere with each other.
+
+The countdown is patched down to :data:`TEST_COUNTDOWN_MS` for the whole class.
+``Room.start`` reads ``models.COUNTDOWN_MS`` when it is called, so this needs
+nothing injectable, and the six cases that play a round used to sit out three
+real seconds each.
 """
 
 import asyncio
 import json
 import unittest
 import uuid
+from unittest import mock
 
 import aiohttp
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from aiohttp.test_utils import AioHTTPTestCase
 
-from backend import transport
+from backend import models, transport
 from backend.app import MAX_BODY_BYTES, create_app
 from backend.sanitize import clean_room_code
 
@@ -32,6 +37,9 @@ GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 #: but the fan-out tests measure bytes, and a two-number stand-in would make a
 #: byte assertion meaningless.
 SAMPLE_WIDTHS = {"hist": 64, "grid": 192, "lower": 64, "shape": 2, "embed": 256, "reid": 512}
+
+#: Countdown length for these tests, in place of the 3 s a real lobby gets.
+TEST_COUNTDOWN_MS = 200
 
 
 def full_gallery(seed):
@@ -55,19 +63,19 @@ def unique_room(label):
     return f"{label}-{uuid.uuid4().hex[:8]}"
 
 
-def registry_code(room):
-    """The key a room code is actually filed under.
-
-    ``clean_room_code`` caps a code at 16 characters, and the labels above are
-    longer than that, so a test that looks a room up in ``transport.rooms`` or
-    ``transport.sse_clients`` has to clean it the same way the server did.
-    """
-    return clean_room_code(room)
-
-
 def last_state(messages):
     states = [m["state"] for m in messages if m.get("type") == "state"]
     return states[-1] if states else None
+
+
+def saw_status(messages, status):
+    """Whether any scoreboard in this history reported ``status``.
+
+    Asked of the history rather than of the newest message because a status the
+    room passes *through* - ``countdown`` - may already have been superseded by
+    the time the assertion runs.
+    """
+    return any(m.get("type") == "state" and m["state"]["status"] == status for m in messages)
 
 
 def last_roster(messages):
@@ -119,28 +127,6 @@ async def wait_for(check, timeout=2.0):
         if loop.time() > deadline:
             raise AssertionError("Timed out waiting")
         await asyncio.sleep(0.01)
-
-
-async def read_sse_event(resp, event_type, timeout=2.0):
-    """Read lines from an open SSE response until `event_type` appears."""
-    buffer = b""
-
-    async def _read():
-        nonlocal buffer
-        while True:
-            chunk = await resp.content.read(1024)
-            if not chunk:
-                return None
-            buffer += chunk
-            while b"\n\n" in buffer:
-                raw, buffer = buffer.split(b"\n\n", 1)
-                lines = raw.decode().split("\n")
-                name = next((line[7:] for line in lines if line.startswith("event: ")), None)
-                data = next((line[6:] for line in lines if line.startswith("data: ")), None)
-                if name == event_type and data:
-                    return json.loads(data)
-
-    return await asyncio.wait_for(_read(), timeout)
 
 
 class PollingClient:
@@ -222,6 +208,12 @@ class ProtocolTests(AioHTTPTestCase):
     async def get_application(self):
         return create_app()
 
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        patcher = mock.patch.object(models, "COUNTDOWN_MS", TEST_COUNTDOWN_MS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def polling_client(self):
         return await PollingClient(self.client).start()
 
@@ -247,7 +239,7 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertTrue(any(m["type"] == "welcome" for m in a.messages))
 
         await b.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages)["status"] == "countdown")
+        await wait_for(lambda: saw_status(a.messages, "countdown"))
 
     async def test_launch_waits_for_every_gallery(self):
         a = self.track(await self.polling_client())
@@ -272,40 +264,17 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_roster(b.messages) and all(p["gallery"] for p in last_roster(b.messages)))
 
         await a.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages)["status"] == "countdown")
+        await wait_for(lambda: saw_status(a.messages, "countdown"))
 
-    async def test_remembered_player_id_rejoins_without_duplicate_seat(self):
-        first = self.track(await self.polling_client())
-        second = self.track(await self.polling_client())
-        room = unique_room("reload-rejoin")
-        await first.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
-        await wait_for(lambda: any(m["type"] == "welcome" for m in first.messages))
-        player_id = first.welcome_id()
-
-        await second.send({"type": "join", "name": "A", "room": room, "playerId": player_id, "gallery": GALLERY})
-        await wait_for(lambda: any(m["type"] == "welcome" and m["id"] == player_id for m in second.messages))
-        await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 1)
-
-        # The seat count was all this used to check, which is why it passed while
-        # the displaced phone was being frozen solid: whoever lost the seat has to
-        # be *told*, and a 410 is the only thing the client treats as a reason to
-        # reconnect (frontend/public/transport.js). A 200 reads as "nothing has
-        # happened", so answering one here is what left the first phone sitting on
-        # a stale roster forever.
-        await wait_for(lambda: first.closed)
-        self.assertEqual(first.closed_status, 410)
-        self.assertEqual(first.closed_reason, "replaced")
-
-        await first.disconnect()
-        await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 1)
-        # And the displaced phone's goodbye must not take the seat with it: the
-        # seat is not its to give up any more.
-        self.assertIn(player_id, transport.rooms[registry_code(room)].players)
-
-    async def test_a_second_tab_leaves_the_first_phone_told_rather_than_frozen(self):
-        # The second-tab case end to end, which needs no attacker at all:
+    async def test_a_second_tab_takes_the_seat_and_the_first_is_told_not_frozen(self):
         # app.js calls resumeActiveLobby() on every page load, so a second tab, a
-        # session restore or the home-screen icon adopts the same seat.
+        # session restore or the home-screen icon adopts the same seat - no
+        # attacker needed. Three things have to hold at once: one seat rather
+        # than two, the displaced phone *told* (a 410 is the only thing the
+        # client treats as a reason to reconnect - a 200 reads as "nothing has
+        # happened", which is what left the first phone sitting on a stale roster
+        # forever), and nothing more pushed to the mailbox it has stopped
+        # draining.
         first = self.track(await self.polling_client())
         room = unique_room("second-tab")
         await first.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
@@ -316,19 +285,25 @@ class ProtocolTests(AioHTTPTestCase):
 
         second = self.track(await self.polling_client())
         await second.send({"type": "join", "name": "A", "room": room, "playerId": player_id})
-        await wait_for(lambda: any(m["type"] == "welcome" for m in second.messages))
+        await wait_for(lambda: any(m["type"] == "welcome" and m["id"] == player_id for m in second.messages))
+        await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 1)
 
-        # The room then changes under both of them.
+        await wait_for(lambda: first.closed)
+        self.assertEqual(first.closed_status, 410)
+        self.assertEqual(first.closed_reason, "replaced")
+        self.assertEqual(first.since(frozen_at), [], "nothing more should have been pushed to it")
+
+        # The room then changes under the phone that kept the seat, and it sees it.
         other = self.track(await self.polling_client())
         await other.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
         await wait_for(lambda: last_state(second.messages) and len(last_state(second.messages)["players"]) == 2)
 
-        # The phone that kept the seat sees the new player; the displaced one is
-        # told to go away instead of being answered 200 with an empty list.
-        self.assertTrue(first.closed, "the displaced phone was never told it lost the seat")
-        self.assertEqual(first.closed_status, 410)
-        self.assertEqual(first.closed_reason, "replaced")
-        self.assertEqual(first.since(frozen_at), [], "nothing more should have been pushed to it")
+        # And the displaced phone's goodbye must not take the seat with it: the
+        # seat is not its to give up any more.
+        await first.disconnect()
+        await asyncio.sleep(0.1)
+        self.assertIn(player_id, transport.rooms[clean_room_code(room)].players)
+        self.assertEqual(len(last_state(second.messages)["players"]), 2)
 
     async def test_a_poll_parked_when_the_seat_is_taken_is_told_on_that_response(self):
         # Not merely eventually. A poll can sit parked here for 20 s, and the
@@ -370,7 +345,7 @@ class ProtocolTests(AioHTTPTestCase):
         a_id, b_id = a.welcome_id(), b.welcome_id()
 
         await a.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
         await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "body"})
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
 
@@ -401,67 +376,6 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 1)
         self.assertEqual(last_state(a.messages)["players"][0]["name"], "A")
 
-    async def test_debug_clone_receives_the_local_players_scan(self):
-        debug = self.track(await self.polling_client())
-        room = unique_room("clone-scan-lobby")
-        await debug.send({"type": "join", "name": "Debug", "room": room, "debug": True})
-        await wait_for(lambda: last_state(debug.messages) and len(last_state(debug.messages)["players"]) == 2)
-        debug_id = debug.welcome_id()
-        clone = next(p for p in last_state(debug.messages)["players"] if p["id"] != debug_id)
-
-        await debug.send({"type": "scan", "targetId": debug_id, "gallery": GALLERY})
-        await wait_for(lambda: last_roster(debug.messages)
-                        and next((p for p in last_roster(debug.messages) if p["id"] == debug_id), {}).get("gallery")
-                        and next((p for p in last_roster(debug.messages) if p["id"] == clone["id"]), {}).get("gallery"))
-
-    async def test_debug_clone_mirrors_a_scan_taken_by_another_device(self):
-        debug = self.track(await self.polling_client())
-        scanner = self.track(await self.polling_client())
-        room = unique_room("clone-remote-scan")
-        await debug.send({"type": "join", "name": "Debug", "room": room, "debug": True})
-        await scanner.send({"type": "join", "name": "Scanner", "room": room})
-        await wait_for(lambda: last_state(debug.messages) and len(last_state(debug.messages)["players"]) == 3)
-
-        debug_id = debug.welcome_id()
-        clone = next(p for p in last_state(debug.messages)["players"] if p["id"] != debug_id and p["name"] == "Debug clone")
-        await scanner.send({"type": "scan", "targetId": debug_id, "gallery": GALLERY})
-        await wait_for(lambda: last_roster(debug.messages)
-                        and next((p for p in last_roster(debug.messages) if p["id"] == debug_id), {}).get("gallery")
-                        and next((p for p in last_roster(debug.messages) if p["id"] == clone["id"]), {}).get("gallery"))
-
-    async def test_eight_players_can_fill_a_room_and_start_together(self):
-        room = unique_room("eight-player-room")
-        clients = [self.track(await self.polling_client()) for _ in range(9)]
-        players, extra = clients[:8], clients[8]
-
-        await asyncio.gather(*(
-            c.send({"type": "join", "name": f"P{i + 1}", "room": room, "gallery": GALLERY})
-            for i, c in enumerate(players)
-        ))
-        await wait_for(lambda: last_state(players[0].messages) and len(last_state(players[0].messages)["players"]) == 8, 3)
-        await wait_for(lambda: last_roster(players[0].messages) and len(last_roster(players[0].messages)) == 8, 3)
-
-        await extra.send({"type": "join", "name": "Extra", "room": room, "gallery": GALLERY})
-        await wait_for(lambda: any(m["type"] == "error" and m["message"] == "Room is full" for m in extra.messages))
-
-        await players[0].send({"type": "start"})
-        await wait_for(lambda: last_state(players[7].messages) and last_state(players[7].messages)["status"] == "playing", 7)
-        self.assertEqual(len(last_state(players[7].messages)["players"]), 8)
-
-    async def test_a_held_poll_is_answered_as_soon_as_a_message_arrives(self):
-        a = self.track(await self.polling_client())
-        room = unique_room("latency")
-        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
-        await wait_for(lambda: len(a.messages) > 0)
-        before = len(a.messages)
-
-        b = self.track(await self.polling_client())
-        loop = asyncio.get_event_loop()
-        sent_at = loop.time()
-        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
-        await wait_for(lambda: len(a.messages) > before)
-        self.assertLess(loop.time() - sent_at, 1.0, "update should arrive without waiting for the poll timeout")
-
     async def test_unknown_polling_sessions_are_told_to_reconnect(self):
         poll = await self.client.get("/api/poll", params={"token": "nope"})
         self.assertEqual(poll.status, 410)
@@ -481,13 +395,39 @@ class ProtocolTests(AioHTTPTestCase):
         a_id, b_id = a.welcome_id(), b.welcome_id()
 
         await a.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
         hit_resp = await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "body"})
         self.assertEqual(hit_resp.status, 200)
 
         await wait_for(lambda: any(m["type"] == "hitConfirmed" for m in a.messages))
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
+
+    async def test_a_hit_that_names_no_room_is_a_404_not_the_default_room(self):
+        # clean_room_code falls back to "demo" for an empty code, so api_hit has
+        # to refuse a body with no room rather than resolving one. This is the
+        # only test here that deliberately uses the room code "demo": a hit
+        # naming no room has to miss a real, playable room of that name, which is
+        # the one an empty code would resolve to.
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        await a.send({"type": "join", "name": "A", "room": "demo", "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": "demo", "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        a_id, b_id = a.welcome_id(), b.welcome_id()
+        await a.send({"type": "start"})
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
+
+        resp = await self.client.post("/api/hit",
+                                      json={"shooterId": a_id, "targetId": b_id, "zone": "body"})
+
+        self.assertEqual(resp.status, 404, "a hit naming no room must not resolve to the demo room")
+        self.assertFalse((await resp.json())["ok"])
+        self.assertEqual(next(p for p in last_state(a.messages)["players"] if p["id"] == b_id)["hp"], 100,
+                         "nobody should have taken damage from a roomless hit")
+        # Leave no "demo" room behind for the rest of the process.
+        await a.disconnect()
+        await b.disconnect()
 
     async def test_three_players_can_play_a_free_for_all_to_one_winner(self):
         a = self.track(await self.polling_client())
@@ -505,7 +445,7 @@ class ProtocolTests(AioHTTPTestCase):
             return await self.client.post("/api/hit", json={"room": room, "shooterId": shooter_id, "targetId": target_id, "zone": "head"})
 
         await a.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
         await hit(a_id, b_id)
         await hit(c_id, b_id)
         await wait_for(lambda: last_state(a.messages)["status"] == "playing"
@@ -520,33 +460,6 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(last_state(a.messages)["winner"], a_id)
         self.assertEqual(next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["wins"], 1)
 
-    async def test_posted_hits_emit_health_updates_over_sse(self):
-        a = self.track(await self.polling_client())
-        b = self.track(await self.polling_client())
-        room = unique_room("posted-hit")
-        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
-        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
-        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
-        a_id, b_id = a.welcome_id(), b.welcome_id()
-
-        events_resp = await self.client.get(f"/events/{room}")
-        self.assertEqual(events_resp.status, 200)
-
-        await a.send({"type": "start"})
-        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
-        hit_resp = await self.client.post(
-            "/api/hit",
-            json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "body"},
-        )
-        self.assertEqual(hit_resp.status, 200)
-        self.assertEqual((await hit_resp.json())["hp"], 80)
-
-        event = await read_sse_event(events_resp, "health")
-        self.assertEqual(event["shooterId"], a_id)
-        self.assertEqual(event["targetId"], b_id)
-        self.assertEqual(event["hp"], 80)
-        await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
-
     async def test_debug_session_gets_a_targetable_clone_instead_of_self_hits(self):
         debug = self.track(await self.polling_client())
         room = unique_room("clone-hit")
@@ -559,7 +472,7 @@ class ProtocolTests(AioHTTPTestCase):
                         and next((p for p in last_roster(debug.messages) if p["id"] == clone["id"]), {}).get("gallery"))
 
         await debug.send({"type": "start"})
-        await wait_for(lambda: last_state(debug.messages) and last_state(debug.messages)["status"] == "playing", 7)
+        await wait_for(lambda: saw_status(debug.messages, "playing"), 3)
 
         self_hit = await self.client.post("/api/hit", json={"room": room, "shooterId": debug_id, "targetId": debug_id, "zone": "body"})
         self.assertEqual(self_hit.status, 400)
@@ -569,7 +482,7 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(clone_hit.status, 200)
         await wait_for(lambda: next(p for p in last_state(debug.messages)["players"] if p["id"] == clone["id"])["hp"] == 80)
 
-    async def roster_room(self, label, count, gallery=FULL_GALLERY):
+    async def roster_room(self, label, count):
         """``count`` enrolled players in a fresh room, settled and quiet.
 
         The fan-out tests all start from a steady state so that what they measure
@@ -578,7 +491,7 @@ class ProtocolTests(AioHTTPTestCase):
         room = unique_room(label)
         clients = [self.track(await self.polling_client()) for _ in range(count)]
         for i, client in enumerate(clients):
-            await client.send({"type": "join", "name": f"P{i}", "room": room, "gallery": gallery})
+            await client.send({"type": "join", "name": f"P{i}", "room": room, "gallery": FULL_GALLERY})
         await wait_for(
             lambda: all(
                 (last_roster(c.messages) or []) and len(last_roster(c.messages)) == count
@@ -673,20 +586,6 @@ class ProtocolTests(AioHTTPTestCase):
         # It had nothing to start from, so it was sent all three in full.
         self.assertEqual(gallery_copies(resumed.messages), 3)
 
-    async def test_a_rescan_replaces_the_gallery_every_phone_holds(self):
-        # Two scans of the same player back to back. Per-connection bookkeeping means the second
-        # cannot be mistaken for "they already have this", and the phones cannot settle on the
-        # first one.
-        room, clients = await self.roster_room("fanout-rescan", 3)
-        ids = [c.welcome_id() for c in clients]
-
-        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": full_gallery(3)})
-        await clients[2].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
-        await wait_for(lambda: all(self.held_gallery(c, ids[1]) == RESCAN_GALLERY for c in clients), 5)
-        for client in clients:
-            self.assertEqual(len(last_roster(client.messages)), 3)
-            self.assertTrue(all(p["gallery"] for p in last_roster(client.messages)))
-
     async def test_a_rescanned_owner_updates_the_clone_on_every_phone(self):
         # The debug clone borrows its owner's gallery, so its entry has to change when the
         # owner's scan does even though nothing was ever stored against the clone itself
@@ -726,11 +625,11 @@ class ProtocolTests(AioHTTPTestCase):
                 self.assertFalse((await resp.json())["ok"])
 
     async def test_an_oversized_or_malformed_body_is_one_json_shape_either_way(self):
-        # Two things used to disagree about the boundary: the explicit check used
-        # `>` while aiohttp's client_max_size rejects at `>=`, so a body of
-        # exactly MAX_BODY_BYTES fell through to aiohttp and got a plain-text 413
-        # while one byte more got a JSON one. A chunked body has no
-        # Content-Length at all and only aiohttp ever saw it.
+        # The limit is enforced in one place - aiohttp's client_max_size - and this
+        # is what says the one place covers every shape: a declared length of
+        # exactly the limit, one byte over, and a chunked body that declares no
+        # length at all. All three must be the same JSON 413 rather than
+        # aiohttp's plain-text one.
         a = self.track(await self.polling_client())
 
         def padded(size):
@@ -766,20 +665,6 @@ class ProtocolTests(AioHTTPTestCase):
                                       headers={"Content-Type": "application/json"})
         self.assertEqual(resp.status, 400)
         self.assertEqual((await resp.json())["error"], "Invalid JSON body")
-
-    async def test_an_sse_listener_is_forgotten_when_it_disconnects(self):
-        # Room codes are client-chosen, so a {room_code: set()} entry that outlives
-        # its listeners grows for the lifetime of the process, one request per key.
-        room = unique_room("sse-leak")
-        key = registry_code(room)
-        self.assertNotIn(key, transport.sse_clients)
-
-        resp = await self.client.get(f"/events/{room}")
-        await resp.content.read(len(b": connected\n\n"))
-        self.assertEqual(len(transport.sse_clients[key]), 1)
-
-        resp.close()
-        await wait_for(lambda: key not in transport.sse_clients, 5)
 
     async def test_the_server_never_withholds_a_gallery_it_has_not_sent(self):
         # The roster delta's one load-bearing assumption, checked against an

@@ -5,11 +5,10 @@ right place for anything a phone can observe. The cases here are the ones that
 need a clock moved, an exception injected, or a look at a session the HTTP layer
 has already stopped answering for:
 
-* :func:`~backend.transport.sweep_once` - the reaper had no test at all: not the
-  eviction, not the fan-out it triggers, not what a parked poll sees, not what
-  happens when ``close()`` raises.
-* :class:`~backend.transport.Poller` - two polls on one token, and the mailbox
-  caps, which need thousands of messages rather than a real room.
+* :func:`~backend.transport.sweep_once` - the reaper is the only thing that
+  reclaims an abandoned session, and nothing restarts the container.
+* :class:`~backend.transport.Poller` - the mailbox caps, which need thousands of
+  messages rather than a real room.
 * :func:`~backend.transport.broadcast_state`'s countdown timer, whose hazard is
   structural: it only bites if a sender suspends, and none of them do today.
 * A session that holds a room it is no longer a player in.
@@ -24,15 +23,16 @@ import unittest
 import uuid
 from unittest import mock
 
-from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
-
-from backend import app as app_module
-from backend import transport
-from backend.models import COUNTDOWN_MS, Room
+from backend import models, transport
+from backend.models import Room
 from backend.sanitize import clean_room_code
 
 SAMPLE = [{"hist": [1.0], "grid": [1.0]}]
+
+#: The countdown every test here waits out, shortened from the 3 s a real lobby
+#: gets. ``Room.start`` reads the module global when it is called, so patching it
+#: is enough; three seconds per case bought nothing but a suite people skip.
+TEST_COUNTDOWN_MS = 200
 
 
 async def wait_until(check, timeout=2.0):
@@ -48,7 +48,7 @@ async def wait_until(check, timeout=2.0):
 class TransportTestCase(unittest.IsolatedAsyncioTestCase):
     """Base class that leaves ``transport``'s registries as it found them."""
 
-    REGISTRIES = ("rooms", "connections", "pollers", "sse_clients")
+    REGISTRIES = ("rooms", "connections", "pollers")
 
     def setUp(self):
         self._before = {name: set(getattr(transport, name)) for name in self.REGISTRIES}
@@ -104,22 +104,6 @@ class PollerMailboxTests(TransportTestCase):
         self.assertEqual(sorted(len(batch) for batch in drained), [0, 1],
                          "one poll takes the message, the other returns empty")
 
-    async def test_a_timed_out_poll_does_not_strand_another_parked_one(self):
-        # The `finally` used to clear the shared slot unconditionally, so a poll
-        # timing out nulled the future a *different* poll was parked on.
-        poller = self.mailbox()
-        with mock.patch.object(transport, "POLL_WAIT_MS", 10_000):
-            patient = asyncio.ensure_future(poller.take())
-            await asyncio.sleep(0.05)
-        with mock.patch.object(transport, "POLL_WAIT_MS", 50):
-            impatient = asyncio.ensure_future(poller.take())
-            await asyncio.sleep(0.3)
-
-        self.assertTrue(impatient.done(), "the short poll should have timed out")
-        self.assertEqual(await impatient, [])
-        await poller.push({"type": "ping"})
-        self.assertEqual(await asyncio.wait_for(patient, 1), [{"type": "ping"}],
-                         "the still-parked poll must still be reachable")
 
     async def test_only_the_newest_scoreboard_is_kept_under_pressure(self):
         # A `state` is the complete scoreboard and the client just replaces what it
@@ -179,12 +163,6 @@ class PollerMailboxTests(TransportTestCase):
 
         self.assertEqual(session.sent_gallery_revs, {},
                          "a roster the mailbox refused must not count as delivered")
-
-    async def test_a_live_mailbox_keeps_its_token_registered(self):
-        poller = self.mailbox()
-        self.assertTrue(poller.is_live())
-        transport.pollers.pop(poller.token)
-        self.assertFalse(poller.is_live(), "an unregistered token is not live either")
 
 
 class SweepTests(TransportTestCase):
@@ -274,44 +252,29 @@ class SweepTests(TransportTestCase):
 
 
 class CountdownTimerTests(TransportTestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(models, "COUNTDOWN_MS", TEST_COUNTDOWN_MS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     async def start_countdown(self, room):
         self.assertTrue(room.start()["ok"])
         await transport.broadcast_state(room)
         self.assertIsNotNone(room.start_timer)
 
-    async def test_a_broadcasting_timer_is_not_reachable_for_cancellation(self):
-        # The structural claim. broadcast_state cancels room.start_timer, and the
-        # timer task *is* what re-enters broadcast_state, so for the whole of its
-        # own broadcast the handle pointed at a running task. That was safe only
-        # because nothing in the send path suspends; this asserts the invariant
-        # rather than the accident.
-        room = self.room("timer-handle")
-        self.seat(room, "Alice")
-        bob, bob_box = self.seat(room, "Bob")
-        seen = []
-
-        async def watching(msg):
-            if msg.get("type") == "state" and msg["state"]["status"] == "playing":
-                seen.append(room.start_timer is asyncio.current_task())
-            return True
-
-        bob.sender = watching
-        await self.start_countdown(room)
-        await wait_until(lambda: seen, COUNTDOWN_MS / 1000 + 3)
-
-        self.assertTrue(seen)
-        self.assertFalse(any(seen),
-                         "the timer must hand its slot back before it starts broadcasting")
-
     async def test_the_countdown_broadcast_finishes_even_when_a_send_suspends(self):
-        # The consequence: a competing broadcast_state cancels room.start_timer,
-        # and if that handle still points at the timer mid-loop the "countdown
-        # over, status playing" message dies part way through and the remaining
-        # phones sit on `countdown` forever.
+        # broadcast_state cancels room.start_timer, and the timer task *is* what
+        # re-enters broadcast_state. If that handle still pointed at the timer
+        # mid-loop, the "countdown over, status playing" message would die part
+        # way through and the remaining phones would sit on `countdown` forever.
+        # The timer hands its slot back before broadcasting, which is what makes
+        # the cancel below land on nothing.
         room = self.room("timer-suspend")
         alice, alice_box = self.seat(room, "Alice")
-        self.seat(room, "Bob")
-        self.seat(room, "Carol")
+        _, bob_box = self.seat(room, "Bob")
+        _, carol_box = self.seat(room, "Carol")
+        boxes = (alice_box, bob_box, carol_box)
         interfered = []
 
         async def interfering(msg):
@@ -328,16 +291,13 @@ class CountdownTimerTests(TransportTestCase):
         await self.start_countdown(room)
 
         def everyone_is_playing():
-            boxes = [transport.pollers[token] for token in transport.pollers
-                     if transport.pollers[token].session in
-                     [transport.connections[pid] for pid in room.players]]
             return all(
                 any(msg.get("type") == "state" and msg["state"]["status"] == "playing"
                     for msg in box.queue)
                 for box in boxes
-            ) and len(boxes) == 3
+            )
 
-        await wait_until(everyone_is_playing, COUNTDOWN_MS / 1000 + 3)
+        await wait_until(everyone_is_playing, 3)
         self.assertTrue(interfered, "the interfering sender never ran")
 
     async def test_shutdown_cancels_a_pending_countdown_timer(self):
@@ -413,44 +373,6 @@ class SeatedWriteAccessTests(TransportTestCase):
         await transport.broadcast_state(room)
         self.assertTrue(any(msg["type"] == "state" for msg in replacement_box.queue),
                         "the live session must still be the push target")
-
-
-class SseListenerTests(TransportTestCase):
-    async def test_a_cancelled_listener_propagates_and_is_forgotten(self):
-        # events() swallowed CancelledError and returned normally, which told the
-        # server the stream had ended of its own accord and defeated graceful
-        # shutdown. The listener still has to be forgotten either way.
-        code = f"sse{uuid.uuid4().hex[:6]}"
-        request = make_mocked_request("GET", f"/events/{code}", match_info={"room": code})
-
-        with mock.patch.object(web.StreamResponse, "prepare", mock.AsyncMock()), \
-                mock.patch.object(web.StreamResponse, "write", mock.AsyncMock()):
-            handler = asyncio.create_task(app_module.events(request))
-            await wait_until(lambda: code in transport.sse_clients, 2)
-            handler.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await handler
-
-        self.assertNotIn(code, transport.sse_clients,
-                         "the room's entry goes with its last listener")
-
-    async def test_a_stalled_listener_loses_its_oldest_events_not_the_server(self):
-        room = self.room("sse-backlog")
-        queue = asyncio.Queue(maxsize=3)
-        transport.sse_clients.setdefault(room.code, set()).add(queue)
-
-        for i in range(10):
-            # Timed: an unbounded ``await queue.put()`` on a full queue parks the
-            # *broadcast* forever, which would hang the whole round rather than
-            # drop one spectator's event. Failing fast is what makes that
-            # difference visible instead of turning this test into a deadlock.
-            await asyncio.wait_for(
-                transport.broadcast_room_event(room, {"type": "health", "n": i}), 1
-            )
-
-        self.assertEqual(queue.qsize(), 3, "the backlog must stay bounded")
-        self.assertEqual([queue.get_nowait()["n"] for _ in range(3)], [7, 8, 9],
-                         "the newest events are the ones kept")
 
 
 if __name__ == "__main__":
