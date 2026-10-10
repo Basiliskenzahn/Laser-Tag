@@ -9,7 +9,7 @@ app = FastAPI()
 # Registry: client_id → queue
 _subscribers: dict[str, asyncio.Queue] = {}
 
-@app.get("/connect/{client_id}", response_class=EventSourceResponse)
+@app.get("/backend/connect/{client_id}", response_class=EventSourceResponse)
 async def sse_stream(client_id: str, request: Request) -> AsyncIterable[ServerSentEvent]:
     q: asyncio.Queue = asyncio.Queue()
     _subscribers[client_id] = q
@@ -22,7 +22,7 @@ async def sse_stream(client_id: str, request: Request) -> AsyncIterable[ServerSe
     finally:
         _subscribers.pop(client_id, None)
 
-@app.post("/hit")
+@app.post("/backend/hit")
 async def receive_from_a(client_a: str, message: str):
     """Client A sends data → route to client B."""
     target = client_a  # or compute from message

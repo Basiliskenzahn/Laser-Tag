@@ -1,7 +1,30 @@
 services:
   backend_python:
     build:
-      context: ./backend/
+      context: ./backend_python/
       dockerfile: Dockerfile
+    expose:
+      - '8000'
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    expose:
+      - '4000' # internal only - reached through the frontend's nginx reverse proxy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
-      - '8080:8000'
+      - '8080:80'
+      - '3443:443'
+    volumes:
+      # Keep the self-signed cert across restarts so phones don't have to re-accept it.
+      - certs:/certs
+    depends_on:
+      - backend
+
+volumes:
+  certs:
