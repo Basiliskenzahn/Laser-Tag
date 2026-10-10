@@ -254,6 +254,9 @@ async def broadcast_room_event(room, event):
 
 async def process_hit(room, shooter_id, target_id, zone):
     result = room.shoot(shooter_id, target_id, zone)
+
+    print(result)
+    
     if not result.get("ok"):
         return result
     await send_to(shooter_id, {
