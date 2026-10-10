@@ -49,6 +49,8 @@ Set them under *Settings → Secrets and variables → Actions*.
 - **Direct pushes to `main` don't deploy.** Run the workflow manually afterwards.
 - **No tests run in CI.** The job deploys whatever is on `main`. Run `docker compose run --rm tests` before merging. See [Testing](../development/testing.md).
 - `ssh-keyscan` trusts whatever key the host presents at deploy time. Pinning the host key in a secret would be stricter.
+- **A redeploy reaches phones immediately for the client, and within ~5 minutes for a model.** The app shell is served `no-store`, so a new `app.js` takes effect on the next page load. The model files under `frontend/public/models/` are cached for 300 s with an ETag, so a replaced model propagates on its own shortly after the containers come back — nobody has to clear site data. The vendored MediaPipe/ONNX runtimes are cached for a day and only change when `package-lock.json` does. See [the caching policy](docker.md#caching-policy-and-why-the-app-shell-is-the-exception).
+- **Replacing a model means replacing the file, not renaming it.** The caching policy is built around that: it revalidates rather than declaring the files `immutable`, so the fixed URLs stay safe. If you ever add filename hashing, revisit it.
 
 ## Deploying somewhere else
 
@@ -61,7 +63,7 @@ docker compose up --build -d
 
 Then either:
 
-- put a reverse proxy with a real certificate in front of port **8080** (keep proxy buffering off and a long read timeout for `/events/`; polls are held for up to 20 s); or
+- put a reverse proxy with a real certificate in front of port **8080** (keep proxy buffering off, compression off and a long read timeout for `/events/`; polls are held for up to 20 s, and compressing an SSE stream means buffering it). Let the cache headers the container already sets pass through rather than overriding them — see [the caching policy](docker.md#caching-policy-and-why-the-app-shell-is-the-exception); or
 - let players use port **3443** directly and accept the self-signed certificate.
 
 The server keeps all state in memory in a single process, so run exactly one `backend` container.
