@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { bands, frame, installCanvasStub } from './fixtures/synthetic-frame.mjs';
 
 // extractSignature reads pixels back through a canvas. Rather than skip it - which is what hid the
 // bug - stand in a canvas that resamples a synthetic frame, so the signatures under test are the
@@ -20,52 +21,6 @@ import assert from 'node:assert/strict';
 installCanvasStub();
 
 const { averageSignatures, extractSignature, matchGallery } = await import('../frontend/public/identify.js');
-
-const BACKGROUND = [38, 40, 44];
-
-// A frame containing `people`, each a flat shirt colour over a flat trouser colour. `pixel` is in
-// source-frame coordinates; the canvas stub below resamples it exactly the way drawImage would.
-function frame(people, { width = 640, height = 480 } = {}) {
-  return {
-    videoWidth: width,
-    videoHeight: height,
-    pixel(x, y) {
-      for (const { box, shirt, trousers } of people) {
-        if (x >= box.x && x < box.x + box.w && y >= box.y && y < box.y + box.h) {
-          return (y - box.y) / box.h < 0.52 ? shirt : trousers;
-        }
-      }
-      return BACKGROUND;
-    },
-  };
-}
-
-function installCanvasStub() {
-  let drawn = null;
-  const ctx = {
-    drawImage(source, sx, sy, sw, sh, _dx, _dy, dw, dh) {
-      drawn = { source, sx, sy, sw, sh, dw, dh };
-    },
-    getImageData(_x, _y, w, h) {
-      const data = new Uint8ClampedArray(w * h * 4);
-      if (!drawn) return { data };
-      for (let j = 0; j < h; j++) {
-        for (let i = 0; i < w; i++) {
-          const x = drawn.sx + ((i + 0.5) / drawn.dw) * drawn.sw;
-          const y = drawn.sy + ((j + 0.5) / drawn.dh) * drawn.sh;
-          const [r, g, b] = drawn.source.pixel(x, y);
-          const at = (j * w + i) * 4;
-          data[at] = r;
-          data[at + 1] = g;
-          data[at + 2] = b;
-          data[at + 3] = 255;
-        }
-      }
-      return { data };
-    },
-  };
-  globalThis.document ??= { createElement: () => ({ getContext: () => ctx }) };
-}
 
 // `box` nudged by a pixel or two, the way consecutive detector boxes of a standing person are.
 function jitter(box, k) {
@@ -88,7 +43,10 @@ function match(signature, players) {
   return matchGallery(signature, players, null, { includeRejected: true });
 }
 
-const REX = { box: { x: 260, y: 140, w: 80, h: 180, score: 0.9 }, shirt: [210, 60, 55], trousers: [40, 50, 120] };
+const REX = {
+  box: { x: 260, y: 140, w: 80, h: 180, score: 0.9 },
+  paint: bands({ head: [196, 158, 130], shirt: [210, 60, 55], accent: [240, 196, 70], trousers: [40, 50, 120] }),
+};
 const ROUNDED = (v) => Math.round(v * 1000) / 1000;
 
 test('a signature scores ~1 for shape against a gallery entry built from itself', () => {
