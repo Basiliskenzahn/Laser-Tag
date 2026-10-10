@@ -1,4 +1,4 @@
-import { bodyBox, createDetector, detectScanPeople, detectTrackedPeopleFast, headBox, contains } from './detector.js';
+import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
@@ -10,24 +10,31 @@ const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 9;
+const SCAN_CACHE_VERSION = 10;
 const SCAN_MIN_SAMPLES = 12;
 const SCAN_TARGET_SAMPLES = 24;
+const SCAN_MIN_DETECTION_SCORE = 0.16;
+const SCAN_MIN_BRIGHTNESS = 0.08;
+const SCAN_MAX_BRIGHTNESS = 0.94;
+const SCAN_MIN_CONTRAST = 0.025;
+const SCAN_MIN_SHARPNESS = 0.0035;
+const SCAN_DUPLICATE_SIMILARITY = 0.992;
+const SCAN_OUTLIER_SIMILARITY = 0.36;
+const SCAN_VIEW_AVERAGE_SIMILARITY = 0.74;
+const SCAN_DIVERSITY_WEIGHT = 0.42;
 const ROTATION_SCAN_COUNTDOWN_MS = 1800;
 const ROTATION_SCAN_DURATION_MS = 12_000;
 const ROTATION_RECORD_FRAME_MS = 180;
 const ROTATION_FRAME_MAX_WIDTH = 1024;
 const ROTATION_SAMPLE_AVERAGE_COUNT = 4;
 const GAME_ACQUIRE_DETECT_INTERVAL_MS = 120;
-const GAME_TRACK_DETECT_INTERVAL_MS = 450;
+const GAME_TRACK_DETECT_INTERVAL_MS = 180;
+const GAME_POSE_DETECT_INTERVAL_MS = 520;
+const SHOT_REFRESH_MAX_AGE_MS = 90;
 const GAME_DETECT_MAX_WIDTH = 512;
 const TARGET_LOCK_MS = 350;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
-const LIVE_ENRICH_INTERVAL_MS = 2500;
-const LIVE_ENRICH_MIN_LOCK_MS = 1400;
-const LIVE_ENRICH_MIN_SCORE = 0.62;
-const LIVE_ENRICH_MAX_SAMPLES = 32;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -42,7 +49,6 @@ const state = {
   myId: null,
   game: null, // latest state snapshot from the server (hp, status, ...)
   roster: [], // latest roster from the server (id, name, gallery)
-  liveSamples: new Map(), // local-only appearance samples learned after stable gameplay tracks
   detector: null,
   poseDetector: null,
   embedder: null,
@@ -61,6 +67,7 @@ const state = {
   failedConnects: 0, // connection attempts in a row that never opened
   lastShotAt: 0,
   lastGameDetectAt: 0,
+  lastGamePoseDetectAt: 0,
   countdownEndsAt: null,
   lastCountdownBeep: null,
   bannerOverride: null,
@@ -310,13 +317,14 @@ async function captureScanSignature() {
   for (let i = 0; i < SCAN_SAMPLE_COUNT; i++) {
     await nextFrame();
     const now = performance.now();
-    const box = bestScanBox(currentScanBoxes(now), video);
-    if (box && usableScanBox(video, box)) {
+    const candidate = bestUsableScanCandidate(currentScanBoxes(now), video);
+    const box = candidate.box;
+    if (box && candidate.problem === 'ok' && usableScanBox(video, box)) {
       samples.push(extractSignature(video, box, state.embedder, now));
       thumbnailBox = box;
       problem = 'ok';
     } else {
-      problem = scanBoxProblem(video, box);
+      problem = candidate.problem ?? scanBoxProblem(video, box);
     }
     if (i < SCAN_SAMPLE_COUNT - 1) await wait(SCAN_SAMPLE_INTERVAL_MS);
   }
@@ -329,6 +337,11 @@ function scanProblemMessage(problem) {
   if (problem === 'too-far') return 'step a little closer';
   if (problem === 'edge-clipped') return 'move fully inside the frame';
   if (problem === 'partial-body') return 'stand straighter or show more of your body';
+  if (problem === 'low-confidence') return 'keep your body clearer in the camera';
+  if (problem === 'low-light') return 'move into brighter light';
+  if (problem === 'overexposed') return 'avoid strong backlight';
+  if (problem === 'low-contrast') return 'use a less flat background or better light';
+  if (problem === 'motion-blur') return 'turn a little slower';
   return 'no person detected';
 }
 
@@ -352,43 +365,176 @@ function boxScanQuality(box, source = video) {
   return area * 2 + height + centered * 0.5;
 }
 
+let scanStatsCanvas = null;
+function scanImageStats(source, box) {
+  scanStatsCanvas ??= document.createElement('canvas');
+  const w = 32;
+  const h = 48;
+  scanStatsCanvas.width = w;
+  scanStatsCanvas.height = h;
+  const sample = scanStatsCanvas.getContext('2d', { willReadFrequently: true });
+  const sx = Math.max(0, box.x + box.w * 0.08);
+  const sy = Math.max(0, box.y + box.h * 0.06);
+  const sw = Math.min(sourceWidth(source) - sx, box.w * 0.84);
+  const sh = Math.min(sourceHeight(source) - sy, box.h * 0.88);
+  if (sw <= 1 || sh <= 1) return { brightness: 0, contrast: 0, sharpness: 0 };
+
+  sample.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
+  const px = sample.getImageData(0, 0, w, h).data;
+  const luma = new Float32Array(w * h);
+  let sum = 0;
+  let sumSq = 0;
+  for (let i = 0, p = 0; i < px.length; i += 4, p++) {
+    const y = (0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2]) / 255;
+    luma[p] = y;
+    sum += y;
+    sumSq += y * y;
+  }
+
+  let diff = 0;
+  let diffCount = 0;
+  for (let y = 1; y < h; y++) {
+    for (let x = 1; x < w; x++) {
+      const i = y * w + x;
+      diff += Math.abs(luma[i] - luma[i - 1]) + Math.abs(luma[i] - luma[i - w]);
+      diffCount += 2;
+    }
+  }
+
+  const n = luma.length || 1;
+  const brightness = sum / n;
+  return {
+    brightness,
+    contrast: Math.sqrt(Math.max(0, sumSq / n - brightness * brightness)),
+    sharpness: diff / Math.max(1, diffCount),
+  };
+}
+
+function assessScanCandidate(source, box) {
+  const problem = scanBoxProblem(source, box);
+  if (problem !== 'ok') return { problem, quality: boxScanQuality(box, source) };
+  if ((box.score ?? 1) < SCAN_MIN_DETECTION_SCORE) return { problem: 'low-confidence', quality: 0 };
+
+  const stats = scanImageStats(source, box);
+  if (stats.brightness < SCAN_MIN_BRIGHTNESS) return { problem: 'low-light', quality: 0, stats };
+  if (stats.brightness > SCAN_MAX_BRIGHTNESS) return { problem: 'overexposed', quality: 0, stats };
+  if (stats.contrast < SCAN_MIN_CONTRAST) return { problem: 'low-contrast', quality: 0, stats };
+  if (stats.sharpness < SCAN_MIN_SHARPNESS) return { problem: 'motion-blur', quality: 0, stats };
+
+  return {
+    problem: 'ok',
+    stats,
+    quality:
+      boxScanQuality(box, source) +
+      Math.min(box.score ?? 0.5, 1) * 0.25 +
+      Math.min(stats.contrast * 2.2, 0.24) +
+      Math.min(stats.sharpness * 7, 0.24),
+  };
+}
+
 function bestScanBox(boxes, source = video) {
   return boxes.reduce((best, box) => (!best || boxScanQuality(box, source) > boxScanQuality(best, source) ? box : best), null);
 }
 
-function selectRotationSamples(candidates, targetCount) {
-  if (candidates.length <= targetCount) return candidates;
-  const first = candidates[0].time;
-  const span = Math.max(1, candidates.at(-1).time - first);
-  const buckets = Array.from({ length: targetCount }, () => []);
-  for (const candidate of candidates) {
-    const index = Math.min(targetCount - 1, Math.floor(((candidate.time - first) / span) * targetCount));
-    buckets[index].push(candidate);
+function bestUsableScanCandidate(boxes, source = video) {
+  let best = null;
+  let fallback = null;
+  for (const box of boxes) {
+    const assessment = assessScanCandidate(source, box);
+    const candidate = { box, ...assessment };
+    if (!fallback || candidate.quality > fallback.quality) fallback = candidate;
+    if (candidate.problem === 'ok' && (!best || candidate.quality > best.quality)) best = candidate;
   }
+  return best ?? fallback ?? { problem: 'no-person', quality: 0, box: null };
+}
 
+function removeScanOutliers(candidates) {
+  if (candidates.length <= SCAN_MIN_SAMPLES) return candidates;
+  const scored = candidates.map((candidate) => {
+    const neighbors = candidates
+      .filter((other) => other !== candidate)
+      .map((other) => signatureSimilarity(candidate.signature, other.signature))
+      .sort((a, b) => b - a)
+      .slice(0, 4);
+    const neighborScore = neighbors.reduce((sum, value) => sum + value, 0) / Math.max(1, neighbors.length);
+    return { ...candidate, neighborScore };
+  });
+  const kept = scored.filter((candidate) => candidate.neighborScore >= SCAN_OUTLIER_SIMILARITY);
+  return kept.length >= SCAN_MIN_SAMPLES ? kept : scored.sort((a, b) => b.quality - a.quality).slice(0, SCAN_MIN_SAMPLES);
+}
+
+function removeScanDuplicates(candidates) {
+  const kept = [];
+  for (const candidate of [...candidates].sort((a, b) => b.quality - a.quality)) {
+    if (kept.every((sample) => signatureSimilarity(candidate.signature, sample.signature) < SCAN_DUPLICATE_SIMILARITY)) {
+      kept.push(candidate);
+    }
+  }
+  return kept.length >= SCAN_MIN_SAMPLES ? kept : candidates;
+}
+
+function averagedRotationSample(seed, candidates) {
+  const neighbors = candidates
+    .map((candidate) => ({ candidate, similarity: candidate === seed ? 1 : signatureSimilarity(seed.signature, candidate.signature) }))
+    .filter((entry) => entry.candidate === seed || entry.similarity >= SCAN_VIEW_AVERAGE_SIMILARITY)
+    .sort((a, b) => b.similarity + b.candidate.quality * 0.05 - (a.similarity + a.candidate.quality * 0.05))
+    .slice(0, ROTATION_SAMPLE_AVERAGE_COUNT)
+    .map((entry) => entry.candidate);
+  return {
+    ...seed,
+    signature: averageSignatures(neighbors.map((candidate) => candidate.signature)),
+    quality: neighbors.reduce((sum, candidate) => sum + candidate.quality, 0) / neighbors.length,
+    sourceCount: neighbors.length,
+  };
+}
+
+function selectDiverseRotationSeeds(candidates, targetCount) {
+  const pool = [...candidates].sort((a, b) => b.quality - a.quality);
   const selected = [];
-  for (const bucket of buckets) {
-    bucket.sort((a, b) => b.quality - a.quality);
-    if (!bucket[0]) continue;
-    const best = bucket[0];
-    const averaged = bucket.slice(0, ROTATION_SAMPLE_AVERAGE_COUNT);
-    selected.push({
-      ...best,
-      signature: averageSignatures(averaged.map((candidate) => candidate.signature)),
-      quality: averaged.reduce((sum, candidate) => sum + candidate.quality, 0) / averaged.length,
-      sourceCount: averaged.length,
-    });
+  while (pool.length && selected.length < targetCount) {
+    let bestIndex = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < pool.length; i++) {
+      const candidate = pool[i];
+      const nearest = selected.length
+        ? Math.max(...selected.map((sample) => signatureSimilarity(candidate.signature, sample.signature)))
+        : 0;
+      const score = candidate.quality + (1 - nearest) * SCAN_DIVERSITY_WEIGHT;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = i;
+      }
+    }
+    selected.push(pool.splice(bestIndex, 1)[0]);
   }
+  return selected;
+}
 
-  if (selected.length < targetCount) {
-    const minGap = span / Math.max(1, targetCount * 1.4);
-    const extras = candidates
-      .filter((candidate) => selected.every((sample) => Math.abs(sample.time - candidate.time) >= minGap))
-      .sort((a, b) => b.quality - a.quality);
-    selected.push(...extras.slice(0, targetCount - selected.length));
+function orderRotationSamplesByView(samples) {
+  if (samples.length < 3) return samples.sort((a, b) => a.time - b.time);
+  const remaining = [...samples];
+  const ordered = [remaining.splice(remaining.findIndex((sample) => sample.quality === Math.max(...remaining.map((s) => s.quality))), 1)[0]];
+  while (remaining.length) {
+    const last = ordered.at(-1);
+    let bestIndex = 0;
+    let bestSimilarity = -Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const similarity = signatureSimilarity(last.signature, remaining[i].signature);
+      if (similarity > bestSimilarity) {
+        bestSimilarity = similarity;
+        bestIndex = i;
+      }
+    }
+    ordered.push(remaining.splice(bestIndex, 1)[0]);
   }
+  return ordered;
+}
 
-  return selected.sort((a, b) => a.time - b.time).slice(0, targetCount);
+function selectRotationSamples(candidates, targetCount) {
+  const clean = removeScanDuplicates(removeScanOutliers(candidates));
+  if (clean.length <= targetCount) return orderRotationSamplesByView(clean);
+  const seeds = selectDiverseRotationSeeds(clean, targetCount);
+  return orderRotationSamplesByView(seeds.map((seed) => averagedRotationSample(seed, clean))).slice(0, targetCount);
 }
 
 function mostCommonProblem(problemCounts, fallback) {
@@ -455,6 +601,44 @@ function gameDetectInterval(now) {
     : GAME_ACQUIRE_DETECT_INTERVAL_MS;
 }
 
+function aliveOpponentCount() {
+  const selfId = localSelfId();
+  const players = state.game?.players ?? state.roster;
+  return players.filter((player) => player.id !== selfId && player.alive !== false).length;
+}
+
+function shouldUsePoseFallback(now, forcePose = false) {
+  if (!state.poseDetector) return false;
+  if (forcePose) return true;
+  if (aliveOpponentCount() < 2) return false;
+  return now - state.lastGamePoseDetectAt >= GAME_POSE_DETECT_INTERVAL_MS;
+}
+
+function detectGameplayPeople(source, timestamp, { forcePose = false } = {}) {
+  if (shouldUsePoseFallback(timestamp, forcePose)) {
+    state.lastGamePoseDetectAt = timestamp;
+    return detectTrackedPeople(state.detector, state.poseDetector, source, timestamp);
+  }
+  return detectTrackedPeopleFast(state.detector, source, timestamp);
+}
+
+function refreshGameDetection({ forcePose = false } = {}) {
+  if (state.mode !== 'game' || video.readyState < 2) return false;
+  const t0 = performance.now();
+  const { source, scaleX, scaleY } = gameplayInferenceSource();
+  state.boxes = scaleBoxes(detectGameplayPeople(source, t0, { forcePose }), scaleX, scaleY);
+  state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
+    includeRejected: DEBUG,
+    identifyOnce: false,
+    embedder: state.embedder,
+    closedSet: true,
+  });
+  state.lastGameDetectAt = t0;
+  inferenceMs = performance.now() - t0;
+  frames++;
+  return true;
+}
+
 async function recordRotationVideo() {
   const frames = [];
   const startedAt = performance.now();
@@ -484,18 +668,20 @@ async function processRotationVideo(frames) {
       await nextFrame();
       const frame = frames[i];
       const boxes = detectScanPeople(state.detector, state.poseDetector, frame.image, performance.now());
-      const box = bestScanBox(boxes, frame.image);
+      const candidate = bestUsableScanCandidate(boxes, frame.image);
+      const box = candidate.box;
 
-      if (box && usableScanBox(frame.image, box)) {
+      if (box && candidate.problem === 'ok' && usableScanBox(frame.image, box)) {
         candidates.push({
           signature: extractSignature(frame.image, box, state.embedder, performance.now()),
           box: { ...box },
           thumb: cropThumbnail(box, frame.image),
-          quality: boxScanQuality(box, frame.image),
+          quality: candidate.quality,
+          stats: candidate.stats,
           time: frame.time,
         });
       } else {
-        lastProblem = scanBoxProblem(frame.image, box);
+        lastProblem = candidate.problem ?? scanBoxProblem(frame.image, box);
         problemCounts.set(lastProblem, (problemCounts.get(lastProblem) ?? 0) + 1);
       }
 
@@ -628,21 +814,11 @@ function sendJoin() {
 }
 
 function matchingRoster() {
-  const withLiveSamples = (player) => ({
-    ...player,
-    gallery: [...(player.gallery ?? []), ...(state.liveSamples.get(player.id) ?? [])],
-  });
   const selfId = localSelfId();
-  const roster = state.roster.filter((player) => player.id !== selfId).map(withLiveSamples);
+  const roster = state.roster.filter((player) => player.id !== selfId);
   if (!state.gallery.length) return roster;
   const self = { id: selfId, name: state.name || 'You', gallery: state.gallery };
   return [...roster, self];
-}
-
-function playerGallery(playerId) {
-  if (playerId === localSelfId()) return state.gallery;
-  const player = state.roster.find((candidate) => candidate.id === playerId);
-  return player ? [...(player.gallery ?? []), ...(state.liveSamples.get(playerId) ?? [])] : null;
 }
 
 function localSelfId() {
@@ -698,9 +874,6 @@ function handleMessage(msg) {
       break;
     case 'roster':
       state.roster = msg.players;
-      for (const id of state.liveSamples.keys()) {
-        if (!state.roster.some((player) => player.id === id)) state.liveSamples.delete(id);
-      }
       break;
     case 'state':
       onState(msg.state);
@@ -817,6 +990,14 @@ function isLiveTrack(track, now = performance.now()) {
   return now - track.lastSeen <= LIVE_TRACK_MS;
 }
 
+function gamePlayer(playerId) {
+  return state.game?.players.find((player) => player.id === playerId) ?? null;
+}
+
+function isAlivePlayer(playerId) {
+  return gamePlayer(playerId)?.alive === true;
+}
+
 function isStableTarget(track, now = performance.now()) {
   return Boolean(
     track.playerId &&
@@ -829,6 +1010,10 @@ function isStableTarget(track, now = performance.now()) {
   );
 }
 
+function isTargetableTrack(track, now = performance.now()) {
+  return state.game?.status === 'playing' && isStableTarget(track, now) && isAlivePlayer(track.playerId);
+}
+
 // Which (if any) tracked person is under the crosshair, and which zone of them.
 function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   let bodyTrack = null;
@@ -836,7 +1021,7 @@ function targetUnderCrosshair(px, py, { includeSelf = false } = {}) {
   for (const t of state.tracks) {
     if (!isLiveTrack(t, now)) continue;
     if (!includeSelf && t.playerId === localSelfId()) continue;
-    if (!isStableTarget(t, now)) continue;
+    if (!isTargetableTrack(t, now)) continue;
     if (contains(headBox(t.box), px, py)) return { track: t, zone: 'head' };
     if (contains(bodyBox(t.box), px, py)) bodyTrack = t;
   }
@@ -852,6 +1037,9 @@ function fire() {
 
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.
+  if (performance.now() - state.lastGameDetectAt > SHOT_REFRESH_MAX_AGE_MS) {
+    refreshGameDetection({ forcePose: aliveOpponentCount() > 1 });
+  }
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
   if (hit?.track.playerId && state.game?.status === 'playing') {
     postHit(hit.track.playerId, hit.zone);
@@ -890,40 +1078,6 @@ function signatureSimilarity(a, b) {
   return (cosine(a?.hist, b?.hist) + cosine(a?.lower, b?.lower) + cosine(a?.grid, b?.grid)) / 3;
 }
 
-function shouldLearnFromTrack(track, now) {
-  return (
-    isLiveTrack(track, now) &&
-    isStableTarget(track, now) &&
-    track.playerId !== localSelfId() &&
-    now - (track.identifiedAt ?? now) >= LIVE_ENRICH_MIN_LOCK_MS &&
-    now - (track.lastEnrichedAt ?? 0) >= LIVE_ENRICH_INTERVAL_MS &&
-    track.score >= LIVE_ENRICH_MIN_SCORE &&
-    track.upper >= 0.42 &&
-    track.lower >= 0.32 &&
-    track.grid >= 0.34
-  );
-}
-
-function maybeEnrichLiveSamples(now) {
-  for (const track of state.tracks) {
-    if (!shouldLearnFromTrack(track, now)) continue;
-    const gallery = playerGallery(track.playerId);
-    if (!gallery) continue;
-    const signature = extractSignature(video, track.box, state.embedder, now);
-    if (signature.usable === false) continue;
-    if (gallery.some((sample) => signatureSimilarity(signature, sample) >= 0.985)) {
-      track.lastEnrichedAt = now;
-      return;
-    }
-    const samples = state.liveSamples.get(track.playerId) ?? [];
-    samples.push(signature);
-    while (samples.length > LIVE_ENRICH_MAX_SAMPLES) samples.shift();
-    state.liveSamples.set(track.playerId, samples);
-    track.lastEnrichedAt = now;
-    return;
-  }
-}
-
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fire();
@@ -954,18 +1108,7 @@ function loop() {
     } else {
       const now = performance.now();
       if (now - state.lastGameDetectAt >= gameDetectInterval(now)) {
-        state.lastGameDetectAt = now;
-        const t0 = performance.now();
-        const { source, scaleX, scaleY } = gameplayInferenceSource();
-        state.boxes = scaleBoxes(detectTrackedPeopleFast(state.detector, source, t0), scaleX, scaleY);
-        state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
-          includeRejected: DEBUG,
-          identifyOnce: true,
-          embedder: state.embedder,
-        });
-        maybeEnrichLiveSamples(performance.now());
-        inferenceMs = performance.now() - t0;
-        frames++;
+        refreshGameDetection();
       }
     }
   }
@@ -983,6 +1126,7 @@ function loop() {
     const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
     const identified = visibleTracks.filter((t) => t.playerId);
     const rejected = visibleTracks.filter((t) => !t.playerId && t.debugMatch);
+    const ranked = visibleTracks.filter((t) => t.rankings?.length);
     $('debug').textContent =
       `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
@@ -996,6 +1140,17 @@ function loop() {
                 )
                 .join(' ')}`
             : '')
+        : '') +
+      (ranked.length
+        ? `\nRanks ${ranked
+            .map(
+              (t) =>
+                `#${t.id} ${t.rankings
+                  .slice(0, 3)
+                  .map((r) => `${r.name}:${r.score.toFixed(2)}/${(r.margin ?? 0).toFixed(2)}`)
+                  .join(',')}`,
+            )
+            .join(' | ')}`
         : '') +
       (rejected.length
         ? `\nRejected ${rejected
@@ -1061,24 +1216,28 @@ function drawGame({ vw, vh, toScreen }) {
   const now = performance.now();
   for (const track of state.tracks) {
     if (!isLiveTrack(track, now)) continue;
-    const targeted = hit?.track === track;
     const known = track.playerId !== null;
+    const alive = known && isAlivePlayer(track.playerId);
+    const targeted = alive && hit?.track === track;
     const debugMatch = DEBUG && !known ? track.debugMatch : null;
-    const color = targeted ? '#ff2e4d' : known ? '#39ff88' : debugMatch ? '#ffd166' : '#8a97a6';
+    const color = targeted ? '#ff2e4d' : known && alive ? '#39ff88' : known ? '#6b7280' : debugMatch ? '#ffd166' : '#8a97a6';
     ctx.strokeStyle = color;
-    ctx.setLineDash(known ? [] : debugMatch ? [8, 4] : [4, 4]);
+    ctx.setLineDash(known && !alive ? [2, 5] : known ? [] : debugMatch ? [8, 4] : [4, 4]);
     ctx.strokeRect(...toScreen(track.box));
 
-    ctx.setLineDash([]);
-    ctx.strokeRect(...toScreen(bodyBox(track.box)));
+    if (alive || !known) {
+      ctx.setLineDash([]);
+      ctx.strokeRect(...toScreen(bodyBox(track.box)));
 
-    ctx.setLineDash([6, 4]);
-    ctx.strokeRect(...toScreen(headBox(track.box)));
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(...toScreen(headBox(track.box)));
+    }
 
     const [x, y] = toScreen(track.box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
-    ctx.fillText(track.name ?? (debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'unknown'), x + 4, y + 16);
+    const label = track.name ? `${track.name}${alive ? '' : ' down'}` : debugMatch ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}` : 'unknown';
+    ctx.fillText(label, x + 4, y + 16);
   }
 }
 
