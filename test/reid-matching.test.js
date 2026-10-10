@@ -81,25 +81,26 @@ test('a named track whose re-identification no longer fits its player loses the 
   let now = 1000;
   const step = () => tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
   let track;
-  for (let i = 0; i < 4; i++) track = step();
+  // Enough checks to win INITIAL_STREAK: this score clears the accept threshold but not
+  // reidInitialLock(), so the name comes from the streak rather than from one strong check.
+  for (let i = 0; i < 6; i++) track = step();
   assert.equal(track.playerId, 'rex');
 
   // Someone else steps into the same spot: the box carries on, but they look nothing like Rex.
   //
-  // Revocation now needs REID_REVOKE_CHECKS consecutive raw misses *and* the median - the score
-  // that granted the name, and that grants the shot - to have stopped clearing the accept floor
-  // (identify.js revokedByReid). On this series the median crosses on the fourth bad check, so
-  // the name goes one check later than it used to. That check is also the first on which the
-  // substitute stops being shootable, which is the point of tying the two together: the name and
-  // the shot are no longer lost 1-2 checks apart. The counterpart is the next test, where a real
-  // player's three-check dip no longer costs them the name at all.
+  // Revocation needs REID_REVOKE_CHECKS consecutive raw misses *and* the median - the score that
+  // granted the name, and that grants the shot - to have stopped clearing the accept floor
+  // (identify.js revokedByReid). REID_REVOKE_CHECKS is 8, which at RECHECK_MS (100 ms) is 800 ms
+  // of sustained mismatch: the count is a stand-in for that duration, and it was raised from 3
+  // when the identification rate went from 4 Hz to 10 Hz. Had it not been, a 300 ms motion-blur
+  // burst would now cost a real player their name - which is what the next test guards.
   current = similarTo(rexReid, 0.3);
+  for (let i = 0; i < 7; i++) {
+    track = step();
+    assert.equal(track.playerId, 'rex', `bad check ${i + 1} of 7 must not be enough on its own`);
+  }
   track = step();
-  track = step();
-  track = step();
-  assert.equal(track.playerId, 'rex', 'three bad checks with the median still holding are not enough');
-  track = step();
-  assert.equal(track.playerId, null, 'the check the median concedes on drops the name');
+  assert.equal(track.playerId, null, 'the eighth consecutive miss drops the name');
 });
 
 test('the threshold can be tuned in the field (?reid=)', async () => {
@@ -160,4 +161,38 @@ test('motion widens the gap: matching movement lifts a player over the threshold
   assert.equal((await trackScores(lookAlike)).at(-1).playerId, 'rex', 'appearance alone names them');
   const contradicted = await trackScores(lookAlike, { scoreAdjust: (track, id) => (id === 'rex' ? -0.08 : 0) });
   assert.ok(contradicted.every((s) => s.playerId == null), JSON.stringify(contradicted));
+});
+
+test('a new track needs INITIAL_STREAK agreeing checks, which is a duration not a count', async () => {
+  const { Tracker } = await import('../frontend/public/identify.js');
+  // INITIAL_STREAK is 5, and the reason it is not 2 any more is the detection rate. An
+  // unidentified track is due on *every* detection cycle, so the streak runs at the detection
+  // interval - and that interval went from 120 ms to 50 ms. Two checks 50 ms apart are not two
+  // independent observations: reid.latest() keeps one embedding usable for 800 ms, so both checks
+  // can score the very same vector. Five checks at 50 ms span a fresh request (REID_REQUEST_MS,
+  // 220 ms), which is what makes the streak evidence rather than repetition.
+  //
+  // The score here clears the accept threshold but stays under reidInitialLock(), so the streak is
+  // the only thing that can name this track - a stronger score would be named on one check and
+  // this test would prove nothing.
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const box = { x: 250, y: 60, w: 120, h: 360, score: 0.9 };
+  const current = similarTo(rexReid, 0.74);
+  const premise = matchGallery(person(current), players, 'self', { closedSet: true, includeRejected: true });
+  assert.equal(premise.id, 'rex', 'premise: Rex is the match');
+  assert.equal(premise.accepted, true, 'premise: and an accept, so only the streak withholds the name');
+  assert.ok(premise.score < 0.8, `premise: ${premise.score} must stay under reidInitialLock()`);
+
+  const reid = { latest: () => current, request() {} };
+  const tracker = new Tracker();
+  let now = 1000;
+  const step = () => tracker.update([{ ...box }], video, players, 'self', (now += 300), { reid, closedSet: true })[0];
+
+  let track;
+  for (let i = 1; i <= 4; i++) {
+    track = step();
+    assert.equal(track.playerId, null, `check ${i} of 4 must not be enough to name a brand new track`);
+  }
+  track = step();
+  assert.equal(track.playerId, 'rex', 'the fifth agreeing check names it');
 });

@@ -196,7 +196,12 @@ const reidScoreFloor = (match) => reidMatchThreshold + (match?.rangePenalty ?? 0
 // checks in a row is someone else now (people walking past each other, the player leaving and a
 // bystander stepping into the same spot): the name is dropped instead of staying latched.
 const REID_REVOKE_SCORE = 0.6;
-const REID_REVOKE_CHECKS = 3;
+// Eight checks, which at RECHECK_MS is 800 ms. The duration is the tuned quantity, not the count:
+// this was 3 checks when RECHECK_MS was 250 ms, i.e. 750 ms, and the whole point of it is that an
+// ordinary side view or motion-blur burst must NOT cost a player their name - only a sustained
+// mismatch may. Raising the check rate without raising this count would have made revocation fire
+// on a 300 ms blur. Any future change to RECHECK_MS has to move this with it.
+const REID_REVOKE_CHECKS = 8;
 const REID_MATCH_MARGIN = 0.03;
 // Evidence, soft labels and shots all use the threshold itself. They used to accept scores a
 // little under it, to bridge single bad checks; the 3 s median (REID_HISTORY_MS) does that now,
@@ -217,8 +222,32 @@ const REID_HISTORY_MS = 3000;
 // -- tracker association and lifecycle: matching boxes to tracks frame to frame --
 const ASSOCIATION_MATCH = 0.3; // minimum association score to call a box the same person
 const TRACK_TIMEOUT_MS = 900;
-const RECHECK_MS = 250; // re-identify an established track quickly without checking every frame forever
-const SETTLE_CHECKS = 6; // identify fast on a brand new track: check every frame at first
+// How often an established track's identity is recomputed: 100 ms is 10 Hz, the identification
+// floor the game aims for. Exported so the ?debug readout can print the achieved rate against the
+// target it is actually being held to, rather than against a number copied by hand.
+//
+// This is deliberately NOT what paces OSNet. Re-deciding is cheap - with re-identification
+// deciding the match, extractSignature skips the colour features entirely and a check is little
+// more than box arithmetic, a reid.latest() lookup and a few gallery cosines. See
+// REID_REQUEST_MS for the expensive half.
+//
+// SETTLE_CHECKS used to sit beside this: a brand new track was checked on every detection for its
+// first 6 checks. It is gone. An *unidentified* track is already due on every cycle (see `due`
+// below), so all it ever did was keep re-checking a track that had just been named - and at 100 ms
+// the gap between "every cycle" and "every recheck" is one detection, which is not worth a
+// constant, a branch, and a count that silently meant a different duration at every frame rate.
+export const RECHECK_MS = 100;
+// ...and how often a track may ask reid.js for a fresh embedding. This is the expensive half of a
+// check and the reason the two rates are separate: reid.request() runs getImageData(128, 256) - a
+// 32k-pixel GPU-to-CPU readback - synchronously on the main thread before handing the crop to the
+// worker. At 10 Hz with four people in frame that is ~1.3 Mpx of readback a second, on the same
+// thread the FIRE button needs.
+//
+// 220 ms is ~4.5 Hz, which is ample: reid.latest() keeps an embedding usable for 800 ms, so there
+// are three or four request opportunities inside every freshness window, and the score a check
+// actually decides on is the median over REID_HISTORY_MS (3 s) regardless. Identification stays at
+// 10 Hz; only the embedding behind it is refreshed less often.
+const REID_REQUEST_MS = 220;
 // Box position and velocity are filtered separately, and both are specified as time constants
 // rather than as a per-detection blend factor. A blend factor only means something at a fixed
 // detection interval, and the interval here is neither fixed nor the same on every phone: it is
@@ -255,8 +284,13 @@ const PREDICT_MAX_AHEAD_S = 0.5; // how far association may extrapolate a track 
 const COAST_VELOCITY_DECAY = 0.82; // velocity damping while a track is briefly unseen
 
 // -- identity hysteresis: how reluctant a track is to take or change a name --
-const INITIAL_STREAK = 2; // a new track must agree a couple of times before getting a name
-const SWITCH_STREAK = 4; // a rival id must win this many checks in a row before we switch
+// Both of these are counts of checks standing in for a duration, and both were calibrated at the
+// old rates - so both are scaled to keep the duration they were tuned at. An unidentified track is
+// due every detection, so INITIAL_STREAK runs at the detection interval (5 x 50 ms = 250 ms, as
+// 2 x 120 ms was); a named track is due at RECHECK_MS, so SWITCH_STREAK runs at that
+// (10 x 100 ms = 1000 ms, as 4 x 250 ms was).
+const INITIAL_STREAK = 5; // a new track must agree this many times before getting a name
+const SWITCH_STREAK = 10; // a rival id must win this many checks in a row before we switch
 const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66; // colour-only equivalent of reidInitialLock()
 
 // -- evidence accumulation: a leaky bucket per candidate id, so one good frame isn't decisive --
@@ -973,7 +1007,6 @@ function clearIdentity(track) {
   track.streakId = undefined;
   track.identifiedAt = null;
   track.identityHits = 0;
-  track.lastEnrichedAt = 0;
   track.selfRejected = false;
   track.misses = 0;
   track.reidMisses = 0;
@@ -1298,6 +1331,7 @@ export class Tracker {
         vy: 0,
         checks: 1,
         lastCheck: 0,
+        lastReidRequestAt: 0,
         playerId: null,
         name: null,
         score: 0,
@@ -1318,7 +1352,6 @@ export class Tracker {
         missedFrames: 0,
         identifiedAt: null,
         identityHits: 0,
-        lastEnrichedAt: 0,
         selfRejected: false,
       });
     }
@@ -1331,9 +1364,7 @@ export class Tracker {
     const reidDecides = Boolean(reid) && roomOnReid;
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
-      const due =
-        !track.playerId ||
-        (!identifyOnce && (track.checks <= SETTLE_CHECKS || now - track.lastCheck >= RECHECK_MS));
+      const due = !track.playerId || (!identifyOnce && now - track.lastCheck >= RECHECK_MS);
       if (!due) continue;
       track.lastCheck = now;
 
@@ -1348,7 +1379,13 @@ export class Tracker {
         // A box under the far floor can never be identified on any path, so a 128x256 OSNet
         // inference on it would be computed and then thrown away at bestAngleScore. It used to be
         // spent on every check of every too-small box in frame.
-        if (signature.range !== 'below-floor') reid.request(track, video, track.box);
+        //
+        // The interval is what keeps the main-thread readback inside request() off the
+        // identification rate: checks run at RECHECK_MS, embeddings at REID_REQUEST_MS.
+        if (signature.range !== 'below-floor' && now - (track.lastReidRequestAt ?? 0) >= REID_REQUEST_MS) {
+          track.lastReidRequestAt = now;
+          reid.request(track, video, track.box);
+        }
         if (!signature.reid) continue;
       }
       const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet, reidScale: roomOnReid });

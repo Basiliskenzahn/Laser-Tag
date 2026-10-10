@@ -9,7 +9,7 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { getReidThreshold } from '../identify.js';
+import { RECHECK_MS, getReidThreshold } from '../identify.js';
 import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { startupTimingLine } from '../startup.js';
 import { state } from '../state.js';
@@ -19,13 +19,42 @@ import { drawScan, scanCostLine } from './scan.js';
 
 const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
-const GAME_ACQUIRE_DETECT_INTERVAL_MS = 120;
-const GAME_TRACK_DETECT_INTERVAL_MS = 180;
+
+// -- detection cadence --
+// Two tiers, picked per frame by detectTier(). The fast one is the target the whole branch is
+// aimed at; the slow one is what the game actually needs when there is nothing to look for, and
+// paying it is what buys the fast tier its headroom.
+//
+// 50 ms is 20 fps. Worked through the duty cap below, any phone under ~35 ms per detection hits it
+// outright (35 / 0.7 = 50), and slower ones degrade smoothly rather than stuttering: 50 ms per
+// detection settles at 71 ms (14 fps), 70 ms at 100 ms (10 fps). The one measured figure in the
+// repo is 23 ms, which is 46% duty at this interval - headroom that the old 30 fps proposal did
+// not leave, and that the FIRE button needs.
+const DETECT_INTERVAL_SEARCHING_MS = 50;
+// 100 ms is 10 fps, and it is plenty when every live track is identified and none is coasting: the
+// boxes are drawn every animation frame from liveBox()'s velocity projection, not from the last
+// detection, so a slower detection rate costs smoothness almost nothing. It also still clears the
+// identification floor (RECHECK_MS), so names keep updating at the same rate either way.
+const DETECT_INTERVAL_SETTLED_MS = 100;
 // Detection may take at most this share of the time, so slower phones slow it down themselves
 // instead of starving the drawing and the shot.
 const DETECT_MAX_BUSY_SHARE = 0.7;
+
+// -- the pose landmarker, gameplay's second chance at a person the object detector missed --
 const GAME_POSE_DETECT_INTERVAL_MS = 520;
+// While a track is coasting, let pose run sooner. That is precisely the job detector.js built it
+// for ("a pose nowhere near any surviving object box is a person the object detector missed"), and
+// it is bounded by construction rather than by a timer: a track coasts for at most
+// TRACK_TIMEOUT_MS (900 ms in identify.js) before it is dropped, so a lost person can hold the
+// faster pose rate for about a second and no longer.
+const GAME_POSE_SEARCH_INTERVAL_MS = 200;
+
 const GAME_DETECT_MAX_WIDTH = 512;
+
+// What the ?debug readout prints each achieved rate against. Derived, never typed twice: a retune
+// of either interval moves the target in the overlay with it.
+const DETECT_TARGET_FPS = Math.round(1000 / DETECT_INTERVAL_SEARCHING_MS);
+const ID_TARGET_HZ = Math.round(1000 / RECHECK_MS);
 // The scan screen's preview detection - the green box round whoever a scan would use. It used to
 // run on every new video frame, through detectScanPeople (object detector *plus* pose landmarker)
 // and on the full-resolution video, which made the idle scan screen by far the most expensive
@@ -96,32 +125,66 @@ function refreshScanPreview() {
   frames++;
 }
 
-function gameDetectInterval(now) {
-  const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
-  const base =
-    liveTracks.length && liveTracks.every((track) => track.playerId) ? GAME_TRACK_DETECT_INTERVAL_MS : GAME_ACQUIRE_DETECT_INTERVAL_MS;
+// Is there someone on screen we are still looking for? Two states count, and both are things the
+// app *knows* rather than guesses:
+//
+//   'lost'       a live track the detector did not find this cycle, coasting on liveBox()'s
+//                velocity (missedFrames > 0). We saw that person a moment ago, so this is a real
+//                missed detection, not an absence - and it is the one the player notices, because
+//                the box drifts off someone standing right in front of them.
+//   'acquiring'  a live track with no identity yet. Already the state the old two-tier split was
+//                built around.
+//
+// Deliberately NOT a third state for "an enrolled, alive player has no live track". From inside
+// the app that is indistinguishable from a player who has walked out of frame, and the mitigation
+// would be an escalation nothing can end: a player who leaves the area is missing forever, and the
+// phone would sit pinned at the fast tier with pose relaxed for the rest of the round. The settled
+// tier is 10 fps, which finds somebody walking back into frame within about 100 ms anyway.
+//
+// `null` means everything on screen is found and named, which is the tier the game can afford to
+// be slow in.
+export function detectTier(now = performance.now()) {
+  let acquiring = false;
+  for (const track of state.tracks) {
+    if (!isLiveTrack(track, now)) continue;
+    if ((track.missedFrames ?? 0) > 0) return 'lost'; // strongest signal, so it wins outright
+    if (!track.playerId) acquiring = true;
+  }
+  return acquiring ? 'acquiring' : null;
+}
+
+function gameDetectInterval(now, tier = detectTier(now)) {
+  const base = tier ? DETECT_INTERVAL_SEARCHING_MS : DETECT_INTERVAL_SETTLED_MS;
   return Math.max(base, inferenceMs / DETECT_MAX_BUSY_SHARE);
 }
 
-function shouldUsePoseFallback(now) {
+// Pose costs the most of anything in the loop and it inflates `inferenceMs`, which feeds the duty
+// cap above - so the cycle *after* a pose cycle is stretched. That is the price of relaxing it, and
+// it is bounded: at the search interval roughly one cycle in four runs pose, and one stretched
+// interval in four at the measured 23 + pose costs under a tenth of the detection rate. Worth it
+// only while there is actually someone to find, which is why 'lost' is the only tier that relaxes
+// it - 'acquiring' gets the fast object-detection tier and nothing more, because a track that
+// exists does not need a second way to be found.
+function shouldUsePoseFallback(now, tier) {
   if (!state.poseDetector) return false;
   if (rosterCandidateCount() < 2) return false;
-  return now - state.lastGamePoseDetectAt >= GAME_POSE_DETECT_INTERVAL_MS;
+  const interval = tier === 'lost' ? GAME_POSE_SEARCH_INTERVAL_MS : GAME_POSE_DETECT_INTERVAL_MS;
+  return now - state.lastGamePoseDetectAt >= interval;
 }
 
-function detectGameplayPeople(source, timestamp) {
-  if (shouldUsePoseFallback(timestamp)) {
+function detectGameplayPeople(source, timestamp, tier) {
+  if (shouldUsePoseFallback(timestamp, tier)) {
     state.lastGamePoseDetectAt = timestamp;
     return detectTrackedPeople(state.detector, state.poseDetector, source, timestamp);
   }
   return detectTrackedPeopleFast(state.detector, source, timestamp);
 }
 
-function refreshGameDetection() {
+function refreshGameDetection(tier = detectTier()) {
   if (state.mode !== 'game' || video.readyState < 2) return false;
   const t0 = performance.now();
   const { source, scaleX, scaleY } = gameplayInferenceSource();
-  state.boxes = scaleBoxes(detectGameplayPeople(source, t0), scaleX, scaleY);
+  state.boxes = scaleBoxes(detectGameplayPeople(source, t0, tier), scaleX, scaleY);
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
     identifyOnce: false,
@@ -132,7 +195,21 @@ function refreshGameDetection() {
   state.lastGameDetectAt = t0;
   inferenceMs = performance.now() - t0;
   frames++;
+  if (DEBUG) countIdentifyChecks(t0);
   return true;
+}
+
+// Identification is throttled separately from detection (RECHECK_MS), so its achieved rate is its
+// own number and cannot be read off the detection rate. Counted as a fraction of (live track,
+// cycle) pairs that were a real check, which multiplied by the detection rate is the per-track
+// identification Hz - what the player actually experiences as "how often does the name update".
+// ?debug only; nothing here runs on a normal load.
+function countIdentifyChecks(t0) {
+  for (const track of state.tracks) {
+    if (!isLiveTrack(track, t0)) continue;
+    idTrackCycles++;
+    if (track.lastCheck === t0) idChecks++;
+  }
 }
 
 // ---- HUD ----
@@ -313,6 +390,32 @@ let frames = 0;
 let fps = 0;
 let fpsWindowStart = performance.now();
 let inferenceMs = 0;
+// Three rates, because they are three different things and the old single "fps" was read as
+// whichever one the reader had in mind. All ?debug only.
+//   drawFrames  animation frames, i.e. how smooth the overlay actually is. This is the one a
+//               player means by "fps", and the one that says whether a detection is starving the
+//               draw: the boxes are redrawn from liveBox() every frame, so this should stay near
+//               the display rate however slowly detection runs.
+//   frames      detections. What the old counter meant, and the number the cadence targets.
+//   idChecks    identification checks, over idTrackCycles live-track-cycles. See
+//               countIdentifyChecks.
+let drawFrames = 0;
+let drawFps = 0;
+let idChecks = 0;
+let idTrackCycles = 0;
+let idHz = 0;
+
+// `det 19/20 · id 9/10 Hz lost` - achieved against target for both rates, plus which cadence tier
+// is asking, so a phone running slow says why. `det` is detections per second, never the screen
+// frame rate: that is `draw`, printed separately, precisely because one number called "fps" got
+// read as the other. A `det` well under target with `ms` over ~35 is the duty cap holding the rate
+// down, which is correct behaviour and not a bug; a `det` at target with `id` under it means
+// identification is being throttled by RECHECK_MS rather than by the loop.
+function rateLine(now) {
+  const tier = detectTier(now);
+  const id = idTrackCycles || idHz ? `${idHz.toFixed(0)}/${ID_TARGET_HZ} Hz` : `-/${ID_TARGET_HZ} Hz`;
+  return `det ${fps.toFixed(0)}/${DETECT_TARGET_FPS} · id ${id}${tier ? ` ${tier}` : ''}`;
+}
 
 export function loop() {
   requestAnimationFrame(loop);
@@ -323,7 +426,8 @@ export function loop() {
       refreshScanPreview();
     } else if (state.mode === 'game') {
       const now = performance.now();
-      if (now - state.lastGameDetectAt >= gameDetectInterval(now)) refreshGameDetection();
+      const tier = detectTier(now);
+      if (now - state.lastGameDetectAt >= gameDetectInterval(now, tier)) refreshGameDetection(tier);
     }
   }
 
@@ -332,9 +436,18 @@ export function loop() {
 
   if (DEBUG) {
     const now = performance.now();
+    drawFrames++;
     if (now - fpsWindowStart >= 1000) {
-      fps = (frames * 1000) / (now - fpsWindowStart);
+      const seconds = (now - fpsWindowStart) / 1000;
+      fps = frames / seconds;
+      drawFps = drawFrames / seconds;
+      // Checks per live track per second: the share of track-cycles that were a real check, at the
+      // rate those cycles happened. 0 when nothing was on screen, which prints as `-`.
+      idHz = idTrackCycles ? (idChecks / idTrackCycles) * fps : 0;
       frames = 0;
+      drawFrames = 0;
+      idChecks = 0;
+      idTrackCycles = 0;
       fpsWindowStart = now;
     }
     const visibleTracks = state.tracks.filter((t) => isLiveTrack(t, now));
@@ -343,7 +456,7 @@ export function loop() {
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
     $('debug').textContent =
-      `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
+      `${state.delegate} · draw ${drawFps.toFixed(0)} fps · ${rateLine(now)} · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
       (state.mode === 'game'
         ? ` · ${identified.length} identified` +
