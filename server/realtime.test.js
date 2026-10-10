@@ -92,6 +92,26 @@ test('two polling players can join, see each other and start a round', async () 
   b.stop();
 });
 
+test('eight polling players can fill a room and start together', async () => {
+  const clients = await Promise.all(Array.from({ length: 9 }, () => pollingClient()));
+  const players = clients.slice(0, 8);
+  const extra = clients[8];
+  const room = 'eight-player-room';
+
+  await Promise.all(players.map((client, i) => client.send({ type: 'join', name: `P${i + 1}`, room, gallery })));
+  await waitFor(() => lastState(players[0].messages)?.players.length === 8, 3000);
+  await waitFor(() => players[0].messages.filter((m) => m.type === 'roster').at(-1)?.players.length === 8, 3000);
+
+  await extra.send({ type: 'join', name: 'Extra', room, gallery });
+  await waitFor(() => extra.messages.some((m) => m.type === 'error' && m.message === 'Room is full'));
+
+  await players[0].send({ type: 'start' });
+  await waitFor(() => lastState(players[7].messages)?.status === 'playing', 5000);
+  assert.equal(lastState(players[7].messages).players.length, 8);
+
+  for (const client of clients) client.stop();
+});
+
 test('a held poll is answered as soon as a message arrives', async () => {
   const a = await pollingClient();
   await a.send({ type: 'join', name: 'A', room: 'latency', gallery });
