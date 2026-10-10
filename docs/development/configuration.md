@@ -108,7 +108,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `ROTATION_SCAN_COUNTDOWN_MS` | 5000 | Countdown before recording |
+| `ROTATION_SCAN_COUNTDOWN_MS` | 3000 | Countdown before recording |
 | `ROTATION_SCAN_DURATION_MS` | 12 000 | Recording length |
 | `ROTATION_RECORD_FRAME_MS` | 180 | Delay between recorded frames |
 | `ROTATION_FRAME_MAX_WIDTH` | 1024 | Recorded frame width |

@@ -37,10 +37,10 @@ Each player has a **Scan** (or **Rescan**) button. **Any phone can scan any play
 
 ## Scanning a player
 
-Scanning teaches every phone what a player looks like, so it can tell players apart during the game. It takes about 20 seconds, plus a few more for processing.
+Scanning teaches every phone what a player looks like, so it can tell players apart during the game. It takes about 15 seconds, plus a few more for processing.
 
 1. Tap **Scan** next to the player's name.
-2. **5-second countdown.** The player steps back until their **whole body**, head to feet, is in frame, and faces the camera.
+2. **3-second countdown.** The player steps back until their **whole body**, head to feet, is in frame, and faces the camera.
 3. **12 seconds of recording.** The player **turns slowly in one full circle** on the spot. The person holding the phone keeps it steady and keeps the player centred.
 4. **Processing.** The phone works through the recording and picks the best 12–24 views; the on-screen text counts the frames as it goes. You return to the lobby with *"Saved scan for Alice with 24 angles."*
 

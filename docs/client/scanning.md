@@ -12,7 +12,7 @@ Any phone can scan any player: each lobby row has a **Scan** button, and the gal
 
 ```mermaid
 flowchart TD
-  A[Tap Scan] --> B[5 s countdown<br/>player faces camera]
+  A[Tap Scan] --> B[3 s countdown<br/>player faces camera]
   B --> C[Record 12 s<br/>~60 frames, max 1024 px wide]
   C --> D[For each frame:<br/>detect people, pick best candidate,<br/>quality checks]
   D --> E[Extract signature + await<br/>re-identification embedding]
@@ -28,7 +28,7 @@ flowchart TD
 
 ### 1. Countdown
 
-`runAutoScan()` shows a 5-second countdown so the player can get into position.
+`runAutoScan()` shows a 3-second countdown so the player can get into position.
 
 ### 2. Recording
 
