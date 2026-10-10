@@ -75,6 +75,21 @@ export function renderLobby() {
       scanBtn.disabled = roundRunning;
       scanBtn.addEventListener('click', () => beginPlayerScan(rosterPlayer));
       actions.append(scanBtn);
+      if (scanned) {
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'lobby-delete-btn';
+        deleteBtn.textContent = '✕';
+        deleteBtn.title = `Delete ${player.name}'s scan`;
+        deleteBtn.setAttribute('aria-label', deleteBtn.title);
+        deleteBtn.disabled = roundRunning;
+        deleteBtn.addEventListener('click', () => {
+          if (confirm(`Delete ${player.name}'s scan? They will need scanning again before the next round.`)) {
+            send({ type: 'clearScan', targetId: rosterPlayer.id });
+          }
+        });
+        actions.append(deleteBtn);
+      }
       row.append(actions);
     }
     list.append(row);

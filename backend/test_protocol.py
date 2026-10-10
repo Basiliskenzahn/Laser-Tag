@@ -248,6 +248,20 @@ class ProtocolTests(AioHTTPTestCase):
                         and next((p for p in last_roster(debug.messages) if p["id"] == debug_id), {}).get("gallery")
                         and next((p for p in last_roster(debug.messages) if p["id"] == clone["id"]), {}).get("gallery"))
 
+    async def test_clearing_a_scan_tells_everyone_and_unscans_the_player(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("clear-scan")
+        await a.send({"type": "join", "name": "A", "room": room})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        b_id = b.welcome_id()
+
+        await a.send({"type": "clearScan", "targetId": b_id})
+        await wait_for(lambda: any(m["type"] == "scanCleared" and m["targetId"] == b_id for m in b.messages))
+        await wait_for(lambda: last_roster(a.messages)
+                        and next((p for p in last_roster(a.messages) if p["id"] == b_id), {}).get("gallery") == [])
+
     async def test_eight_players_can_fill_a_room_and_start_together(self):
         room = unique_room("eight-player-room")
         clients = [self.track(await self.polling_client()) for _ in range(9)]

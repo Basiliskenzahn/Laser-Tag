@@ -94,6 +94,14 @@ Only the first `join` per session counts. Replies: `welcome`, then `state` and `
 
 Saves a scan for any player in the room. Replies `scanSaved` to the sender, then `roster` and `state` to everyone; or `error`.
 
+### `clearScan`
+
+```json
+{ "type": "clearScan", "targetId": "<player id>" }
+```
+
+Deletes a player's scan (and their debug clone's), so they show as unscanned and block launch until scanned again. Sends `scanCleared` to everyone, then `roster` and `state` to everyone; or `error` (*"Round already running"*, *"Unknown player"*). A `scan` with an empty gallery is still refused rather than treated as a delete.
+
 ### `start`
 
 ```json
@@ -121,11 +129,12 @@ Delivered through `/api/poll`.
 | Type | Fields | Sent to | When |
 | --- | --- | --- | --- |
 | `welcome` | `id` | Joiner | Join succeeded. `id` is your player id. |
-| `error` | `message` | Sender | A join, scan or start was refused |
+| `error` | `message` | Sender | A join, scan, scan deletion or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
-| `roster` | `players: [{id, name, gallery}]` | Everyone in the room | Joins, leaves, scans |
+| `roster` | `players: [{id, name, gallery}]` | Everyone in the room | Joins, leaves, scans, deleted scans |
 | `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
+| `scanCleared` | `targetId` | Everyone in the room | A scan was deleted. Arrives before the `roster` without it, and each phone drops its locally cached copy so it isn't resent on the next join. |
 | `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
 

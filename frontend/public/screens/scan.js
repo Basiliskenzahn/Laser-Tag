@@ -125,6 +125,17 @@ export function loadScanCache(name = scanPersonName()) {
 // Not needed to play - it only rides along in the cache so an exported scan can show it.
 let lastScanFrames = null;
 
+// Called on every phone when a scan is deleted (net.js, `scanCleared`), so a phone holding that
+// player's scan does not send it straight back on its next join.
+export function forgetScanCache(name) {
+  try {
+    localStorage.removeItem(`laser-tag:${scanCacheKey(name)}`);
+  } catch {
+    // Nothing cached, or storage is unavailable: either way nothing will be resent.
+  }
+  if (state.savedScan?.name === name) state.savedScan = null;
+}
+
 function saveScanCache() {
   if (state.gallery.length < SCAN_MIN_SAMPLES) return;
   try {

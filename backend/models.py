@@ -153,14 +153,31 @@ class Room:
             return {"ok": False, "error": "Unknown player"}
         if not gallery:
             return {"ok": False, "error": "Scan did not contain enough samples"}
-        player.gallery = gallery
+        self._store_gallery(player_id, gallery)
+        return {"ok": True}
+
+    def clear_gallery(self, player_id):
+        """Delete the scan of ``player_id`` (and its debug clone's), so they need scanning again.
+
+        Kept apart from :meth:`set_gallery` so that an empty scan arriving there
+        is still refused rather than silently deleting one.
+        """
+        if self.status in ("countdown", "playing"):
+            return {"ok": False, "error": "Round already running"}
+        if not self._player(player_id):
+            return {"ok": False, "error": "Unknown player"}
+        self._store_gallery(player_id, [])
+        return {"ok": True}
+
+    def _store_gallery(self, player_id, gallery):
+        """Give ``player_id``, its owner and its debug clone the same gallery."""
+        self.players[player_id].gallery = gallery
         owner_id = self.clone_owner_id(player_id)
         if owner_id and owner_id in self.players:
             self.players[owner_id].gallery = gallery
         clone_id = f"{player_id}{CLONE_SUFFIX}"
         if clone_id in self.players:
             self.players[clone_id].gallery = gallery
-        return {"ok": True}
 
     def unscanned_players(self):
         """Real players nobody has scanned yet - clones are excluded on purpose,

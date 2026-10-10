@@ -16,6 +16,7 @@ import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
 import { showResultsSoon, updateResults } from './screens/results.js';
+import { forgetScanCache } from './screens/scan.js';
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 const LOBBY_RUNNING_MESSAGE = 'Lobby is already running.';
@@ -125,6 +126,14 @@ function handleMessage(msg) {
     case 'scanSaved':
       if (state.mode === 'lobby') $('lobby-status').textContent = 'Scan saved.';
       break;
+    case 'scanCleared': {
+      // Sent before the roster that drops the gallery, so the name is still here to find.
+      const name = state.roster.find((player) => player.id === msg.targetId)?.name;
+      if (name) forgetScanCache(name);
+      if (msg.targetId === localSelfId()) state.localGallery = [];
+      if (state.mode === 'lobby') $('lobby-status').textContent = `${name ?? 'A player'}'s scan was deleted.`;
+      break;
+    }
     case 'state':
       onState(msg.state);
       break;

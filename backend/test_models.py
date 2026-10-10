@@ -264,6 +264,31 @@ class RoomTests(unittest.TestCase):
         room.set_gallery("a:debug-clone", GALLERY)
         self.assertEqual(room.players["a"].gallery, GALLERY)
 
+    def test_clearing_a_scan_unscans_the_player_and_its_clone(self):
+        room, _ = make_room()
+        room.join("a", "Alice", [])
+        room.join("a:debug-clone", "Alice clone", [])
+        room.set_gallery("a", GALLERY)
+        self.assertTrue(room.clear_gallery("a")["ok"])
+        self.assertEqual(room.players["a"].gallery, [])
+        self.assertEqual(room.roster()[1]["gallery"], [])
+        self.assertEqual([p.id for p in room.unscanned_players()], ["a"])
+
+    def test_clearing_a_scan_is_refused_mid_round_and_for_unknown_players(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        room.join("b", "Bob", GALLERY)
+        self.assertFalse(room.clear_gallery("nobody")["ok"])
+        self.assertTrue(room.start()["ok"])
+        self.assertEqual(room.clear_gallery("a"), {"ok": False, "error": "Round already running"})
+        self.assertEqual(room.players["a"].gallery, GALLERY)
+
+    def test_an_empty_scan_still_does_not_clear_one(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        self.assertFalse(room.set_gallery("a", [])["ok"])
+        self.assertEqual(room.players["a"].gallery, GALLERY)
+
 
 if __name__ == "__main__":
     unittest.main()

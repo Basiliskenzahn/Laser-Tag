@@ -232,6 +232,18 @@ class Session:
             await self.send({"type": "scanSaved", "targetId": target_id})
             await broadcast_roster(self.room)
             await broadcast_state(self.room)
+        elif msg.get("type") == "clearScan":
+            target_id = msg.get("targetId")
+            result = self.room.clear_gallery(target_id)
+            if not result["ok"]:
+                await self.send({"type": "error", "message": result["error"]})
+                return
+            # Everyone, not just the sender: each phone drops its own cached copy of that scan,
+            # or the scanned player's phone would send it straight back on its next join.
+            for player_id in list(self.room.players.keys()):
+                await send_to(player_id, {"type": "scanCleared", "targetId": target_id})
+            await broadcast_roster(self.room)
+            await broadcast_state(self.room)
         elif msg.get("type") == "motion":
             # This phone's motion activity, relayed to the others for motion matching
             # (public/motion/). Every phone checks whose phone moves with whom it sees.

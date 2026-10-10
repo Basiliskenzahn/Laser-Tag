@@ -6,7 +6,7 @@ The code lives in `frontend/public/screens/scan.js`. Signature extraction itself
 
 ## Who scans whom
 
-Any phone can scan any player: each lobby row has a **Scan** button, and the gallery is saved under that player's id (`{type: 'scan', targetId, gallery}`). Usually players pair up and scan each other. The server refuses scans while a round is in countdown or playing.
+Any phone can scan any player: each lobby row has a **Scan** button, and the gallery is saved under that player's id (`{type: 'scan', targetId, gallery}`). A scanned row also has a **✕** that, after a confirm prompt, deletes the scan for everyone (`{type: 'clearScan', targetId}`); every phone then forgets its cached copy of it (`forgetScanCache`). Usually players pair up and scan each other. The server refuses scans while a round is in countdown or playing.
 
 `beginPlayerScan(player)` sets `state.scanTargetId`/`scanTargetName`, swaps to the scan screen, keeps the screen awake, and then — after one paint, so the screen is actually visible first — starts `runAutoScan()`.
 
