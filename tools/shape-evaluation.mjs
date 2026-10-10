@@ -22,7 +22,8 @@
 // and over-classification is the standing risk, so the sweep scores the same population at a
 // range of box heights with the height gate forced open, and reports wrong-player and bystander
 // acceptance - the two numbers that get worse - as a function of box height ratio. Read the
-// caveats it prints; they are not boilerplate (see "What this sweep cannot tell you").
+// caveats it prints; they are not boilerplate. See docs/box-scale-evaluation.md, which leads with
+// the fact that the resulting curve is flat *because these fixtures are scale-blind*.
 //
 // It forces the weakest path in the fallback chain - no `reid`, no `embed` - because that is the
 // only path the `shape` gate is reached on in a game where OSNet loaded. Each live sighting is

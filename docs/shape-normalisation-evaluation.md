@@ -25,10 +25,20 @@ identification, measured against the production matcher.
 npm run eval:shape                            # seed 20251010, the run below
 node tools/shape-evaluation.mjs --seed 7      # any other seed
 node tools/shape-evaluation.mjs --json        # the same numbers, machine-readable
+node tools/shape-evaluation.mjs --scale-sweep # a different question: see below
 ```
 
 Deliberately **not** part of `npm test`: it is an instrument, not a regression gate. The
 regression gate for the fix is `test/shape-signature.test.js`, which does run under `npm test`.
+What *does* run under `npm test` is `test/shape-evaluation-smoke.test.js`, which asserts the
+harness still produces a well-formed result — shape, never values — so it cannot rot silently and
+keep printing tables that look authoritative.
+
+The harness has a second mode, `--scale-sweep`, which asks what admitting *smaller* boxes would
+cost rather than what fixing `shape` bought. Its results and its own (larger) caveats are in
+[box scale and range](box-scale-evaluation.md). The thresholds both modes report against are now
+imported from `identify.js` rather than copied by value, and each run prints whether each one came
+from the module or from a stub.
 
 ## What was run
 
