@@ -1,5 +1,36 @@
-node_modules
-.git
+# Patterns are matched against each path in the build context, and a pattern without a
+# separator matches only at the top level. `node_modules` and `__pycache__` on their own
+# therefore missed every nested copy, which is why the globs below are explicit.
+
+# ~181 MB per copy, and there is one per Claude Code agent worktree under .claude/. The deps
+# stage of frontend/Dockerfile runs its own `npm ci`, so no copy is ever wanted in a context.
+**/node_modules
+
+# .claude/ holds the agent worktrees: 998 MB on this machine at 15 worktrees, which took the
+# build context from ~45 MB to ~1 GB. Local build speed only - .gitignore keeps it off the
+# VM - but every local `docker compose build` paid for it.
+.claude/
+
+**/.git
+
+# backend/Dockerfile is `COPY backend/ ./backend/`, so without these the production image
+# shipped 176 KB of cpython-314 bytecode into a python:3.12-slim image, where it is not even
+# loadable. Both test services bind-mount the repo (`.:/app`), which .dockerignore does not
+# affect, so excluding tests from the images does not stop anyone running them.
+**/__pycache__
+**/*.pyc
+backend/test_*.py
+
+# frontend/Dockerfile is `COPY frontend/public/ /usr/share/nginx/html/`, which published this
+# on the production origin: GET /identify.test.js answered 200. It is run from the repo by
+# `npm test`, never from the image.
+frontend/public/*.test.js
+
+# Deliberately NOT excluding test/, tools/, docs/, scripts/ or .github/ wholesale. They are
+# only a few MB next to the two entries above, and a blanket exclusion is the kind of thing
+# that makes a future `COPY test/ ...` copy nothing at all, with no error - which is the
+# failure shape this file is being fixed to avoid.
+
 .certs
 *.log
 npm-debug.log*
