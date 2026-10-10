@@ -1,491 +1,59 @@
+"""HTTP entrypoint for the laser-tag backend: how a request becomes a game action.
+
+This module is only wiring. Phones cannot rely on WebSockets through every
+captive-portal wifi, so the realtime channel is HTTP long polling: a phone POSTs
+``/api/connect`` once for a token, then POSTs its messages to ``/api/send`` and
+keeps a ``GET /api/poll`` parked to receive. Scoreboards and overlays get a
+read-only ``GET /events/{room}`` SSE stream instead.
+
+Everything behind these handlers lives elsewhere:
+
+* ``backend.models`` - the game rules (:class:`~backend.models.Room`).
+* ``backend.transport`` - sessions, mailboxes and broadcasting.
+* ``backend.sanitize`` - turning untrusted JSON into trusted values.
+
+Launched as ``python -m backend.app`` (see ``backend/Dockerfile``). nginx in
+``frontend/`` terminates TLS and reverse-proxies ``/api/*`` and ``/events/*``
+here, so no static files are served from this process.
+"""
+
 import asyncio
 import json
-import math
 import os
-import time
 import uuid
-from dataclasses import dataclass, field
 
 from aiohttp import web
 
+from .sanitize import clean_room_code
+from .transport import (
+    Poller,
+    Session,
+    pollers,
+    process_hit,
+    rooms,
+    sse_clients,
+    sweep_pollers,
+)
 
-MIN_PLAYERS = 2
-MAX_PLAYERS = 8
-MAX_HP = 100
-DAMAGE = {"body": 20, "head": 50}
-SHOT_COOLDOWN_MS = 350
-COUNTDOWN_MS = 5000
-POLL_WAIT_MS = 20_000
-POLL_EXPIRY_MS = 30_000
 MAX_BODY_BYTES = 1024 * 1024  # a 24-sample scan with re-identification embeddings is ~210 KB
 
 
-@dataclass
-class Player:
-    id: str
-    name: str
-    gallery: list
-    hp: int = MAX_HP
-    wins: int = 0
-    alive: bool = True
-    last_shot_at: float = float("-inf")
-
-
-class Room:
-    def __init__(self, code):
-        self.code = code
-        self.players = {}
-        self.status = "waiting"
-        self.starts_at = None
-        self.winner = None
-        self.start_timer = None
-
-    @property
-    def is_empty(self):
-        return not self.players
-
-    def now(self):
-        return time.time() * 1000
-
-    def join(self, player_id, name, gallery=None):
-        if self.status in ("countdown", "playing"):
-            return {"ok": False, "error": "Lobby is already running."}
-        if len(self.players) >= MAX_PLAYERS:
-            return {"ok": False, "error": "Room is full"}
-        self.players[player_id] = Player(player_id, name, gallery or [])
-        return {"ok": True}
-
-    def clone_owner_id(self, player_id):
-        suffix = ":debug-clone"
-        return player_id[:-len(suffix)] if isinstance(player_id, str) and player_id.endswith(suffix) else None
-
-    def mirrored_gallery(self, player):
-        owner_id = self.clone_owner_id(player.id)
-        if owner_id and owner_id in self.players:
-            return self.players[owner_id].gallery
-        return player.gallery
-
-    def set_gallery(self, player_id, gallery):
-        if self.status in ("countdown", "playing"):
-            return {"ok": False, "error": "Round already running"}
-        player = self.players.get(player_id)
-        if not player:
-            return {"ok": False, "error": "Unknown player"}
-        if not gallery:
-            return {"ok": False, "error": "Scan did not contain enough samples"}
-        player.gallery = gallery
-        owner_id = self.clone_owner_id(player_id)
-        if owner_id and owner_id in self.players:
-            self.players[owner_id].gallery = gallery
-        clone_id = f"{player_id}:debug-clone"
-        if clone_id in self.players:
-            self.players[clone_id].gallery = gallery
-        return {"ok": True}
-
-    def unscanned_players(self):
-        return [
-            player
-            for player in self.players.values()
-            if not self.clone_owner_id(player.id) and not self.mirrored_gallery(player)
-        ]
-
-    def reset_round(self):
-        self.status = "waiting"
-        self.starts_at = None
-        self.winner = None
-        for player in self.players.values():
-            player.hp = MAX_HP
-            player.alive = True
-
-    def finish_if_decided(self):
-        survivors = [player for player in self.players.values() if player.alive]
-        if len(survivors) > 1:
-            return
-        self.status = "over"
-        self.winner = survivors[0].id if survivors else None
-        if self.winner:
-            self.players[self.winner].wins += 1
-
-    def leave(self, player_id):
-        if player_id not in self.players:
-            return
-        del self.players[player_id]
-        if self.status == "playing":
-            self.finish_if_decided()
-        elif self.status == "countdown" and len(self.players) < MIN_PLAYERS:
-            self.reset_round()
-        elif self.status == "over" and (not self.winner or self.winner not in self.players):
-            self.reset_round()
-
-    def start(self):
-        if self.status in ("countdown", "playing"):
-            return {"ok": False, "error": "Round already running"}
-        if len(self.players) < MIN_PLAYERS:
-            return {"ok": False, "error": "Need at least two players"}
-        missing = self.unscanned_players()
-        if missing:
-            names = ", ".join(player.name for player in missing[:3])
-            if len(missing) > 3:
-                names += f" +{len(missing) - 3}"
-            return {"ok": False, "error": f"Scan everyone before launch: {names}"}
-        for player in self.players.values():
-            player.hp = MAX_HP
-            player.alive = True
-        self.winner = None
-        self.status = "countdown"
-        self.starts_at = self.now() + COUNTDOWN_MS
-        return {"ok": True}
-
-    def update(self):
-        if self.status == "countdown" and self.starts_at is not None and self.now() >= self.starts_at:
-            self.status = "playing"
-            self.starts_at = None
-
-    def shoot(self, shooter_id, target_id, zone):
-        self.update()
-        shooter = self.players.get(shooter_id)
-        target = self.players.get(target_id)
-        if not shooter or not target:
-            return {"ok": False, "error": "Unknown player"}
-        if target.id == shooter.id:
-            return {"ok": False, "error": "Can't target yourself"}
-        if self.status != "playing":
-            return {"ok": False, "error": "Round not running"}
-        if not shooter.alive or not target.alive:
-            return {"ok": False, "error": "Target is down"}
-        if zone not in DAMAGE:
-            return {"ok": False, "error": "Unknown zone"}
-
-        now = self.now()
-        if now - shooter.last_shot_at < SHOT_COOLDOWN_MS:
-            return {"ok": False, "error": "Cooldown"}
-        shooter.last_shot_at = now
-
-        damage = DAMAGE[zone]
-        target.hp = max(0, target.hp - damage)
-        ko = target.hp == 0
-        if ko:
-            target.alive = False
-            self.finish_if_decided()
-        return {
-            "ok": True,
-            "victimId": target.id,
-            "damage": damage,
-            "zone": zone,
-            "ko": ko,
-            "hp": target.hp,
-            "alive": target.alive,
-        }
-
-    def snapshot(self):
-        self.update()
-        return {
-            "code": self.code,
-            "status": self.status,
-            "startsInMs": None if self.starts_at is None else max(0, self.starts_at - self.now()),
-            "winner": self.winner,
-            "maxHp": MAX_HP,
-            "minPlayers": MIN_PLAYERS,
-            "maxPlayers": MAX_PLAYERS,
-            "players": [
-                {
-                    "id": player.id,
-                    "name": player.name,
-                    "hp": player.hp,
-                    "wins": player.wins,
-                    "alive": player.alive,
-                }
-                for player in self.players.values()
-            ],
-        }
-
-    def roster(self):
-        return [
-            {"id": player.id, "name": player.name, "gallery": self.mirrored_gallery(player)}
-            for player in self.players.values()
-        ]
-
-
-@dataclass
-class Poller:
-    queue: list = field(default_factory=list)
-    last_seen: float = field(default_factory=lambda: time.time() * 1000)
-    waiter: asyncio.Future | None = None
-    session: object = None
-
-
-rooms = {}
-connections = {}
-pollers = {}
-sse_clients = {}
-GALLERY_FIELDS = (
-    ("hist", 64, True),
-    ("grid", 256, True),
-    ("lower", 64, False),
-    ("shape", 8, False),
-    ("embed", 512, False),
-    ("reid", 512, False),  # person re-identification embedding (public/reid.js)
-)
-
-
-def clean_room_code(code):
-    cleaned = "".join(ch for ch in str(code or "demo").lower() if ch.isalnum() or ch == "-")[:16]
-    return cleaned or "demo"
-
-
-def clean_name(name):
-    return str(name or "").strip()[:20] or "Player"
-
-
-def clean_player_id(player_id):
-    value = str(player_id or "").strip()
-    if 8 <= len(value) <= 80 and all(char.isalnum() or char in ":-" for char in value):
-        return value
-    return ""
-
-
-def clean_vector(vector, max_len):
-    if not isinstance(vector, list):
-        return []
-    clean = []
-    for value in vector[:max_len]:
-        try:
-            clean.append(float(value))
-        except (TypeError, ValueError):
-            pass
-    return clean
-
-
-def clean_gallery(gallery):
-    if not isinstance(gallery, list):
-        return []
-    clean = []
-    for sample in gallery[:24]:
-        if not isinstance(sample, dict):
-            continue
-        item = {}
-        for field, max_len, required in GALLERY_FIELDS:
-            vector = clean_vector(sample.get(field), max_len)
-            if required or vector:
-                item[field] = vector
-        clean.append(item)
-    return clean
-
-
 def json_response(data, status=200):
+    """JSON with caching off - every payload here is a point-in-time game state."""
     return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
 
 
-MAX_MOTION_SAMPLES = 32  # per relayed message (~3 s at 10 Hz)
-
-
-def clean_motion_samples(samples):
-    """[[t_ms, activity], ...] from a phone's motion sensor: finite numbers, capped length."""
-    if not isinstance(samples, list):
-        return []
-    clean = []
-    for item in samples[:MAX_MOTION_SAMPLES]:
-        if not isinstance(item, list) or len(item) < 2:
-            continue
-        try:
-            t, v = float(item[0]), float(item[1])
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(t) and math.isfinite(v) and v >= 0:
-            clean.append([int(t), round(v, 2)])
-    return clean
-
-
-async def send_to(player_id, msg):
-    conn = connections.get(player_id)
-    if conn is not None:
-        await conn.send(msg)
-
-
-async def broadcast_state(room):
-    state = room.snapshot()
-    for player_id in list(room.players.keys()):
-        await send_to(player_id, {"type": "state", "state": state})
-    if room.start_timer:
-        room.start_timer.cancel()
-        room.start_timer = None
-    if state["status"] == "countdown":
-        async def later():
-            await asyncio.sleep((state["startsInMs"] + 10) / 1000)
-            await broadcast_state(room)
-
-        room.start_timer = asyncio.create_task(later())
-
-
-async def broadcast_roster(room):
-    players = room.roster()
-    for player_id in list(room.players.keys()):
-        await send_to(player_id, {"type": "roster", "players": players})
-
-
-async def broadcast_room_event(room, event):
-    dead = []
-    for queue in list(sse_clients.get(room.code, set())):
-        try:
-            await queue.put(event)
-        except RuntimeError:
-            dead.append(queue)
-    for queue in dead:
-        sse_clients.get(room.code, set()).discard(queue)
-
-
-async def process_hit(room, shooter_id, target_id, zone):
-    result = room.shoot(shooter_id, target_id, zone)
-    if not result.get("ok"):
-        return result
-    await send_to(shooter_id, {
-        "type": "hitConfirmed",
-        "zone": result["zone"],
-        "damage": result["damage"],
-        "ko": result["ko"],
-    })
-    await send_to(result["victimId"], {
-        "type": "gotHit",
-        "zone": result["zone"],
-        "damage": result["damage"],
-        "ko": result["ko"],
-    })
-    await broadcast_room_event(room, {
-        "type": "health",
-        "room": room.code,
-        "shooterId": shooter_id,
-        "targetId": result["victimId"],
-        "zone": result["zone"],
-        "damage": result["damage"],
-        "hp": result["hp"],
-        "alive": result["alive"],
-    })
-    if result["ko"]:
-        await broadcast_room_event(room, {
-            "type": "death",
-            "room": room.code,
-            "playerId": result["victimId"],
-            "killerId": shooter_id,
-        })
-    await broadcast_state(room)
-    return result
-
-
-class Session:
-    def __init__(self, sender):
-        self.id = str(uuid.uuid4())
-        self.clone_id = f"{self.id}:debug-clone"
-        self.room = None
-        self.sender = sender
-
-    async def send(self, msg):
-        await self.sender(msg)
-
-    async def receive(self, msg):
-        if not isinstance(msg, dict):
-            return
-        if msg.get("type") == "join" and self.room is None:
-            code = clean_room_code(msg.get("room"))
-            room = rooms.get(code) or Room(code)
-            name = clean_name(msg.get("name"))
-            gallery = clean_gallery(msg.get("gallery"))
-            requested_id = clean_player_id(msg.get("playerId"))
-            if requested_id and requested_id in room.players:
-                self.id = requested_id
-                self.clone_id = f"{self.id}:debug-clone"
-                rooms[code] = room
-                connections[self.id] = self
-                self.room = room
-                await self.send({"type": "welcome", "id": self.id})
-                await broadcast_state(room)
-                await broadcast_roster(room)
-                return
-            if msg.get("debug") is True and len(room.players) > MAX_PLAYERS - 2:
-                await self.send({"type": "error", "message": "Room is full"})
-                return
-            result = room.join(self.id, name, gallery)
-            if not result["ok"]:
-                await self.send({"type": "error", "message": result["error"]})
-                return
-            if msg.get("debug") is True:
-                clone = room.join(self.clone_id, f"{name} clone", gallery)
-                if not clone["ok"]:
-                    room.leave(self.id)
-                    await self.send({"type": "error", "message": clone["error"]})
-                    return
-            rooms[code] = room
-            connections[self.id] = self
-            self.room = room
-            await self.send({"type": "welcome", "id": self.id})
-            await broadcast_state(room)
-            await broadcast_roster(room)
-            return
-
-        if self.room is None:
-            return
-
-        if msg.get("type") == "shoot":
-            await process_hit(self.room, self.id, msg.get("targetId"), msg.get("zone"))
-        elif msg.get("type") == "scan":
-            target_id = msg.get("targetId")
-            gallery = clean_gallery(msg.get("gallery"))
-            result = self.room.set_gallery(target_id, gallery)
-            if not result["ok"]:
-                await self.send({"type": "error", "message": result["error"]})
-                return
-            await self.send({"type": "scanSaved", "targetId": target_id})
-            await broadcast_roster(self.room)
-            await broadcast_state(self.room)
-        elif msg.get("type") == "motion":
-            # This phone's motion activity, relayed to the others for motion matching
-            # (public/motion/). Every phone checks whose phone moves with whom it sees.
-            samples = clean_motion_samples(msg.get("s"))
-            if samples:
-                relay = {"type": "motion", "from": self.id, "s": samples}
-                for player_id in list(self.room.players.keys()):
-                    if player_id != self.id:
-                        await send_to(player_id, relay)
-        elif msg.get("type") == "start":
-            result = self.room.start()
-            if not result["ok"]:
-                await self.send({"type": "error", "message": result["error"]})
-                return
-            await broadcast_state(self.room)
-
-    async def close(self):
-        if connections.get(self.id) is not self:
-            return
-        connections.pop(self.id, None)
-        if not self.room:
-            return
-        room = self.room
-        room.leave(self.id)
-        room.leave(self.clone_id)
-        if room.is_empty:
-            if room.start_timer:
-                room.start_timer.cancel()
-            rooms.pop(room.code, None)
-        else:
-            await broadcast_state(room)
-            await broadcast_roster(room)
-        self.room = None
-
-
 async def api_connect(request):
+    """Hand out a poll token and the session it addresses. No room is joined yet."""
     token = str(uuid.uuid4())
     poller = Poller()
     pollers[token] = poller
-
-    async def sender(msg):
-        poller.queue.append(msg)
-        if poller.waiter and not poller.waiter.done():
-            poller.waiter.set_result(True)
-
-    poller.session = Session(sender)
+    poller.session = Session(poller.push)
     return json_response({"token": token})
 
 
 async def api_send(request):
+    """One client message (join / scan / shoot / motion / start) for a session."""
     token = request.query.get("token")
     poller = pollers.get(token)
     if poller is None:
@@ -496,42 +64,38 @@ async def api_send(request):
         msg = await request.json()
     except ValueError:
         return json_response({"error": "Invalid or oversized JSON body"}, 400)
-    poller.last_seen = time.time() * 1000
+    poller.touch()
     await poller.session.receive(msg)
     return web.Response(status=204, headers={"Cache-Control": "no-store"})
 
 
 async def api_disconnect(request):
+    """Voluntary goodbye (page unload), so the room drops the player at once."""
     token = request.query.get("token")
     poller = pollers.pop(token, None)
     if poller:
-        if poller.waiter and not poller.waiter.done():
-            poller.waiter.set_result(True)
+        poller.wake()
         await poller.session.close()
     return web.Response(status=204, headers={"Cache-Control": "no-store"})
 
 
 async def api_poll(request):
+    """Long poll: return queued messages, or park until one arrives or we time out."""
     token = request.query.get("token")
     poller = pollers.get(token)
     if poller is None:
         return json_response({"error": "Unknown session"}, 410)
-    poller.last_seen = time.time() * 1000
-    if not poller.queue:
-        loop = asyncio.get_event_loop()
-        poller.waiter = loop.create_future()
-        try:
-            await asyncio.wait_for(poller.waiter, POLL_WAIT_MS / 1000)
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            poller.waiter = None
-    queue = poller.queue
-    poller.queue = []
-    return json_response(queue)
+    poller.touch()
+    return json_response(await poller.take())
 
 
 async def api_hit(request):
+    """Register a hit without a session - the stateless shortcut for a shot.
+
+    Used by clients that resolve aiming locally and only need the server to
+    arbitrate. The room is taken from the body when given, otherwise it is found
+    by looking for whichever room the shooter is sitting in.
+    """
     try:
         msg = await request.json()
     except ValueError:
@@ -543,7 +107,9 @@ async def api_hit(request):
     room_code = msg.get("room")
     if room_code:
         room = rooms.get(clean_room_code(room_code))
-    if room is None:
+    # isinstance guard: an unhashable shooter id (a JSON list or object) would
+    # otherwise raise TypeError out of the `in` lookup instead of 404-ing.
+    if room is None and isinstance(shooter_id, str):
         room = next((candidate for candidate in rooms.values() if shooter_id in candidate.players), None)
     if room is None:
         return json_response({"ok": False, "error": "Unknown player"}, 404)
@@ -552,6 +118,12 @@ async def api_hit(request):
 
 
 async def events(request):
+    """Server-sent events for one room: a read-only feed of health/death events.
+
+    For spectator surfaces rather than players - no token, no session, and
+    nothing a listener sends can affect the round. ``X-Accel-Buffering: no``
+    stops the nginx in front of this process from buffering the stream.
+    """
     room_code = clean_room_code(request.match_info.get("room"))
     queue = asyncio.Queue()
     sse_clients.setdefault(room_code, set()).add(queue)
@@ -579,25 +151,17 @@ async def events(request):
 
 
 async def health(request):
+    """Liveness probe for the container and the reverse proxy."""
     return web.Response(text="laser-tag python backend\n")
 
 
-async def sweep_pollers(app):
-    while True:
-        await asyncio.sleep(5)
-        now = time.time() * 1000
-        expired = [token for token, poller in pollers.items() if now - poller.last_seen > POLL_EXPIRY_MS]
-        for token in expired:
-            poller = pollers.pop(token, None)
-            if poller:
-                await poller.session.close()
-
-
 async def start_sweeper(app):
-    app["sweeper"] = asyncio.create_task(sweep_pollers(app))
+    """Run the dead-session reaper for the lifetime of the app."""
+    app["sweeper"] = asyncio.create_task(sweep_pollers())
 
 
 async def stop_sweeper(app):
+    """Cancel the reaper and wait for it, so shutdown leaves no pending task."""
     app["sweeper"].cancel()
     try:
         await app["sweeper"]
@@ -606,6 +170,8 @@ async def stop_sweeper(app):
 
 
 def create_app():
+    """Build the aiohttp app. Kept separate from ``run_app`` so it can be driven
+    in-process by a test or an embedding script."""
     app = web.Application(client_max_size=MAX_BODY_BYTES)
     app.router.add_post("/api/connect", api_connect)
     app.router.add_post("/api/send", api_send)
