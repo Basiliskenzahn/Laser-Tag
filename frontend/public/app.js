@@ -56,14 +56,19 @@ $('scan-cancel-btn').addEventListener('click', cancelScan);
 
 $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 
+// `pointerdown`, not `click`: no 300 ms tap delay, and the shot goes out on finger-down. The
+// event's `timeStamp` is handed on because it is when the *browser* created the tap, not when
+// this listener got to run - the difference is how long the tap waited for the main thread, which
+// is the only thing that can measure the reported input lag. ?debug prints it; see
+// frontend/public/input-latency.js.
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   identity.start(); // in case a sensor was never granted at join, or there was no join tap
-  fire();
+  fire(event.timeStamp);
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
 document.addEventListener('keydown', (event) => {
-  if (event.code === 'Space' && !$('game-screen').hidden) fire();
+  if (event.code === 'Space' && !$('game-screen').hidden) fire(event.timeStamp);
 });
 
 resumeActiveLobby();
