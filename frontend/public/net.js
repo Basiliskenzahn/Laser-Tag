@@ -10,7 +10,7 @@ import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
-import { localSelfId, scannedGallery } from './roster.js';
+import { localSelfId, mergeRoster, scannedGallery } from './roster.js';
 import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
@@ -117,7 +117,8 @@ function handleMessage(msg) {
       renderHud();
       break;
     case 'roster':
-      state.roster = msg.players;
+      // A delta: entries without a `gallery` keep the one we already hold (see mergeRoster).
+      state.roster = mergeRoster(state.roster, msg.players);
       state.localGallery = scannedGallery(localSelfId());
       if (state.mode === 'lobby') renderLobby();
       break;

@@ -26,13 +26,25 @@ Lifecycle:
 4. Any failure (network error, non-2xx status, or a redirect such as an expired SSO login) closes the connection and calls `onClose()`. A `410` means the server has forgotten the session.
 5. `close({notify: true})` sends `/api/disconnect` with `navigator.sendBeacon` (falling back to `fetch` with `keepalive`), so leaving works even while the page unloads.
 
+## The roster
+
+`roster` is the one message that carries real weight — a player's appearance gallery is ~190 KB — so the server sends it as a **delta**, and `handleMessage()` in `net.js` folds it in with `mergeRoster()` from `roster.js`:
+
+```js
+state.roster = mergeRoster(state.roster, msg.players);
+```
+
+Membership always arrives complete, so the entries *are* the room: a player who left is simply absent. What is conditional is `gallery`, which is present only when that player's scan changed since this connection last heard about them. An entry without one means **keep the gallery you already have**; an entry with `gallery: []` means that player genuinely has no scan yet.
+
+Nothing on the client has to detect a gap or ask for a resend. The server tracks what it put on *this connection's* wire, and every way of losing a message — a failed `fetch`, a non-2xx, a `410`, a reload — closes the connection, after which `connect()` re-joins on a new session and is sent the roster in full. The delta is therefore self-synchronising; see [the protocol reference](../server/protocol.md#the-roster-delta) for the server side and the measured before/after.
+
 ## Reconnecting
 
 `connect()` in `app.js` handles drops:
 
 - On close, it shows *"Connection lost. Reconnecting…"* and opens a new connection after 1.5 s.
 - After two failed attempts in a row that never opened, the message changes to *"Can't connect to the game server…"*.
-- Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round.
+- Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round. The takeover is a new session, so the roster it receives is the complete one — a reconnect cannot land on a stale or partial set of galleries.
 - If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the join screen.
 
 ## Resuming after a reload

@@ -32,12 +32,12 @@ On its own it serves no client. To play against it locally, put something in fro
 | --- | --- | --- |
 | Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
 | Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
-| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time |
+| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time, gallery revision |
 | `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: message queue, last-seen time, the pending poll's future, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
 | `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
-| `broadcast_*`, `process_hit` | `transport.py` | Fan-out of `state`, `roster`, SSE events and hit messages |
+| `broadcast_*`, `roster_for`, `process_hit` | `transport.py` | Fan-out of `state`, `roster`, SSE events and hit messages. `roster_for()` is the per-connection roster [delta](protocol.md#the-roster-delta) |
 | `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead - see [Streamlining](../streamlining.md). |
 | `api_*`, `events`, `health`, `create_app` | `app.py` | HTTP handlers and app assembly - the entrypoint |
 | `sweep_pollers` | `transport.py` | Background task: every 5 s, closes sessions not seen for 30 s |
@@ -47,7 +47,7 @@ On its own it serves no client. To play against it locally, put something in fro
 
 1. `POST /api/connect` creates a `Poller` with a new `Session`. The session's `sender` appends to the poller's queue and wakes a waiting poll.
 2. `POST /api/send` parses the body and hands it to `Session.receive()`.
-3. `Session.receive()` mutates the `Room` and calls `broadcast_state()` / `broadcast_roster()`, which call `send_to()` for every player in the room, which pushes onto each player's queue.
+3. `Session.receive()` mutates the `Room` and calls `broadcast_state()` / `broadcast_roster()`, which push onto each connected phone's queue. `broadcast_state()` sends one shared snapshot via `send_to()` for every player in the room; `broadcast_roster()` walks `connections` instead and builds a per-phone payload with `roster_for()`, because the roster is a delta and a debug clone has no connection of its own. Neither loop waits on anything: a send is a list append plus waking a parked poll.
 4. `GET /api/poll` returns the queue right away, or waits up to 20 s on a future that the sender resolves.
 
 For SSE, each `/events/<room>` request gets an `asyncio.Queue` registered in `sse_clients`. `broadcast_room_event()` puts events on every queue for that room, and the handler writes them out as `event:`/`data:` lines.

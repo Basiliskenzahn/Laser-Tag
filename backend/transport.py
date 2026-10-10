@@ -122,11 +122,61 @@ async def broadcast_state(room):
         room.start_timer = asyncio.create_task(later())
 
 
+def roster_for(session, room):
+    """The who-to-look-for list as this one phone still needs to hear it.
+
+    Membership is always complete - every player's ``id`` and ``name`` is in
+    every roster message - so a phone can always tell from one message alone who
+    is in the room and who left. What is left out is the expensive part: a
+    player's ``gallery`` is attached only when their scan differs from the one
+    this session was last handed, and an entry with no ``gallery`` key tells the
+    client to keep the one it already has.
+
+    This used to send every gallery to everyone on every change, which cost the
+    room N x N copies of a ~190 KB payload per scan (7.8 MB measured for six
+    players) over captive-portal wifi, and the scanning phone had to download
+    its whole share of that before it could even see its own ``scanSaved`` -
+    which is the "the scan hangs" bug this replaced. The numbers are recorded in
+    ``docs/server/protocol.md`` and asserted in ``backend/test_protocol.py``.
+
+    The bookkeeping deliberately lives on the :class:`Session` rather than on the
+    :class:`~backend.models.Player`, because that is what makes the delta safe
+    without any version negotiation: a session is one TCP-level conversation with
+    one phone, and *any* way of losing a message - a dropped poll, a 410, a
+    reload, a reconnect - ends that conversation and gets the phone a new Session
+    with an empty record, which is then sent the roster in full. There is no
+    state a phone can be left in where it believes it has a gallery the server
+    never delivered.
+    """
+    revisions = {}
+    entries = []
+    for player in room.players.values():
+        revision = room.mirrored_gallery_rev(player)
+        revisions[player.id] = revision
+        entries.append(room.roster_entry(player, gallery=session.sent_gallery_revs.get(player.id) != revision))
+    # Replaced wholesale, so players who left stop being remembered here too.
+    session.sent_gallery_revs = revisions
+    return entries
+
+
 async def broadcast_roster(room):
-    """Push the heavy who-to-look-for list (names + galleries) to everyone."""
-    players = room.roster()
+    """Push each phone in the room its own delta of the who-to-look-for list.
+
+    Addressed per connection rather than per player, because the delta is a
+    property of the conversation with one phone. A debug clone has no connection
+    of its own, which is why this walks ``connections`` instead of relying on
+    :func:`send_to` to no-op for it.
+
+    The loop stays serial on purpose: a send here is :meth:`Poller.push`, which
+    appends to an in-memory mailbox and wakes a parked poll, so nothing in it
+    waits on a phone. Gathering these would add a failure mode - one raising send
+    abandoning the rest - and buy nothing.
+    """
     for player_id in list(room.players.keys()):
-        await send_to(player_id, {"type": "roster", "players": players})
+        session = connections.get(player_id)
+        if session is None:
+            continue
+        await session.send({"type": "roster", "players": roster_for(session, room)})
 
 
 async def broadcast_room_event(room, event):
@@ -203,6 +253,10 @@ class Session:
         self.clone_id = f"{self.id}{CLONE_SUFFIX}"
         self.room = None
         self.sender = sender
+        #: player id -> gallery revision this phone has already been sent, so a
+        #: scan is only ever put on its wire once. Empty for a new session, which
+        #: is why a reconnecting phone is sent the whole roster (see roster_for).
+        self.sent_gallery_revs = {}
 
     async def send(self, msg):
         await self.sender(msg)

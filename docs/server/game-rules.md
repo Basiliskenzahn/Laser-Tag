@@ -86,7 +86,8 @@ The surrounding server deletes a room once it's empty.
 The server sends two views of a room, so the big gallery data isn't resent on every shot:
 
 - `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive). Sent after every change.
-- `roster()`: each player's id, name and gallery. Sent only when membership or scans change.
+- `roster()`: each player's id, name and gallery. Sent only when membership or scans change — and then only the galleries the receiving phone doesn't already hold. `roster()` itself is the complete picture, which is what a freshly connected phone gets; `roster_entry(player, gallery=False)` is the identity-only line the transport uses for the rest. See [the roster delta](protocol.md#the-roster-delta).
+- `mirrored_gallery_rev()`: a counter that moves whenever `mirrored_gallery()` would return something new. Not a game rule — it exists so the transport can tell "already has it" from "has a stale copy".
 
 Exact formats: [Protocol](protocol.md#server--client-messages).
 

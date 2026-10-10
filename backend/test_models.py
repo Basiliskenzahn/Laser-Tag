@@ -182,6 +182,44 @@ class RoomTests(unittest.TestCase):
         room.set_gallery("a:debug-clone", GALLERY)
         self.assertEqual(room.players["a"].gallery, GALLERY)
 
+    def test_a_roster_entry_can_leave_out_the_gallery(self):
+        # What lets the transport send a phone only the scans it hasn't got yet. The identity
+        # half always travels, so a roster message is always the whole room.
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        light = room.roster_entry(room.players["a"], gallery=False)
+        self.assertEqual(light, {"id": "a", "name": "Alice"})
+        self.assertEqual(room.roster_entry(room.players["a"])["gallery"], GALLERY)
+
+    def test_every_gallery_change_moves_the_revision(self):
+        # The revision is how the transport tells "this phone already has it" from "this phone
+        # has a stale copy". If a write could slip past it, a rescan would never be delivered.
+        room, _ = make_room()
+        room.join("a", "Alice", [])
+        start = room.players["a"].gallery_rev
+        room.set_gallery("a", GALLERY)
+        first = room.players["a"].gallery_rev
+        self.assertNotEqual(first, start)
+        room.set_gallery("a", [{"hist": [0, 1], "grid": [1, 0]}])
+        second = room.players["a"].gallery_rev
+        self.assertNotEqual(second, first)
+        # A refused scan changes nothing, so nothing is re-sent either.
+        self.assertFalse(room.set_gallery("a", [])["ok"])
+        self.assertEqual(room.players["a"].gallery_rev, second)
+
+    def test_a_clones_revision_follows_the_owner_it_borrows_from(self):
+        # mirrored_gallery_rev has to move exactly when mirrored_gallery does, or a phone would
+        # keep matching the clone against a scan that has since been replaced.
+        room, _ = make_room()
+        room.join("a", "Alice", [])
+        room.join("a:debug-clone", "Alice clone", [])
+        clone = room.players["a:debug-clone"]
+        before = room.mirrored_gallery_rev(clone)
+        room.set_gallery("a", GALLERY)
+        self.assertNotEqual(room.mirrored_gallery_rev(clone), before)
+        self.assertEqual(room.mirrored_gallery(clone), GALLERY)
+        self.assertEqual(room.mirrored_gallery_rev(clone), room.players["a"].gallery_rev)
+
 
 if __name__ == "__main__":
     unittest.main()

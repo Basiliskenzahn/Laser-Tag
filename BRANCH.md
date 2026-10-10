@@ -12,8 +12,8 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 32 JS tests
-python -m unittest discover -s backend -p "test_*.py" # 32 backend tests
+npm test                                              # 38 JS tests
+python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
 ```
 
 `npm run eval:shape` is **not** part of that gate — it is a measurement instrument, see the
@@ -27,6 +27,7 @@ python -m unittest discover -s backend -p "test_*.py" # 32 backend tests
 | `luxkaiwalker/motion-isolation` | **merged** | Motion is now behind one seam, `identity.js`, which installs a single provider at load. `screens/game.js`, `net.js`, `state.js` and `app.js` contain zero occurrences of the word "motion" |
 | `luxkaiwalker/shape-normalisation` | **not merged yet** | LuxKaiwalker branch. Fixes the `shape` signature's scale mismatch: it is averaged raw instead of L2-normalised, so a live signature and its own gallery entry are finally comparable and the feature stops scoring **0 for the correct person**. `MIN_SHAPE_SCORE` (0.36) and `EVIDENCE_MIN_PART` (0.24) are **unchanged on purpose** — the fix makes them reachable, not retuned. `SCAN_CACHE_VERSION` 11 → 12, since a cached version-11 `shape` is a unit vector the corrected comparison misreads. Adds `test/shape-signature.test.js` (8 cases through the real extraction path) and the `npm run eval:shape` harness. See [the bug report](docs/shape-feature-bug.md) and [the evaluation](docs/shape-normalisation-evaluation.md) |
 | `luxkaiwalker/scan-optimisation` | **merged** | Select-then-embed: OSNet now runs on the frames backing chosen samples rather than every usable frame, pose becomes a rescue-only pass, detection moves to 512 px, thumbnails deferred. **240 → 150 model inferences per scan.** Plus rewritten scanning/detection/identification docs |
+| `luxkaiwalker/roster-fanout` | **open** | The server half of the "nothing happens after a scan" complaint. The `roster` message carried every player's full gallery and was re-sent to everyone whenever anyone scanned, i.e. **N × N copies of ~190 KB per scan** (7.8 MB for six players, over captive-portal wifi). It is now a per-connection delta: membership always complete, a gallery attached only to the phone that doesn't have it yet. **6 players: 7782 → 1148 KB per scan; the scanning phone's own wait 1297 → 191 KB, flat in room size.** Poll responses also lost `json.dumps`' default whitespace (~13%) |
 
 | `detection-tuning` (Basiliskenzahn) | **merged, minus two things** | The larger performance change in this area: colour features skipped when re-identification covers the room, OSNet in a Web Worker, velocity-projected boxes, a 3 s median over re-id scores, and every re-id gate tied to one `?reid=`-tunable accept threshold (0.65 instead of a frozen 0.72). See the two exclusions below |
 

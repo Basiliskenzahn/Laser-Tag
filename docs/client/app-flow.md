@@ -6,7 +6,7 @@
 | --- | --- |
 | `env.js` | URL-parameter flags (`DEBUG`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
 | `state.js` | The one shared `state` object and the `localStorage` helpers |
-| `roster.js` | Read-only lookups over the server's roster/game snapshot |
+| `roster.js` | Read-only lookups over the server's roster/game snapshot, plus `mergeRoster()` which folds in each roster delta |
 | `camera.js` | Starting the camera and the on-device models, once |
 | `identity.js` | The one seam for "who is that person?": it installs a single identity provider at load and nothing else in the app knows which signals answer the question (see [Shooting](#who-counts-as-a-target) below) |
 | `appearance-identity.js` | The provider installed by default: `isStableTarget()` and an appearance-only `resolve()` |

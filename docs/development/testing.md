@@ -25,7 +25,7 @@ npm test
 node --test test/*.test.js frontend/public/identify.test.js
 ```
 
-That is: the browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`. 32 cases in total.
+That is: the browser-free client suites in `test/`, and the tracker test that sits next to `identify.js`. 38 cases in total.
 
 `tools/shape-evaluation.mjs` is deliberately **not** in that glob — it is a measurement
 instrument, not a regression gate. Run it on its own with `npm run eval:shape`; what it measures
@@ -60,23 +60,42 @@ like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ### `backend/test_models.py`: game rules
 
-Unit tests for the `Room` class, 14 cases: starting needs 2 players and full scans, room capacity,
+Unit tests for the `Room` class, 18 cases: starting needs 2 players and full scans, room capacity,
 no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
 unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
 it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round, that
 `roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
 directions.
 
+Plus the bookkeeping behind [the roster delta](../server/protocol.md#the-roster-delta): a roster
+entry can omit its gallery while still carrying the identity half; every gallery write moves
+`gallery_rev` and a refused scan does not; and a clone's `mirrored_gallery_rev()` moves exactly
+when the owner's gallery does, which is what stops a phone matching a clone against a replaced
+scan.
+
 ### `backend/test_protocol.py`: HTTP/SSE protocol
 
 Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
-phones), 14 cases: joining and starting, launching only once everyone is scanned, resuming with a
+phones), 19 cases: joining and starting, launching only once everyone is scanned, resuming with a
 remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
 being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
 room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
 reaching both players over their poll loops and producing an SSE `health` event, a three-player
 free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
 everyone except the sender.
+
+Five of those cover [the roster delta](../server/protocol.md#the-roster-delta), with realistically
+sized (~190 KB) galleries so the cost assertions mean something: a scan reaching every phone while
+costing the room one gallery per phone rather than N×N — asserted both as a count of galleries on
+the wire and in bytes off `poll_bytes`, which is the guard against the quadratic fan-out coming
+back; joins and leaves updating membership without re-shipping scans; a reconnecting phone being
+sent the roster complete and current; back-to-back rescans converging everywhere on the later one;
+and a rescanned owner updating the clone's entry on every phone.
+
+Because the roster is a delta, `last_roster()` in that file merges the whole message history the
+way the client's `mergeRoster()` does, rather than reading the last message. Every roster
+assertion is therefore about what a phone *holds*, not which bytes one message carried — and
+`client.since(mark)` is how the cost assertions ask what an action actually sent.
 
 `rooms`/`connections`/`pollers`/`sse_clients` in `backend.transport` are module-level globals
 shared by the whole test process (there's no per-test app state to reset) - every test uses a
@@ -101,6 +120,19 @@ This is the suite that pins down the priority rules described in [Identification
 The one suite that drives signature *extraction*, not just matching. `test/fixtures/synthetic-frame.mjs` stands in a canvas that resamples a synthetic frame — flat coloured bands for head, shirt, accent stripe and trousers — the way `drawImage` would, so `extractSignature()` runs for real under Node. That matters here specifically: the bug these tests exist for ([the shape report](../shape-feature-bug.md)) lived in the **seam** between extraction and `averageSignatures()`, and every test that hand-builds a gallery misses it by construction. The pre-existing 24 pass with the bug present; all eight of these fail.
 
 Covers: a signature scoring ~1 for `shape` against a gallery entry built from itself; a gallery `shape` staying a readable aspect ratio rather than a unit vector (while `hist`/`lower`/`grid` stay normalised); `shape` not drifting when the same person is further from the camera; a clearly different body aspect still scoring low, and an in-between build scoring in between, so the feature still discriminates; the worked example from the bug report; that the re-identification path's score, accept decision and rejection reason are bit-for-bit unchanged even with an absurd `shape` in the gallery; that the MobileNet-embedding path *does* change, by exactly `EMBED_SHAPE_WEIGHT × Δshape`; and that a colour-only check can clear `EVIDENCE_MIN_PART` on all four parts at all, which it never could before.
+
+### `test/roster.test.js`: folding in the roster delta
+
+Drives `mergeRoster()` from `frontend/public/roster.js`, the client half of [the roster
+delta](../server/protocol.md#the-roster-delta). Covers: an entry without a `gallery` keeping the
+one the phone holds; membership arriving wholesale so leavers and joiners land correctly; a player
+never seen before whose gallery was withheld reading as simply unscanned; an explicit `gallery: []`
+*not* being mistaken for a withheld one (which would resurrect a scan the room no longer has); a
+full roster replacing everything, as a reconnect receives; and the merge not mutating its input.
+
+`roster.js` imports `state.js`, which imports `env.js`, which reads the query string and the
+camera elements at import time — so the test stubs `location` and `document` rather than standing
+up a DOM. `mergeRoster` itself is pure.
 
 ### `test/motion.test.js`: motion matching
 
