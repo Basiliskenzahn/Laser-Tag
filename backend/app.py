@@ -3,16 +3,15 @@
 This module is only wiring. Phones cannot rely on WebSockets through every
 captive-portal wifi, so the realtime channel is HTTP long polling: a phone POSTs
 ``/api/connect`` once for a token, then POSTs its messages to ``/api/send`` and
-keeps a ``GET /api/poll`` parked to receive. Scoreboards and overlays get a
-read-only ``GET /events/{room}`` SSE stream instead.
+keeps a ``GET /api/poll`` parked to receive.
 
 Everything behind these handlers lives elsewhere: ``backend.models`` has the game
 rules, ``backend.transport`` the sessions and broadcasting, ``backend.sanitize``
 the untrusted-JSON boundary.
 
 Launched as ``python -m backend.app`` (see ``backend/Dockerfile``). nginx in
-``frontend/`` terminates TLS and reverse-proxies ``/api/*`` and ``/events/*``
-here, so no static files are served from this process.
+``frontend/`` terminates TLS and reverse-proxies ``/api/*`` here, so no static
+files are served from this process.
 """
 
 import asyncio
@@ -24,15 +23,12 @@ from aiohttp import web
 
 from .sanitize import clean_room_code
 from .transport import (
-    MAX_SSE_BACKLOG,
     Poller,
     Session,
     cancel_room_timers,
-    drop_sse_client,
     pollers,
     process_hit,
     rooms,
-    sse_clients,
     sweep_pollers,
 )
 
@@ -164,48 +160,6 @@ async def api_hit(request):
     return json_response(result, 200 if result.get("ok") else 400)
 
 
-async def events(request):
-    """Server-sent events for one room: a read-only feed of health/death events.
-
-    For spectator surfaces rather than players - no token, no session, and
-    nothing a listener sends can affect the round. ``X-Accel-Buffering: no``
-    stops the nginx in front of this process from buffering the stream.
-
-    ``CancelledError`` is deliberately *not* caught: this handler parks forever on
-    the queue, and swallowing the cancellation and returning normally told the
-    server the stream had finished of its own accord, which defeated graceful
-    shutdown. The ``finally`` still forgets the listener either way.
-    """
-    room_code = clean_room_code(request.match_info.get("room"))
-    # Bounded: a spectator page that stops reading would otherwise grow a queue
-    # nobody drains. broadcast_room_event drops the oldest events when it is full.
-    queue = asyncio.Queue(maxsize=MAX_SSE_BACKLOG)
-    sse_clients.setdefault(room_code, set()).add(queue)
-    response = web.StreamResponse(
-        status=200,
-        headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-store",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-    await response.prepare(request)
-    try:
-        await response.write(b": connected\n\n")
-        while True:
-            event = await queue.get()
-            payload = json.dumps(event, separators=(",", ":"))
-            await response.write(f"event: {event.get('type', 'message')}\ndata: {payload}\n\n".encode())
-    except ConnectionResetError:
-        pass
-    finally:
-        # Also removes the room's entry with its last listener: room codes are
-        # client-chosen, so an empty set per code ever asked for is a leak.
-        drop_sse_client(room_code, queue)
-    return response
-
-
 async def health(request):
     """Liveness probe for the container and the reverse proxy."""
     return web.Response(text="laser-tag python backend\n")
@@ -240,7 +194,6 @@ def create_app():
     app.router.add_post("/api/disconnect", api_disconnect)
     app.router.add_get("/api/poll", api_poll)
     app.router.add_post("/api/hit", api_hit)
-    app.router.add_get("/events/{room}", events)
     app.router.add_get("/", health)
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(stop_background_tasks)
