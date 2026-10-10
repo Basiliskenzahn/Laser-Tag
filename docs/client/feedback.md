@@ -51,6 +51,6 @@ All of them go through one helper, `tone({type, from, to, duration, volume, dela
 | --- | --- | --- |
 | Your hit landed | Crosshair `hit` animation and a floating popup: `−20` or `HEADSHOT −50` | `popup()`, `restartAnimation()` |
 | You got hit | Full-screen red `flash`, and vibration: 120 ms for a body hit, a pattern for a headshot | `navigator.vibrate` (not supported on iOS) |
-| You fired | FIRE button `firing` animation | |
+| You fired (tap anywhere but a button) | Crosshair `firing` recoil: kicks up 10px and settles back | `restartAnimation()` |
 
 Styles and animations live in `frontend/public/style.css`.

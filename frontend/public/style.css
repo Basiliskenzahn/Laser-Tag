@@ -420,6 +420,19 @@ input {
   transform: scale(0.85);
 }
 
+/* A shot's recoil: the crosshair kicks up and settles back. It moves with `translate`, not
+   `transform`, so the on-target scale is left alone. Declared before .hit so a confirmed hit
+   takes over the animation. */
+#crosshair.firing {
+  animation: recoil 0.18s ease-out;
+}
+
+@keyframes recoil {
+  30% {
+    translate: 0 -10px;
+  }
+}
+
 #crosshair.hit {
   animation: hitmarker 0.2s ease-out;
 }
@@ -604,29 +617,6 @@ input {
     opacity: 0;
     transform: translate(-50%, -40px);
   }
-}
-
-#fire-btn {
-  position: absolute;
-  left: 50%;
-  bottom: max(28px, env(safe-area-inset-bottom));
-  width: 104px;
-  height: 104px;
-  margin-left: -52px;
-  border-radius: 50%;
-  border: 4px solid rgba(255, 255, 255, 0.85);
-  background: var(--accent);
-  color: #fff;
-  font-weight: 800;
-  font-size: 18px;
-  letter-spacing: 0.08em;
-  box-shadow: 0 0 24px rgba(255, 46, 77, 0.6);
-}
-
-#fire-btn:active,
-#fire-btn.firing {
-  transform: scale(0.92);
-  filter: brightness(1.3);
 }
 
 /* Leaving: an always-visible exit in the corner, and a confirm that defaults to staying. */

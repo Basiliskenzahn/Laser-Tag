@@ -53,12 +53,15 @@ $('scan-cancel-btn').addEventListener('click', cancelScan);
 
 $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 
-$('fire-btn').addEventListener('pointerdown', (event) => {
+// A tap anywhere on the game screen fires, except on its buttons (Leave, Start) and the leave dialog.
+$('game-screen').addEventListener('pointerdown', (event) => {
+  if (event.target.closest('button, dialog') || $('leave-dialog').open) return;
   event.preventDefault();
   identity.start(); // in case a sensor was never granted at join, or there was no join tap
   fire();
 });
-$('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
+// Clears both, so a lingering `hit` never masks the next `firing` (or the other way round).
+$('crosshair').addEventListener('animationend', () => $('crosshair').classList.remove('firing', 'hit'));
 document.addEventListener('keydown', (event) => {
   if (event.code === 'Space' && !$('game-screen').hidden && !$('leave-dialog').open) fire();
 });

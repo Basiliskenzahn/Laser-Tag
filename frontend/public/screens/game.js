@@ -163,11 +163,6 @@ export function renderHud() {
   } else {
     text.textContent = ''; // countdown is drawn every frame in loop()
   }
-
-  const fireBtn = $('fire-btn');
-  const canFire = canLocalPlayerFire();
-  fireBtn.hidden = !canFire;
-  fireBtn.disabled = !canFire;
 }
 
 function escapeHtml(s) {
@@ -250,7 +245,7 @@ export function fire() {
   if (now - state.lastShotAt < FIRE_COOLDOWN_MS) return;
   state.lastShotAt = now;
   sound.shoot();
-  restartAnimation($('fire-btn'), 'firing');
+  restartAnimation($('crosshair'), 'firing');
 
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.
