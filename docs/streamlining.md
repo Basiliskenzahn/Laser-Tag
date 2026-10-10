@@ -115,12 +115,18 @@ entirely (only `LIVE_TRACK_MS` liveness applies), while classifier-only identiti
 an asymmetry that may or may not be intentional.
 
 What *was* done about this: isolated all motion-integration glue into
-`frontend/public/motion-identity.js` behind one function, `resolveIdentity()`, and made motion an
-opt-in (`?motion=on` or `?motion=strict`). Without that flag, the client skips sensor permission,
-sample sharing, remote motion history and `fuseMotion`, restoring the exact pre-motion-matching
-targeting gate - see [Configuration → Tuning tips](development/configuration.md#tuning-tips). The
-fusion logic/thresholds themselves were not touched - that's a tuning decision, not a structural
-one.
+`frontend/public/motion-identity.js` and made motion an opt-in (`?motion=on` or `?motion=strict`).
+Without that flag, the client skips sensor permission, sample sharing, remote motion history and
+`fuseMotion`, restoring the exact pre-motion-matching targeting gate - see
+[Configuration → Tuning tips](development/configuration.md#tuning-tips). The fusion
+logic/thresholds themselves were not touched - that's a tuning decision, not a structural one.
+
+That isolation then leaked in four places, all since closed: `screens/game.js` imported
+motion-specific functions, the shared `state` object carried motion fields whether or not the
+feature was on, `net.js` had a `case 'motion':`, and motion state was stamped onto the tracker's
+own track objects. `frontend/public/identity.js` is now the single seam: it installs one identity
+provider at load - `appearance-identity.js` by default, `motion-identity.js` under the flag - and
+nothing else in the app names a signal.
 
 One cosmetic side effect of the bypass: with motion off, the overlay now labels a track
 only once its identity is stable (lock-time passed), where before the motion commit landed, a

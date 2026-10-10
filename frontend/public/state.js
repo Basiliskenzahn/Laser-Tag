@@ -20,9 +20,6 @@ export const state = {
   poseDetector: null,
   embedder: null,
   reid: null, // person re-identification (reid.js); null if it couldn't load
-  motion: null, // this phone's motion sensor (motion/sensor.js), once permitted
-  remoteMotion: new Map(), // playerId -> [{ t, v }] activity reported by that player's phone
-  trackMotion: new WeakMap(), // track -> [{ t, box }] where the camera saw that person
   delegate: '',
   mode: 'join', // 'join' | 'lobby' | 'scan' | 'game'
   boxes: [], // people in the latest camera frame, in video pixels
