@@ -33,10 +33,14 @@ export const SCAN_CACHE_VERSION = 13;
 // Every scan cache this origin holds starts with this, so stale entries can be found and dropped.
 export const SCAN_CACHE_PREFIX = 'laser-tag:scan:';
 
-// The vectors a gallery sample is useless without. `embed` and `reid` are deliberately absent:
-// either can legitimately be empty on a phone where the optional model failed to load, which is
-// graceful degradation rather than a broken sample.
-export const REQUIRED_SAMPLE_VECTORS = ['hist', 'lower', 'grid', 'shape'];
+// The vectors a gallery sample is useless without, in the order a blank one is reported in - so
+// the message a failed scan shows does not depend on object key order. `embed` and `reid` are
+// deliberately absent: either can legitimately be empty on a phone where the optional model
+// failed to load, which is graceful degradation rather than a broken sample.
+//
+// Not exported: nothing outside needs the list, only the verdict, and an export nobody imports is
+// the beginning of two copies of a contract.
+const REQUIRED_SAMPLE_VECTORS = ['hist', 'lower', 'grid', 'shape'];
 
 // The storage key for this phone owner's scan in one room, or null when there is nothing to
 // address. Note what is *not* in it: the player's name, and the player's id. The name is not an

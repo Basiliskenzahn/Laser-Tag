@@ -293,6 +293,94 @@ test('starting a second scan mid-flight enrols exactly one gallery, under the ri
   assert.equal(scan.loadScanCache(), null, 'and must not have cached one either');
 });
 
+test('the quality gate judges the pixels the signature is actually built from', async () => {
+  // A box may overhang the frame edge and still be worth enrolling, as long as it is tall enough
+  // (CLIPPED_OK_SCAN_HEIGHT_RATIO). identify.js's readPixels clips such a box by subtracting the
+  // part that fell outside; scanImageStats subtracted nothing, so for an overhanging box the gate
+  // measured a window *shifted* inwards - wider, and over pixels the signature never saw.
+  //
+  // Here the box hangs 160 px off the left edge, so the sliver of it inside the frame is flat
+  // paint and everything to the right of it is textured. The signature is built from the flat
+  // sliver, so the frame has nothing in it worth enrolling and the gate must say so. Measuring
+  // the shifted window instead finds the texture next door and enrols a frame of flat wall.
+  const flatWidth = 20;
+  const paintFlatSliver = (canvas) => {
+    const { width: w, height: h, pixels } = canvas;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const n = Math.sin((x * 12.9898 + y * 78.233) * 1.7) * 43_758.545;
+        const noise = x < flatWidth ? 0 : (n - Math.floor(n)) * 90 - 45;
+        pixels[i] = Math.max(0, Math.min(255, 120 + noise));
+        pixels[i + 1] = Math.max(0, Math.min(255, 120 + noise));
+        pixels[i + 2] = Math.max(0, Math.min(255, 120 - noise));
+        pixels[i + 3] = 255;
+      }
+    }
+  };
+
+  const overhanging = (source) => {
+    const w = source.videoWidth || source.width;
+    const h = source.videoHeight || source.height;
+    return {
+      detections: [
+        {
+          boundingBox: { originX: -Math.round(w * 0.25), originY: Math.round(h * 0.1), width: Math.round(w * 0.3), height: Math.round(h * 0.8) },
+          categories: [{ score: 0.9 }],
+        },
+      ],
+    };
+  };
+
+  const { sent } = arrangeScan({ detector: overhanging });
+  // Replace arrangeScan's rotating person: this frame has to stay exactly as described.
+  dom.resetFrameHook();
+  const rAF = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (callback) =>
+    rAF((timestamp) => {
+      paintFlatSliver(dom.video);
+      callback(timestamp);
+    });
+  paintFlatSliver(dom.video);
+
+  await runScan(selfPlayer);
+
+  assert.equal(
+    sent.find((msg) => msg.type === 'scan'),
+    undefined,
+    'a box whose visible part is flat paint must not enrol, whatever is next to it',
+  );
+  assert.match(dom.element('lobby-status').textContent, /usable angles/i);
+  assert.match(dom.element('lobby-status').textContent, /flat background|brighter light/i);
+});
+
+test('the debug overlay counts embeddings that happened, not embedders that exist', async () => {
+  // `if (state.embedder) scanCost.embedInferences++` overcounts: personEmbedding returns [] without
+  // inferring at all when there is no usable region or the inference threw. The ?debug overlay is
+  // the only place anyone reads these numbers, and a number that is really "frames processed"
+  // dressed up as "inferences" is worse than no number.
+  const embedderThatNeverAnswers = { embedForVideo: () => ({ embeddings: [{}] }) };
+  const { sent } = arrangeScan();
+  state.embedder = embedderThatNeverAnswers;
+  await runScan(selfPlayer);
+
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'an embedder that returns nothing still enrols a colour gallery');
+  assert.match(scan.scanCostLine(), /\bembed 0\b/, scan.scanCostLine());
+
+  // ...and when it does answer, they are counted.
+  const embedderThatAnswers = {
+    embedForVideo: () => ({ embeddings: [{ floatEmbedding: Array.from({ length: 16 }, (_, i) => (i + 1) / 16) }] }),
+  };
+  const second = arrangeScan();
+  state.embedder = embedderThatAnswers;
+  await runScan(selfPlayer);
+  assert.ok(second.sent.find((msg) => msg.type === 'scan'));
+  const counted = Number(scan.scanCostLine().match(/\bembed (\d+)\b/)[1]);
+  const usable = Number(scan.scanCostLine().match(/Scan (\d+)\//)[1]);
+  assert.ok(counted > 0, scan.scanCostLine());
+  assert.equal(counted, usable, 'one embedding per usable frame, no more and no fewer');
+});
+
 test('every gallery sample carries real, non-degenerate vectors', async () => {
   // The silent failure this whole area is about is a sample that validates and scores 0 against
   // everybody. Nothing weaker than looking at the numbers catches it.
