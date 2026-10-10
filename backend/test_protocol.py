@@ -330,6 +330,32 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(first.closed_reason, "replaced")
         self.assertEqual(first.since(frozen_at), [], "nothing more should have been pushed to it")
 
+    async def test_a_poll_parked_when_the_seat_is_taken_is_told_on_that_response(self):
+        # Not merely eventually. A poll can sit parked here for 20 s, and the
+        # handler checks liveness again after the park for two reasons: the phone
+        # learns on this response instead of needing another round trip, and
+        # nothing still queued can be handed to a session that no longer exists.
+        # The entry check alone would answer this woken poll 200 and only 410 the
+        # next one, which is why driving a raw parked poll is the only way to see
+        # the difference - a PollingClient just polls again and cannot tell.
+        room = unique_room("parked-410")
+        token = (await (await self.client.post("/api/connect")).json())["token"]
+        await self.client.post("/api/send", params={"token": token},
+                               json={"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        drained = await (await self.client.get("/api/poll", params={"token": token})).json()
+        player_id = next(msg["id"] for msg in drained if msg["type"] == "welcome")
+
+        parked = asyncio.ensure_future(self.client.get("/api/poll", params={"token": token}))
+        await asyncio.sleep(0.2)  # let it park on an empty mailbox
+
+        second = self.track(await self.polling_client())
+        await second.send({"type": "join", "name": "A", "room": room, "playerId": player_id})
+        await wait_for(lambda: any(msg["type"] == "welcome" for msg in second.messages))
+
+        resp = await asyncio.wait_for(parked, 3)
+        self.assertEqual(resp.status, 410, "the woken poll itself must answer 410, not 200")
+        self.assertEqual((await resp.json())["reason"], "replaced")
+
     async def test_a_dropped_connection_reconnects_to_the_same_seat_and_hp(self):
         # The other half of the displacement decision: a phone whose connection
         # died - no /api/disconnect, just silence - must still get its seat back,
@@ -824,6 +850,11 @@ class ProtocolTests(AioHTTPTestCase):
         resp = await self.client.get("/api/poll", params={"token": victim.token})
         self.assertEqual(resp.status, 410)
         self.assertEqual((await resp.json())["reason"], "overflow")
+        # Nothing it sends is accepted either, so it cannot keep acting on a
+        # conversation the server has stopped having.
+        resp = await self.client.post("/api/send", params={"token": victim.token},
+                                      json={"type": "start"})
+        self.assertEqual(resp.status, 410)
 
         resumed = self.track(await self.polling_client())
         await resumed.send({"type": "join", "name": "P2", "room": room, "playerId": player_id})

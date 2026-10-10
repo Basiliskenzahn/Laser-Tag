@@ -181,6 +181,22 @@ class PollerMailboxTests(TransportTestCase):
         transport.evict(poller, "overflow")
         self.assertEqual(poller.session.sent_gallery_revs, {})
 
+    async def test_a_refused_roster_is_not_recorded_as_delivered(self):
+        # The precise difference between recording the delta at enqueue and
+        # recording it at hand-over. sent_gallery_revs used to be assigned inside
+        # roster_for, before the caller's send, so a message the mailbox never
+        # took still counted as sent - and the phone was then told "keep what you
+        # have" about a gallery it had never been given.
+        room = self.room("refused")
+        session, poller = self.seat(room, "Alice")
+        self.seat(room, "Bob")
+        transport.evict(poller, "overflow")
+
+        await transport.broadcast_roster(room)
+
+        self.assertEqual(session.sent_gallery_revs, {},
+                         "a roster the mailbox refused must not count as delivered")
+
     async def test_a_live_mailbox_keeps_its_token_registered(self):
         poller = self.mailbox()
         self.assertTrue(poller.is_live())
@@ -441,7 +457,13 @@ class SseListenerTests(TransportTestCase):
         transport.sse_clients.setdefault(room.code, set()).add(queue)
 
         for i in range(10):
-            await transport.broadcast_room_event(room, {"type": "health", "n": i})
+            # Timed: an unbounded ``await queue.put()`` on a full queue parks the
+            # *broadcast* forever, which would hang the whole round rather than
+            # drop one spectator's event. Failing fast is what makes that
+            # difference visible instead of turning this test into a deadlock.
+            await asyncio.wait_for(
+                transport.broadcast_room_event(room, {"type": "health", "n": i}), 1
+            )
 
         self.assertEqual(queue.qsize(), 3, "the backlog must stay bounded")
         self.assertEqual([queue.get_nowait()["n"] for _ in range(3)], [7, 8, 9],
