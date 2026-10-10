@@ -114,3 +114,91 @@ test('if_modified_since only ever gets a value nginx accepts', () => {
       `if_modified_since ${value} is not a valid value`);
   }
 });
+
+// ---- Cross-origin isolation (frontend/cross-origin-isolation.conf) ----
+//
+// reid.js only asks ONNX Runtime for more than one WASM thread when
+// `globalThis.crossOriginIsolated` is true, and that is true only when the document arrived
+// with COOP + COEP. Nothing served them before, so that branch had never executed and OSNet
+// ran single-threaded everywhere. These tests pin the two ways it could silently stop
+// working again: the headers going missing, and nginx's add_header inheritance rule quietly
+// dropping them from the blocks that matter.
+
+const ISOLATION = fileURLToPath(new URL('../frontend/cross-origin-isolation.conf', import.meta.url));
+const isolation = stripComments(readFileSync(ISOLATION, 'utf8'));
+
+/** Every `location` match in the shipped config, in file order. */
+function locationMatches() {
+  return [...conf.matchAll(/^location\s+(.+?)\s*\{/gm)].map((m) => m[1]);
+}
+
+test('cross-origin isolation sets both headers the browser requires', () => {
+  // COOP alone does nothing; COEP alone does nothing. crossOriginIsolated needs both.
+  assert.match(isolation, /add_header\s+Cross-Origin-Opener-Policy\s+"same-origin"/);
+  assert.match(isolation, /add_header\s+Cross-Origin-Embedder-Policy\s+"require-corp"/);
+});
+
+test('COEP stays require-corp, which is the only value Safari implements', () => {
+  // `credentialless` is laxer and would avoid the cross-origin opt-in requirement, but
+  // Safari does not support it and this game is played on phones.
+  assert.doesNotMatch(isolation, /Cross-Origin-Embedder-Policy\s+"credentialless"/);
+});
+
+test('every header carries "always", or it vanishes on a 304', () => {
+  // The models are served with an ETag, so a revalidated model IS a 304. Without `always`,
+  // nginx omits add_header on anything that is not a 2xx/3xx body response, and a phone
+  // reloading into a warm cache would lose isolation entirely.
+  for (const line of isolation.split('\n').filter((l) => l.includes('add_header'))) {
+    assert.match(line, /\salways;/, `missing "always": ${line.trim()}`);
+  }
+});
+
+test('every static location includes the isolation snippet', () => {
+  // This is the inheritance trap: `add_header` is inherited only by levels that declare no
+  // add_header of their own, and every static block here sets its own Cache-Control. So a
+  // server-level COOP/COEP would be dropped exactly where the document is served, with no
+  // error. The snippet therefore has to be included per block.
+  const proxied = new Set(['/api/', '/events/']);
+  for (const match of locationMatches()) {
+    if (proxied.has(match)) continue;
+    assert.match(
+      locationBody(match),
+      /include\s+\/etc\/nginx\/cross-origin-isolation\.conf;/,
+      `location ${match} serves files but is not cross-origin isolated`,
+    );
+  }
+});
+
+test('the proxied paths are left out of isolation on purpose', () => {
+  // /api/ and /events/ answer fetch() and EventSource, not documents. Nothing about
+  // isolation applies to them, and adding headers there would only be noise.
+  for (const match of ['/api/', '/events/']) {
+    assert.doesNotMatch(locationBody(match), /cross-origin-isolation\.conf/);
+  }
+});
+
+test('the client loads nothing cross-origin, which is what makes require-corp safe', () => {
+  // require-corp blocks every cross-origin subresource that does not opt in - a blank
+  // screen, not a degraded one. It is safe only while the client is entirely same-origin.
+  // If this fails, do not relax the header: give the new resource CORP/CORS, or host it.
+  const client = fileURLToPath(new URL('../frontend/public/index.html', import.meta.url));
+  const html = readFileSync(client, 'utf8');
+  for (const attr of ['src', 'href']) {
+    for (const [, url] of html.matchAll(new RegExp(`${attr}="([^"]+)"`, 'g'))) {
+      assert.ok(
+        !/^(https?:)?\/\//.test(url),
+        `index.html loads ${url} cross-origin, which COEP require-corp will block`,
+      );
+    }
+  }
+});
+
+test('the Dockerfile ships the snippet, or nginx will not start', () => {
+  // An `include` of a file that is not in the image is a hard startup failure, which would
+  // take the whole frontend down on deploy rather than degrade it.
+  const dockerfile = fileURLToPath(new URL('../frontend/Dockerfile', import.meta.url));
+  assert.match(
+    readFileSync(dockerfile, 'utf8'),
+    /COPY\s+frontend\/cross-origin-isolation\.conf\s+\/etc\/nginx\/cross-origin-isolation\.conf/,
+  );
+});

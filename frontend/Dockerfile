@@ -14,6 +14,8 @@ COPY --from=deps /app/node_modules/@mediapipe/tasks-vision/ /usr/share/nginx/htm
 COPY --from=deps /app/node_modules/onnxruntime-web/dist/ /usr/share/nginx/html/vendor/ort/
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY frontend/common-locations.conf /etc/nginx/common-locations.conf
+# Included by every static location in common-locations.conf; without it nginx refuses to start.
+COPY frontend/cross-origin-isolation.conf /etc/nginx/cross-origin-isolation.conf
 COPY frontend/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 

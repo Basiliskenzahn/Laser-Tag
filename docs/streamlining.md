@@ -166,15 +166,18 @@ code calls them today - listed so they don't surprise someone who changes a call
 Both are one-line nginx changes with real, measurable client wins, and neither can be fixed from
 JavaScript. Found while cutting the join → lobby wait (`luxkaiwalker/startup-latency`).
 
-- **OSNet always runs single-threaded.** `reid.js` asks for
-  `crossOriginIsolated ? min(4, hardwareConcurrency) : 1` WASM threads, and nothing serves the
+- **OSNet always ran single-threaded — now fixed.** `reid.js` asks for
+  `crossOriginIsolated ? min(4, hardwareConcurrency) : 1` WASM threads, and nothing served the
   `Cross-Origin-Opener-Policy: same-origin` / `Cross-Origin-Embedder-Policy: require-corp` headers
-  that `crossOriginIsolated` requires — so the ternary has only ever taken its `1` branch. OSNet is
-  the most expensive inference in the app and dominates the end of every scan (~30 inferences, and
-  the wait the player notices after the rotation). The code to use up to four threads is already
-  written and has presumably never executed. Caveat before anyone does it: cross-origin isolation
-  also constrains what the page may embed, so it needs checking against the `/vendor/` assets and
-  the camera stream rather than being switched on blind.
+  that `crossOriginIsolated` requires, so the ternary had only ever taken its `1` branch — the
+  image shipped `ort-wasm-simd-threaded.wasm` and used it to do the non-threaded build's job.
+  `frontend/cross-origin-isolation.conf` now serves both headers from every static location.
+  The caveat recorded here was checked rather than assumed: `require-corp` blocks any
+  cross-origin subresource that does not opt in, and the client loads none — no CDN, no web
+  font, no analytics — while the camera is a `MediaStream`, not a fetched subresource, so it is
+  unaffected. Failure is one-directional: if isolation does not take effect,
+  `crossOriginIsolated` is false and the fallback is exactly the old behaviour.
+  **Still unmeasured on a phone** — the thread count is visible in `?debug`.
 - **The models are served `no-store`, so they are re-downloaded every single page load.**
   `frontend/common-locations.conf` sets `Cache-Control: no-store, max-age=0` on `.tflite`, `.task`,
   `.wasm` and `.mjs`. For the HTML and the app JS that is deliberate and right. For 18 MB of

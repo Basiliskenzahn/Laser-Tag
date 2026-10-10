@@ -220,6 +220,56 @@ docker compose up --build
 
 Both images build from the repo root (`context: .`). `.dockerignore` excludes `node_modules`, `.git`, `.certs`, logs and editor folders.
 
+
+## Cross-origin isolation
+
+`frontend/cross-origin-isolation.conf` serves three headers from every static location:
+
+| Header | Value |
+| --- | --- |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Cross-Origin-Embedder-Policy` | `require-corp` |
+| `Cross-Origin-Resource-Policy` | `same-origin` |
+
+**Why.** `reid.js` requests `min(4, hardwareConcurrency)` WASM threads for OSNet, but only when
+`globalThis.crossOriginIsolated` — which the browser sets only if the document arrived with COOP
+*and* COEP, because that is the precondition for handing out `SharedArrayBuffer`. Nothing served
+them before, so that branch had never executed: OSNet ran on one thread on every device, and the
+`ort-wasm-simd-threaded.wasm` build in the image was doing the non-threaded build's job. OSNet is
+the most expensive inference in the app and dominates the end of every scan.
+
+**Why it is a separate file included seven times, rather than one `add_header` at server level.**
+nginx inherits `add_header` from an outer level *only if the current level declares no
+`add_header` of its own*. Every static block in `common-locations.conf` sets its own
+`Cache-Control`, so a server-level COOP/COEP would be silently discarded in exactly the blocks
+that serve the document — no error, no warning, and `crossOriginIsolated` quietly false. A test
+asserts the include is present in every non-proxied location.
+
+**Why `require-corp` and not `credentialless`.** `credentialless` avoids the cross-origin opt-in
+requirement, but Safari does not implement it and this game is played on phones. `require-corp`
+has been supported since Safari 15.2.
+
+**The constraint this imposes.** Under `require-corp`, every *cross-origin* subresource must opt
+in via CORP or CORS or it is blocked outright — a blank screen, not a degraded one. It is safe
+here only because the client loads nothing cross-origin: no CDN, no web font, no analytics.
+`index.html` references `style.css` and `app.js`; models come from `/models/`, runtimes from
+`/vendor/`, and `/api/` and `/events/` are same-origin through this same nginx. The camera is a
+`MediaStream`, not a fetched subresource, so it is unaffected. **Before adding any third-party
+resource, give it CORP/CORS or self-host it** — do not relax the header. A test fails if
+`index.html` gains an absolute `src`/`href`.
+
+`/api/` and `/events/` are deliberately excluded: they answer `fetch()` and `EventSource`, not
+documents, so isolation does not apply to them.
+
+**Failure is one-directional**, which is what makes this safe to ship without a device: if
+isolation does not take effect, `crossOriginIsolated` is false and `reid.js` falls back to one
+thread — today's behaviour. There is no path where this is slower.
+
+**Verified** with nginx 1.30.5 against the unmodified shipped configs: `nginx -t` passes, and on
+the wire `index.html`, `app.js` and `/models/*` all carry the three headers while `/api/` carries
+none. **Not verified:** the `nginx:1.27-alpine` image specifically, and the real thread count on a
+phone — `?debug` reports it.
+
 ## Common commands
 
 ```bash
