@@ -1,6 +1,5 @@
 import asyncio
 import json
-import math
 import os
 import time
 import uuid
@@ -17,7 +16,7 @@ SHOT_COOLDOWN_MS = 350
 COUNTDOWN_MS = 5000
 POLL_WAIT_MS = 20_000
 POLL_EXPIRY_MS = 30_000
-MAX_BODY_BYTES = 1024 * 1024  # a 24-sample scan with re-identification embeddings is ~210 KB
+MAX_BODY_BYTES = 256 * 1024
 
 
 @dataclass
@@ -224,7 +223,6 @@ GALLERY_FIELDS = (
     ("lower", 64, False),
     ("shape", 8, False),
     ("embed", 512, False),
-    ("reid", 512, False),  # person re-identification embedding (public/reid.js)
 )
 
 
@@ -274,26 +272,6 @@ def clean_gallery(gallery):
 
 def json_response(data, status=200):
     return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
-
-
-MAX_MOTION_SAMPLES = 32  # per relayed message (~3 s at 10 Hz)
-
-
-def clean_motion_samples(samples):
-    """[[t_ms, activity], ...] from a phone's motion sensor: finite numbers, capped length."""
-    if not isinstance(samples, list):
-        return []
-    clean = []
-    for item in samples[:MAX_MOTION_SAMPLES]:
-        if not isinstance(item, list) or len(item) < 2:
-            continue
-        try:
-            t, v = float(item[0]), float(item[1])
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(t) and math.isfinite(v) and v >= 0:
-            clean.append([int(t), round(v, 2)])
-    return clean
 
 
 async def send_to(player_id, msg):
@@ -436,15 +414,6 @@ class Session:
             await self.send({"type": "scanSaved", "targetId": target_id})
             await broadcast_roster(self.room)
             await broadcast_state(self.room)
-        elif msg.get("type") == "motion":
-            # This phone's motion activity, relayed to the others for motion matching
-            # (public/motion/). Every phone checks whose phone moves with whom it sees.
-            samples = clean_motion_samples(msg.get("s"))
-            if samples:
-                relay = {"type": "motion", "from": self.id, "s": samples}
-                for player_id in list(self.room.players.keys()):
-                    if player_id != self.id:
-                        await send_to(player_id, relay)
         elif msg.get("type") == "start":
             result = self.room.start()
             if not result["ok"]:
@@ -606,7 +575,7 @@ async def stop_sweeper(app):
 
 
 def create_app():
-    app = web.Application(client_max_size=MAX_BODY_BYTES)
+    app = web.Application()
     app.router.add_post("/api/connect", api_connect)
     app.router.add_post("/api/send", api_send)
     app.router.add_post("/api/disconnect", api_disconnect)
