@@ -79,6 +79,7 @@ const GALLERY_FIELDS = [
   ['lower', 64],
   ['shape', 8],
   ['embed', 512],
+  ['reid', 512], // person re-identification embedding (public/reid.js)
 ];
 
 function cleanVector(v, maxLen) {
@@ -180,7 +181,7 @@ function openSession(conn) {
 
 const POLL_WAIT_MS = 20_000; // under the 30s upstream timeout common in reverse proxies
 const POLL_EXPIRY_MS = 30_000; // no poll for this long means the phone is gone
-const MAX_BODY_BYTES = 256 * 1024;
+const MAX_BODY_BYTES = 1024 * 1024; // a 24-sample scan with re-identification embeddings is ~210 KB
 
 const pollers = new Map(); // token -> { queue, waiting, waitTimer, lastSeen, session }
 let sweepTimer = null;

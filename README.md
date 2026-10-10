@@ -28,6 +28,21 @@ Plain person detection only answers "is there a person here?" - with more than t
 
 This is deliberately built from cheap, model-free signals so it runs smoothly on a phone browser alongside the person detector. `public/identify.js` isolates it behind `extractSignature()` / `matchGallery()`, so a learned person re-identification embedding (e.g. a small MobileNet-based model in TensorFlow.js) could later replace or augment the colour/grid signature without touching the tracking or enrolment code around it.
 
+## Person re-identification (OSNet)
+
+The colour features and generic MobileNet embedding over-classify: bystanders get labelled as players. Each scan sample and each tracked person now also gets an embedding from **OSNet x0.25** (`public/reid.js`, `public/models/osnet_x0_25_msmt17.onnx`, 0.9 MB), a network trained specifically for person re-identification. It comes from the Torchreid authors (MIT licence), trained on MSMT17, and was exported to ONNX. It runs in the browser with ONNX Runtime Web, in about 9 ms per person in desktop Chrome.
+
+When both sides have that embedding, it alone decides the match (blending in the colour features only made it worse), with its own thresholds: accept at a similarity of 0.72 with a 0.03 margin over the runner-up. Closed-set mode no longer force-accepts the best match below those thresholds. Without the model (it failed to load, or an older scan), everything works as before.
+
+Evaluation on Market-1501, people the model never saw, in 2,000 simulated games of 2-4 players with 20 bystanders each:
+
+| | Players recognised at 1% / 5% / 10% bystander acceptance |
+| --- | --- |
+| Colour + MobileNet signature | 17.8% / 33.9% / 43.8% |
+| OSNet x0.25 | 53.9% / 77.2% / 86.0% |
+
+In the game's closed-set mode, per single check: before, every bystander was labelled as a player; now 7.6% are, while 82.8% of players are recognised and 0.5% are assigned to the wrong player. The tracker needs agreeing checks before naming someone, so per person it's lower still. Not yet tested on real phones; on a phone, inference will be slower than on desktop.
+
 ## Running it
 
 You need Docker Desktop or Docker Engine with Compose. You do not need local Node.js,
@@ -123,4 +138,4 @@ docker-compose.yml  `docker compose up --build` wires the two containers togethe
 
 ## License
 
-[MIT](LICENSE). The EfficientDet-Lite0 model is from Google MediaPipe and is licensed under Apache 2.0.
+[MIT](LICENSE). The EfficientDet-Lite0 model is from Google MediaPipe and is licensed under Apache 2.0. The OSNet re-identification weights are from [Torchreid](https://github.com/KaiyangZhou/deep-person-reid) by Kaiyang Zhou (MIT, [model files](https://huggingface.co/kaiyangzhou/osnet)), converted to ONNX.

@@ -1,5 +1,6 @@
 import { bodyBox, createDetector, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox, contains } from './detector.js';
 import { averageSignatures, extractSignature, scanBoxProblem, Tracker, usableScanBox } from './identify.js';
+import { createReid } from './reid.js';
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 
@@ -10,7 +11,7 @@ const FIRE_COOLDOWN_MS = 350;
 const LIVE_TRACK_MS = 520;
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 10;
+const SCAN_CACHE_VERSION = 11; // 11: samples carry a re-identification embedding
 const SCAN_MIN_SAMPLES = 12;
 const SCAN_TARGET_SAMPLES = 24;
 const SCAN_MIN_DETECTION_SCORE = 0.16;
@@ -35,6 +36,9 @@ const GAME_DETECT_MAX_WIDTH = 512;
 const TARGET_LOCK_MS = 350;
 const TARGET_MIN_SCORE = 0.48;
 const TARGET_MIN_PART = 0.22;
+// Re-identification identities can also come from accumulated evidence just under the accept
+// threshold (0.72, identify.js); a shot needs at least this.
+const TARGET_MIN_REID_SCORE = 0.7;
 
 const video = $('video');
 const canvas = $('overlay');
@@ -52,6 +56,7 @@ const state = {
   detector: null,
   poseDetector: null,
   embedder: null,
+  reid: null, // person re-identification (reid.js); null if it couldn't load
   delegate: '',
   mode: 'scan', // 'scan' | 'game' - which screen the shared camera loop renders for
   boxes: [], // people in the latest camera frame, in video pixels
@@ -91,11 +96,17 @@ $('join-form').addEventListener('submit', async (event) => {
   $('join-btn').disabled = true;
   setJoinStatus('Starting camera and loading the detector…');
   try {
-    const [, { detector, poseDetector, embedder, delegate }] = await Promise.all([startCamera(), createDetector()]);
+    const loadReid = createReid().catch((err) => {
+      // The colour + MobileNet signature still works without it, just less reliably.
+      console.warn('Re-identification model unavailable', err);
+      return null;
+    });
+    const [, { detector, poseDetector, embedder, delegate }, reid] = await Promise.all([startCamera(), createDetector(), loadReid]);
     state.detector = detector;
     state.poseDetector = poseDetector;
     state.embedder = embedder;
-    state.delegate = delegate;
+    state.reid = reid;
+    state.delegate = `${delegate}${reid ? '+ReID' : ''}`;
   } catch (err) {
     console.error(err);
     setJoinStatus(startupErrorMessage(err));
@@ -320,7 +331,9 @@ async function captureScanSignature() {
     const candidate = bestUsableScanCandidate(currentScanBoxes(now), video);
     const box = candidate.box;
     if (box && candidate.problem === 'ok' && usableScanBox(video, box)) {
-      samples.push(extractSignature(video, box, state.embedder, now));
+      const signature = extractSignature(video, box, state.embedder, now);
+      if (state.reid) signature.reid = await state.reid.embed(video, box);
+      samples.push(signature);
       thumbnailBox = box;
       problem = 'ok';
     } else {
@@ -634,6 +647,7 @@ function refreshGameDetection({ forcePose = false } = {}) {
     includeRejected: DEBUG,
     identifyOnce: false,
     embedder: state.embedder,
+    reid: state.reid,
     closedSet: true,
   });
   state.lastGameDetectAt = t0;
@@ -675,8 +689,10 @@ async function processRotationVideo(frames) {
       const box = candidate.box;
 
       if (box && candidate.problem === 'ok' && usableScanBox(frame.image, box)) {
+        const signature = extractSignature(frame.image, box, state.embedder, performance.now());
+        if (state.reid) signature.reid = await state.reid.embed(frame.image, box);
         candidates.push({
-          signature: extractSignature(frame.image, box, state.embedder, performance.now()),
+          signature,
           box: { ...box },
           thumb: cropThumbnail(box, frame.image),
           quality: candidate.quality,
@@ -1015,6 +1031,16 @@ function canLocalPlayerFire() {
 }
 
 function isStableTarget(track, now = performance.now()) {
+  // A re-identification match has already cleared its own threshold; the colour-part minimums
+  // below are for the colour signature, and lighting can push them down for the right person.
+  if (track.hasReid) {
+    return Boolean(
+      track.playerId &&
+        Number.isFinite(track.identifiedAt) &&
+        now - track.identifiedAt >= TARGET_LOCK_MS &&
+        track.score >= TARGET_MIN_REID_SCORE,
+    );
+  }
   return Boolean(
     track.playerId &&
       Number.isFinite(track.identifiedAt) &&
@@ -1154,7 +1180,7 @@ function loop() {
             ? `\n${identified
                 .map(
                   (t) =>
-                    `${t.name}:${t.score.toFixed(2)} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)}`,
+                    `${t.name}:${t.score.toFixed(2)}${t.hasReid ? ' reid' : ''} u${t.upper?.toFixed(2)} l${t.lower?.toFixed(2)} g${t.grid?.toFixed(2)} s${t.shape?.toFixed(2)} e${t.embed?.toFixed(2)}`,
                 )
                 .join(' ')}`
             : '')

@@ -243,6 +243,7 @@ export function averageSignatures(signatures) {
     grid: averageVectors(signatures.map((s) => s.grid)),
     shape: averageVectors(signatures.map((s) => s.shape)),
     embed: averageVectors(signatures.map((s) => s.embed).filter((v) => v?.length)),
+    reid: averageVectors(signatures.map((s) => s.reid).filter((v) => v?.length)),
     usable: signatures.some((s) => s.usable !== false),
   };
 }
@@ -290,13 +291,21 @@ function similarityParts(a, b) {
   const shape = shapeSimilarity(a.shape, b.shape);
   const embed = cosine(a.embed, b.embed);
   const hasEmbed = Boolean(a.embed?.length && b.embed?.length);
+  // With a re-identification embedding on both sides, it alone decides: in evaluation, blending
+  // in the colour features only made it worse (reid.js). The colour parts stay for debugging.
+  const hasReid = Boolean(a.reid?.length && b.reid?.length);
+  const reid = hasReid ? cosine(a.reid, b.reid) : 0;
   return {
     upper,
     lower,
     grid,
     shape,
     embed,
-    score: hasEmbed
+    reid,
+    hasReid,
+    score: hasReid
+      ? reid
+      : hasEmbed
       ? EMBED_HIST_WEIGHT * upper +
         EMBED_LOWER_WEIGHT * lower +
         EMBED_GRID_WEIGHT * grid +
@@ -361,8 +370,25 @@ const MIN_LOWER_SCORE = 0.38;
 const MIN_GRID_SCORE = 0.4;
 const MIN_SHAPE_SCORE = 0.36;
 
+// Thresholds for re-identification scores (cosine similarity of OSNet embeddings). Chosen on
+// Market-1501 in simulated games of 2-4 players, in the game's closed-set mode, per single check:
+//   threshold 0.70 / 0.72 / 0.74 / 0.76 -> players recognised 87% / 83% / 77% / 71%,
+//   bystanders accepted 10.8% / 7.6% / 4.9% / 3.1%, wrong player 0.3-0.5%.
+// The tracker also needs agreeing checks before it names a track, so per person it's lower.
+// The margin halves wrong-player assignments.
+const REID_MATCH_THRESHOLD = 0.72;
+const REID_MATCH_MARGIN = 0.03;
+const REID_EVIDENCE_MIN_SCORE = 0.62;
+const REID_SOFT_LABEL_SCORE = 0.66;
+const REID_INITIAL_LOCK = 0.8;
+
 function rejectionReason(best, candidates, secondScore) {
   if (!best) return 'no-candidate';
+  if (best.hasReid) {
+    if (best.score < REID_MATCH_THRESHOLD) return 'score';
+    if (candidates > 1 && best.score - secondScore < REID_MATCH_MARGIN) return 'margin';
+    return null;
+  }
   if (best.score < MATCH_THRESHOLD) return 'score';
   if (best.upper < MIN_UPPER_SCORE) return 'upper';
   if (best.lower < MIN_LOWER_SCORE) return 'lower';
@@ -395,7 +421,10 @@ export function matchGallery(signature, players, excludeId, { includeRejected = 
     const selfMatch = { ...best, accepted: false, reason: 'self', candidates, rankings };
     return includeRejected || closedSet ? selfMatch : null;
   }
-  if (closedSet && best) return { ...best, accepted: true, reason, candidates, rankings };
+  // Closed set assumes everyone visible is a player and takes the best match even below the
+  // thresholds - fine for weak colour features, but it's what made the classifier label
+  // bystanders as players. Re-identification scores are reliable enough to keep the thresholds.
+  if (closedSet && best) return { ...best, accepted: best.hasReid ? !reason : true, reason, candidates, rankings };
   if (!reason) return { ...best, accepted: true, candidates };
   return includeRejected && best ? { ...best, accepted: false, reason, candidates, rankings } : null;
 }
@@ -569,6 +598,10 @@ function decayEvidence(track) {
 
 function evidenceWeight(match) {
   if (!match) return 0;
+  if (match.hasReid) {
+    if (match.score < REID_EVIDENCE_MIN_SCORE) return 0;
+    return match.accepted ? 1.25 : 0.45 + Math.max(0, match.score - REID_EVIDENCE_MIN_SCORE);
+  }
   if (
     match.score < EVIDENCE_MIN_SCORE ||
     match.upper < EVIDENCE_MIN_PART ||
@@ -583,6 +616,7 @@ function evidenceWeight(match) {
 
 function softLabelMatch(match) {
   if (!match || match.accepted || match.reason === 'margin') return null;
+  if (match.hasReid) return match.score >= REID_SOFT_LABEL_SCORE ? { ...match, soft: true } : null;
   if (match.score < SOFT_LABEL_SCORE) return null;
   if (
     match.upper < EVIDENCE_MIN_PART ||
@@ -632,6 +666,8 @@ function assignIdentity(track, match) {
   track.grid = match?.grid ?? 0;
   track.shape = match?.shape ?? 0;
   track.embed = match?.embed ?? 0;
+  track.reid = match?.hasReid ? match.reid : 0;
+  track.hasReid = Boolean(match?.hasReid);
   track.misses = 0;
   if (match?.id) {
     track.identifiedAt = previousId === match.id ? (track.identifiedAt ?? track.lastSeen) : track.lastSeen;
@@ -661,7 +697,7 @@ export class Tracker {
     players,
     selfId,
     now = performance.now(),
-    { includeRejected = false, embedder = null, identifyOnce = false, closedSet = false } = {},
+    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false } = {},
   ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
@@ -738,6 +774,14 @@ export class Tracker {
       track.lastCheck = now;
 
       const signature = extractSignature(video, track.box, embedder, now);
+      if (reid) {
+        // Re-identification runs in the background: use this track's latest embedding and ask
+        // for a fresh one. Until its first embedding arrives, don't identify the track from
+        // colours alone - that's how bystanders used to get labelled as players.
+        signature.reid = reid.latest(track);
+        reid.request(track, video, track.box);
+        if (!signature.reid) continue;
+      }
       const match = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
       track.rankings = match?.rankings ?? (match ? [match] : []);
       if (match?.reason === 'self' && match.id === selfId) {
@@ -779,7 +823,7 @@ export class Tracker {
         if (
           !track.playerId &&
           candidateMatch?.accepted &&
-          candidateMatch.score >= HIGH_CONFIDENCE_INITIAL_LOCK
+          candidateMatch.score >= (candidateMatch.hasReid ? REID_INITIAL_LOCK : HIGH_CONFIDENCE_INITIAL_LOCK)
         ) {
           assignIdentity(track, candidateMatch);
         }
