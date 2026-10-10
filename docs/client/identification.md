@@ -7,7 +7,7 @@ Detection only says "there's a person here". With more than two players, a phone
 3. **The tracker**: follow people across frames so identity is stable and matching doesn't run on every frame (`identify.js`).
 4. **Motion confirmation**: check the person's on-screen movement against what each player's own phone reports, and confirm or veto the answer (`motion/matching.js`, `motion/sensor.js`).
 
-Everything runs on the phone. Players' galleries come from the server's `roster` message; their motion comes from the server's `motion` relay.
+Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once. Their motion comes from the server's `motion` relay.
 
 ## The signals, in order of strength
 
@@ -19,9 +19,11 @@ Appearance matching uses whichever of these it has, strongest first:
 | **Colour + MobileNet embedding** | `identify.js` + the embedder from `detector.js` | No `reid` on one side, but both sides have `embed`. The score is a weighted blend of the colour parts and the embedding. | ~34% at the same false-accept rate, for the whole colour + embedding signature |
 | **Colour only** | `identify.js` | Neither model loaded. The baseline: upper/lower histograms, grid and shape. | weakest |
 
-If enabled with `?motion=on` or `?motion=strict`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It never contributes to the appearance score itself.
+Unless disabled with `?motion=off`, **motion is an independent layer** on top of whichever of those produced an answer: it can confirm the answer, correct it to another candidate, veto it, or name a person the appearance signals left unknown. It isn't part of the per-check appearance score, but it nudges a track's typical score for a player: +0.06 when that player's phone moves with the person on screen, −0.08 when it clearly doesn't (`motionScoreAdjustment()` in `motion-identity.js`). Real games put players at 0.70–0.80+ and non-players at 0.60–0.65, so this widens the gap whenever people move.
 
-Both models are optional. `createReid()` failures are caught in `camera.js` (the delegate label simply loses its `+ReID` suffix), and the embedder is optional in `createDetector()`, so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
+Both models are optional. `createReid()` failures and `createEmbedder()` failures are both caught in [`startup.js`](app-flow.md#what-continue-actually-waits-for), which lands `null` in the corresponding `state` slot (the delegate label simply loses its `+ReID` or `+Embed` suffix), so the game degrades to the next row down rather than breaking. A phone where OSNet failed to load still scans and still plays — its galleries just carry no `reid`, and matching falls to the second row.
+
+Being optional is why neither is on the critical path into the lobby. It is also why [enrolment](scanning.md#0-waiting-for-the-models-if-it-comes-to-that) waits for both before it starts: *failing* to load is graceful degradation the player can see and live with, whereas enrolling a gallery while they were still *loading* is silent degradation baked into a cached gallery for the whole round.
 
 ## Signatures
 
@@ -32,18 +34,78 @@ Both models are optional. `createReid()` failures are caught in `camera.js` (the
 | `hist` | 64 | Upper-body colour: 12 hues × 4 saturations (48), plus 8 brightness and 8 saturation bins so grey/black/white clothes still count | x 16–84%, y 20–62% |
 | `lower` | 64 | Same descriptor for the lower body. A strong guard: a similar shirt isn't enough if the trousers differ. | x 18–82%, y 58–92% |
 | `grid` | 192 | 6×8 grid of brightness, saturation and hue (as sin/cos weighted by saturation). A rough colour+shape fingerprint that *does* change with viewing angle. | x 8–92%, y 6–94% |
-| `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame | whole box |
+| `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame. The only field kept on its **raw** scale rather than L2-normalised — see below | whole box |
 | `embed` | 256 | Optional MobileNetV3 embedding, compacted from the model's output and rounded to 4 decimals so galleries stay small | box with a little padding |
-| `usable` | bool | Whether the box is big and whole enough to trust (not sent to the server) | |
+| `usable` | bool | Whether the box passed `boxQuality()` outright — big and whole enough to trust (not sent to the server) | |
+| `range` | string | If it didn't, why: `far-reid`, `below-floor`, `partial-body` or `edge-clipped`. See [Box range](#box-range-and-the-far-band) | |
+| `rangePenalty` | number | How much extra a re-identification score must clear for this box. `0` for anything `usable` | |
 
 A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. Because inference is asynchronous it is attached by the caller afterwards — and the two callers do it very differently:
 
 - **Scanning** awaits it (`await reid.embed(...)`), but only for the frames behind a gallery sample that survived selection, *after* selection has run. Selection itself never looks at `reid`. See [Scanning → Deferred work](scanning.md#5-deferred-work-and-what-it-saves).
 - **The tracker** never awaits it. It takes whatever `reid.latest(track)` already holds and asks for a fresh one for next time.
 
-Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap. All vectors are L2-normalised.
+Colour features are computed by drawing the region onto a tiny canvas (18×24 for histograms, 6×8 for the grid) and reading the pixels, which is cheap.
 
-`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning now attaches `reid` *after* averaging, `scan.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
+**`shape` is the one exception to normalisation.** `hist`, `lower`, `grid`, `embed` and `reid` are all L2-normalised, on both the live and the gallery side (`averageVectors`), which costs nothing because they are compared with cosine similarity — it divides by the magnitudes anyway. `shape` is compared as a **log ratio of aspects**, which is scale-*sensitive*, so it is averaged raw (`meanVector`) and an enrolled `shape[0]` is a genuine aspect ratio you can read. Normalising it, as the code used to, divided each aspect by its own vector's magnitude; since the second component is just the aspect times the frame's aspect ratio, that cancelled the aspect out entirely and every enrolled person ended up with the same value — 0.600 in a 4:3 frame — so the correct person scored 0. Fixed; the whole story is in [the bug report](../shape-feature-bug.md), and the gallery format change is why `SCAN_CACHE_VERSION` is 12.
+
+`averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning attaches `reid` *after* averaging, `scan-reid.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
+
+## Box range and the far band
+
+`boxQuality()` decides whether a detector box is worth a signature at all, and the answer is the
+advice shown during enrolment ("step a little closer"), checked in that order: too small
+(`too-far`), a bad aspect ratio (`partial-body`), then touching the frame edge while still small
+(`edge-clipped`).
+
+For live matching the size limit is `MIN_MATCH_HEIGHT_RATIO`, **0.18 of frame height**. At 720p
+that is 130 px, which is a 1.7 m person at roughly 10–12 m through a ~45° vertical field of view.
+It used to be an outright refusal: `usable: false`, and `bestAngleScore()` returned `null`, so a
+player past that distance was never identified **at any score**.
+
+That limit is real for the colour features and for the MobileNet blend, which read a crop that at
+this size is mostly interpolation. It is *not* real for re-identification, the one signal trained
+across scales and viewpoints. So below 0.18 a box falls into a **far band** where
+re-identification alone may still try it:
+
+| `range` | When | What may score it |
+| --- | --- | --- |
+| `ok` | passed `boxQuality()` | everything, unchanged — `rangePenalty` is `0` and the field is absent from the match |
+| `far-reid` | under 0.18 but above the far floor | `reid` only, and only above a **stricter** score |
+| `below-floor` | under `FAR_REID_MIN_HEIGHT_RATIO` (0.09) or `FAR_REID_MIN_WIDTH_RATIO` (0.025), or tall but too narrow | nothing, and no OSNet inference is spent on it either |
+| `partial-body` / `edge-clipped` | `boxQuality()`'s two non-distance refusals | nothing. Unchanged by the band |
+
+Both far floors are read off OSNet's own input size (128 × 256 in `reid.js`) at the point where the
+crop is **4× upscaled** — a quarter of the linear detail, a sixteenth of the pixels the model
+expects, which is where a standing person's distinguishing bands drop under about 8 px and a pixel
+of box jitter moves them by more than one band. Which floor binds depends on how slim the box is:
+for a standing person (aspect ~2.5 in a 16:9 frame) it is the width one, reached at about 0.111 of
+frame height, so the band buys roughly 1.6× the range — 10–12 m becomes 16–19 m. The height floor
+binds only for squatter boxes, where it reaches 0.09.
+
+A band box is charged a **penalty on the score it has to clear**, not a discount: a small crop is
+less trustworthy, so it must beat a higher bar. The penalty is the normalised shortfall below 0.18,
+squared — 0 at the line, rising to `FAR_REID_MAX_PENALTY` (0.11) at the floor, which puts the
+floor's requirement at 0.65 + 0.11 = **0.76**, the strictest row in [the measured
+table](#with-a-re-identification-embedding) below. Squared rather than linear so there is no step
+at 0.18: a detector box jittering across the line behaves the same on both sides.
+
+Two consequences are worth stating plainly, because they are what makes the band safe:
+
+- **At or above 0.18, behaviour is unchanged.** The penalty is 0 and `rangePenalty` is absent from
+  the match object entirely. `npm run eval:shape` is byte-identical over its 2880 sightings.
+- **A band box that can't clear its bar produces no ranking at all** — not a rejected one. That is
+  byte for byte what it produced before, so evidence accumulation, soft labels, the closed-set
+  assignment and a latched name all carry on behaving exactly as they did.
+
+`Tracker.update()` also stops asking `reid.js` for an embedding on a `below-floor` box. It used to
+request one before matching and the result was discarded at the `usable` gate, so every too-small
+box in frame bought a full 128 × 256 inference on every check.
+
+`rangeDiagnostics()` returns counts of why live boxes were refused since the last
+`resetRangeDiagnostics()` — `{ ok, tooFar, farReid, belowFloor, partialBody, edgeClipped }`, one
+increment per check. `farReid` is a box the band got through; `tooFar` is one it refused, for want
+of an embedding or for failing the stricter bar.
 
 ## The re-identification embedding (`reid.js`)
 
@@ -109,7 +171,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.72 (`REID_MATCH_THRESHOLD`) | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune), plus the box's [range penalty](#box-range-and-the-far-band) if it was in the far band; inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -136,6 +198,8 @@ In **open-set** mode the best player is accepted only if all of these hold. Othe
 | Shape similarity | ≥ 0.36 | `shape` |
 | Lead over runner-up | ≥ 0.06 | `margin` |
 
+These floors apply to the `embed` blend as well as to colour alone — `rejectionReason()` skips them only when `hasReid`. That matters for the `shape` row: until the normalisation fix it could never be met, so **both** model-free paths rejected every open-set candidate that got that far, and `EVIDENCE_MIN_PART` (which applies the same floor to each part) stopped the tracker's evidence accumulator from ever filling. The gate is reachable again and the 0.36 is [unchanged on purpose](../development/configuration.md#identification).
+
 If the best match is the local player (`excludeId`), the result is rejected with reason `self`.
 
 ### Closed-set mode
@@ -145,7 +209,17 @@ The game runs matching in **closed-set** mode: the local player is included as a
 - **Colour only:** closed set assumes everyone visible is one of the room's players and accepts the best match anyway. That's survivable for weak colour features, but it's exactly what used to label bystanders as players.
 - **With `reid`:** the thresholds are kept (`accepted` is only true when nothing was rejected), because the scores are reliable enough to say "none of them". A bystander in frame stays "Person".
 
+That second guarantee used to hold only while **one** person was on screen: with two or more visible tracks, [closed-set assignment](#5-closed-set-assignment) reassigned every track from the raw rankings without consulting `accepted` or `reason` at all, so a bystander matching nobody still got a name. It now holds whatever the room contains — see that section for what the resolver may assign.
+
 The "is this good enough to shoot?" decision still belongs to the [targeting rules](app-flow.md#shooting).
+
+### One scale for the room
+
+A colour/`embed` cosine and an OSNet cosine are not the same quantity. Colour runs 0.95+ for the same person and 0.85–0.96 for a *different* person in similar clothes; OSNet runs 0.70–0.85 for the correct person. So the two can never be sorted against each other, and `roomScoresOnReid()` decides **per room**, not per pair: re-identification scores a room only when *every* enrolled player's gallery carries a `reid` vector, and one reid-less gallery puts everyone on the blended path.
+
+A gallery is all-or-nothing for `reid` (`screens/scan.js` enrols one or none), so the mix is always *across* players — a phone whose OSNet failed or timed out, or a restored cache from before it existed. Deciding per pair meant that one player was read on the higher scale and became an attractor that outscored every correct re-identification match in the room, and because the winning match then had `hasReid: false` the colour accept path, the colour shot floor (0.48) and the colour-only initial lock (0.66) all applied to a name that was wrong.
+
+Dropping the whole room to the blend is a real loss of accuracy for the players who *do* have embeddings. It is still the better trade: the blend is a weaker signal applied consistently, where the mix was a stronger signal applied incomparably.
 
 ### The self-match guard
 
@@ -185,13 +259,15 @@ That last step matters: while the model is still warming up on a new track, the 
 
 ### 4. Evidence and hysteresis
 
-Each check adds **evidence** for the matched player, and old evidence decays (×0.82 per check). Accepted matches add 1.25; plausible-but-rejected ones add `0.45 +` however far the score is above the evidence floor; weak ones add nothing. A player becomes the evidence winner once they have at least 0.58 and lead the next player by 0.12.
+Each check adds **evidence** for every player it scored, and old evidence decays (×0.82 per check). The accepted winner adds 1.25; plausible runners-up add `0.45 +` however far the score is above the evidence floor; weak ones add nothing. A player becomes the evidence winner once they have at least 0.58 and lead the next player by 0.12.
+
+A check rejected for `margin` adds nothing at all, to either side. And "every player it scored" is what makes the 0.12 lead mean anything: only the single best candidate used to be recorded, so against a *persistent* narrow leader the runner-up's bucket stayed empty, the lead was the leader's whole bucket, and the margin was passed trivially on every check — it only ever bit on rapid alternation, never on the stable near-tie it reads as guarding. Between them those two were how a tie got named anyway, two checks later, by the one route that had not been told it was a tie (`evidenceWinner` is consulted *before* `softLabelMatch`).
 
 The floors for "plausible" depend on the signal:
 
 | | Minimum score to count as evidence | Minimum score for a soft label |
 | --- | --- | --- |
-| With `reid` | 0.62 (`REID_EVIDENCE_MIN_SCORE`) | 0.66 (`REID_SOFT_LABEL_SCORE`) |
+| With `reid` | threshold (`reidEvidenceMinScore()`) | threshold (`reidSoftLabelScore()`) |
 | Colour | 0.42 (`EVIDENCE_MIN_SCORE`), and each part ≥ 0.24 | 0.48 (`SOFT_LABEL_SCORE`), and each part ≥ 0.24 |
 
 A *soft label* is a rejected match that is still good enough to be the track's candidate for the hysteresis below. Matches rejected for `margin` are never soft-labelled: an ambiguous frame should not nudge the identity either way.
@@ -200,16 +276,41 @@ The identity then changes only through hysteresis:
 
 | Situation | Needed to (re)assign |
 | --- | --- |
-| New track, very confident match (score ≥ 0.80 with `reid`, ≥ 0.66 without) | 1 check |
+| New track, very confident match (score ≥ threshold + 0.08, at least 0.80, with `reid`; ≥ 0.66 without) | 1 check |
 | New track, otherwise | 2 agreeing checks in a row |
 | Track already identified as someone else | 4 agreeing checks in a row |
 | Check finds no candidate | Identity is **kept**. A known track only loses its identity when it disappears, loses a conflict, or another player wins the switch. |
 
 This stops a single blurry or side-on frame from flipping who you'd be credited with shooting.
 
+#### Revocation: when a name is dropped rather than changed
+
+Separately from the switch above, a named track can have its name *revoked* — nobody else won it, this just isn't that player any more (they walked off and a bystander stepped into the same box). `revokedByReid()` needs two things to agree, because the raw score and the median answer different questions:
+
+- the **raw** score for the track's own player is below `REID_REVOKE_SCORE` (0.6) on `REID_REVOKE_CHECKS` (3) consecutive checks — the fast trigger, and nothing is revoked without it;
+- **and** the median has stopped clearing the accept floor — the authority, since the median is what granted the name and what [grants the shot](app-flow.md#shooting).
+
+Revocation used to read the raw score alone, which overrode the median in exactly the case the median exists for. Three consecutive checks is 750–900 ms at `RECHECK_MS`: an ordinary side view or motion-blur burst, not a substitution. A player holding 0.84–0.87 with a three-check burst at 0.55 lost their name, their evidence **and** the whole history the median was built from, then spent ~600 ms unidentified while it refilled from a single sample. Under `?motion=on` the two were further apart still, since acceptance saw `median + motionAdjust` and revocation saw neither.
+
+Tying them together costs one check of latency on a genuine substitution (a 0.95 player replaced by a 0.30 stranger loses the name on the fourth bad check rather than the third). That check is also the first on which the median falls under the shot floor, so the substitute was never shootable any earlier either: the extra latency is in the displayed name only, and the name and the shot are now lost together instead of one to two checks apart.
+
+When a name does go, it goes completely: `clearIdentity()` resets the evidence buckets, the re-identification history and both miss counters along with the identity. Leaving those behind meant a track cleared mid-dip was revoked again by the *first* low check after being re-named, and a track cleared by duplicate resolution kept a full bucket for the player it had just lost — which the evidence winner then re-proposed, flip-flopping the track every two checks and restarting its shot lock each time.
+
 ### 5. Closed-set assignment
 
-In closed-set mode with two or more visible tracks, `resolveClosedSetIdentities()` solves the assignment for all visible tracks together: it ranks every (track, player) pair by score, with small bonuses for margin, keeping the current identity, accumulated evidence and supporting angles, and assigns greedily so each player gets at most one track. Visible tracks left without a player become unknown.
+In closed-set mode with two or more visible tracks, `resolveClosedSetIdentities()` solves the assignment for all visible tracks together: it ranks every (track, player) pair by score, with small bonuses for margin, keeping the current identity, accumulated evidence and supporting angles, and assigns greedily so each player gets at most one track.
+
+What it may assign is the whole question, and it is bounded by three rules — without them a greedy pass over the raw rankings silently overrode every accept threshold, both streak counters and the latch, whenever a second person was on screen:
+
+| Rule | Why |
+| --- | --- |
+| Only candidates that clear the accept floors are considered — the threshold plus any [range penalty](#box-range-and-the-far-band) with `reid`, or 0.48 and each part ≥ 0.24 without | The resolver chooses *among* credible candidates; it does not manufacture one. A bystander whose best score is 0.07 offers nothing to assign |
+| A track whose top two candidates are inside the accept margin offers nothing | That is a tie, and which name lands on which person would be decided by the sort order. Waiting is the documented behaviour |
+| A track already holding a name offers only that name | Changing an identity is the switch hysteresis' job (4 agreeing checks). A greedy pass that reassigns on one check is how a look-alike takes a name |
+
+A track the resolver does not assign **keeps whatever the per-track logic left it**, latched name included — the resolver used to clear it, which overrode the "check finds no candidate → identity is kept" rule in the table above for no better reason than that someone else was in frame. The one case that still clears is the one the resolver exists for: the track holds a player this resolution has just given to a better-supported track.
+
+The bound on the third rule is worth being precise about: it governs *when* a name may change, not whether a track may ever be reassigned. A track that has lost its name is a free agent on the next check, and giving it its next-best unclaimed player is exactly what closed-set assignment is for.
 
 ### 6. Duplicate resolution
 
@@ -217,7 +318,7 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 
 ## Motion confirmation (`motion/`)
 
-Motion tracking is disabled by default. The code below is used only when the page is opened with `?motion=on` or `?motion=strict`.
+Motion tracking is on by default. The code below is skipped when the page is opened with `?motion=off`.
 
 Appearance alone can't tell apart two people in similar clothes, and it can put a player's name on a bystander who happens to look like them. Motion matching adds a signal that has nothing to do with appearance: **every phone knows how much it is being moved, and the camera can see how much each person on screen is moving.** They should rise and fall together for the right pairing, and be unrelated for a wrong one.
 

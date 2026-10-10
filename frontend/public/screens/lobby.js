@@ -10,7 +10,7 @@ import { canvas, video, $ } from '../env.js';
 import { stopCamera } from '../camera.js';
 import { clearActiveLobby, state } from '../state.js';
 import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '../roster.js';
-import { send, showConnectionProblem } from '../net.js';
+import { leaveRoom, send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, enterGame, updateCountdown } from './game.js';
 import { setJoinStatus } from './join.js';
 import { beginPlayerScan, hideScanCountdown } from './scan.js';
@@ -57,7 +57,12 @@ export function renderLobby() {
     }
     list.append(row);
   }
-  $('launch-btn').disabled = !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
+  // Launch needs a live connection as much as it needs a startable round: `start` goes out over
+  // the connection, so with it down the button would hand the player a 3 s countdown into a round
+  // the server never hears about, on a game screen with no way back out. net.js re-renders the
+  // lobby whenever the connection comes or goes (showConnectionProblem).
+  $('launch-btn').disabled =
+    !state.connected || !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
 }
 
 export function showLobby(message = '') {
@@ -80,8 +85,10 @@ export function showLobby(message = '') {
 export function leaveLobby() {
   state.autoScanning = false;
   state.postProcessingScan = false;
-  state.conn?.close({ notify: true });
-  state.conn = null;
+  // leaveRoom, not conn.close: a drop in the last second and a half has a reconnect pending, and
+  // it would rejoin this room - name/room/resumePlayerId are all still set below on purpose - as
+  // a player nobody can scan or shoot while this phone sits on the join screen.
+  leaveRoom({ notify: true });
   state.events?.close();
   state.events = null;
   clearActiveLobby();

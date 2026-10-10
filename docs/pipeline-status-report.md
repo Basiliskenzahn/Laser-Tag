@@ -82,13 +82,25 @@ motion is off by default.
 
 ## Four decisions that need a human
 
-### 1. The `shape` feature is inert and needs a tuning call
+> Since this was written, the *code* half of decision 1 has landed — the `shape` scale mismatch is
+> fixed. The decision itself, what the thresholds built on it should be, is untouched and still
+> wants a human. Numbered as it was, to keep the report readable alongside its references.
 
-Gallery entries are L2-normalised by `averageSignatures()`; live signatures are not.
-`shapeSimilarity()` compares the two anyway, so the same person scores **0** instead of ~1. One
-of four colour-path guards never fires, and the evidence accumulator never fills through that
-path. Fixing the scale changes real accept/reject behaviour and needs `MIN_SHAPE_SCORE` /
-`EVIDENCE_MIN_PART` retuned with it — which is why it is still open rather than quietly patched.
+### 1. The `shape` feature was inert — fixed; the tuning call is still the decision
+
+Gallery entries were L2-normalised by `averageSignatures()`; live signatures were not.
+`shapeSimilarity()` compared the two anyway, so the same person scored **0** instead of ~1. One
+of four guards never fired on either model-free path, and the evidence accumulator never filled
+through them.
+
+**The scale mismatch is fixed** (`shape` is averaged raw; `luxkaiwalker/shape-normalisation`).
+What remains is exactly the part that needed a human: `MIN_SHAPE_SCORE` (0.36) and
+`EVIDENCE_MIN_PART` (0.24) are left where they are, so the gate is now *reachable* but not
+*recalibrated*. On a synthetic population through the real matcher
+([evaluation](shape-normalisation-evaluation.md)) the corrected gate at 0.36 rejects 0% of correct
+pairs and 0% of wrong-person ones — harmless, and useless as a discriminator between people.
+Deciding whether it should be stricter needs the per-part `s` scores off a phone where OSNet does
+not load, which is item 3 below in miniature.
 
 ### 2. Whether MobileNet stays
 

@@ -59,7 +59,7 @@ docker-compose.yml
 - **No runtime dependencies beyond what's there.** The client only uses MediaPipe and ONNX Runtime Web; the Python server only uses aiohttp. Versions are pinned exactly.
 - **Comments explain why**, not what. Modules start with a short header comment describing their role, and anything tuned against measurements records the numbers (see the threshold tables in `identify.js` and `motion/matching.js`).
 - **Small, named constants** at the top of each module rather than magic numbers. Document new tunables in [Configuration](configuration.md).
-- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, opt-in motion, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
+- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, motion, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
 - **Keep browser APIs out of pure logic.** `motion/matching.js` touches no DOM and is therefore unit-tested in Node. Prefer that split for new identification logic over mocking the browser.
 - **User-facing errors are plain sentences** that say what to do ("step a little closer"), not codes.
 
@@ -84,6 +84,7 @@ If you add, remove or resize a signature field in `identify.js`:
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES` (and nginx's `client_max_body_size`);
 - update the scan cache validator `validScanCache()` if the field is required;
 - round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
+- decide whether `averageSignatures()` should L2-normalise it. The default (`averageVectors`) does, and that is free for anything compared with `cosine()`. A field compared any other way may need the raw mean (`meanVector`) instead — `shape` is compared as a log ratio of aspects and does, which is [what went wrong](../shape-feature-bug.md) when it didn't. Changing a field's scale is itself a format change: bump the cache version for it.
 - decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `motion-identity.js` too.
 
 `reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
@@ -93,7 +94,7 @@ If you add, remove or resize a signature field in `identify.js`:
 - Model files live in `frontend/public/models/` and are referenced by URL constants at the top of `detector.js` (MediaPipe models) and `reid.js` (the OSNet `.onnx`).
 - `@mediapipe/tasks-vision` and `onnxruntime-web` are pinned in `package.json`. After bumping either, run `npm install` to update `package-lock.json`. `frontend/Dockerfile` copies both packages out of `node_modules` (to `/vendor/tasks-vision/` and `/vendor/ort/`) in its build stage.
 - New file types need a MIME type in `frontend/common-locations.conf`. (`.onnx` is currently served as `application/octet-stream` by the fallback, which browsers are happy with.) New files anywhere under `frontend/public/` don't need any other Docker change - `frontend/Dockerfile` copies the whole directory.
-- Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring `REID_MATCH_THRESHOLD` — a wrong pre-processing step degrades accuracy silently rather than failing.
+- Replacing the re-identification model means re-checking `WIDTH`/`HEIGHT`/`MEAN`/`STD` and `REID_DIMS` in `reid.js` and re-measuring the re-identification threshold (`REID_DEFAULT_THRESHOLD` in `identify.js`) — a wrong pre-processing step degrades accuracy silently rather than failing.
 
 ## Known issues and loose ends
 

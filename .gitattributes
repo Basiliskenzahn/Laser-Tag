@@ -1,3 +1,17 @@
 *.sh text eol=lf
 *.conf text eol=lf
 Dockerfile text eol=lf
+
+# The workflow and the compose file are read by Linux tooling, and both carry shell inside
+# them. A Windows clone committing CRLF would put a \r at the end of every line of the
+# deploy step's `run: |` block, so the VM would be asked to `git checkout dev\r` - which
+# fails in a way that reads as a git problem rather than a line-ending one.
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Not text. Without this, a .gitattributes `text=auto` or a Windows checkout could rewrite
+# bytes inside a FlatBuffer or protobuf container and corrupt a model with no visible diff.
+*.tflite binary
+*.task binary
+*.onnx binary
+*.wasm binary

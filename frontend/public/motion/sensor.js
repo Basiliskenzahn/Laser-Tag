@@ -13,8 +13,10 @@
 import { SAMPLE_MS } from './matching.js';
 
 // The shooter's own turning (deg/s) above which camera-image motion isn't trusted: following a
-// target with the camera hides their movement. Holding a phone to aim stays well below this.
-const PANNING_DEG_PER_S = 10;
+// target with the camera hides their movement. 10 deg/s masked most of a hand-held phone's time
+// (small aiming corrections exceed it), so motion almost never got to decide; real panning to
+// follow someone is faster than this.
+const PANNING_DEG_PER_S = 25;
 const HISTORY_MS = 12_000;
 
 export class MotionSensor {
@@ -43,8 +45,13 @@ export class MotionSensor {
     window.addEventListener('devicemotion', this.onMotion);
   }
 
+  // Idempotent, and safe on a sensor that was never started: motion-identity.js calls it from the
+  // leave path, which cannot know how far a permission prompt got.
   stop() {
+    if (!this.onMotion) return;
     window.removeEventListener('devicemotion', this.onMotion);
+    this.onMotion = null;
+    this.bin = null; // a stopped sensor must not flush a half-filled bin into `outgoing`
   }
 
   get receiving() {

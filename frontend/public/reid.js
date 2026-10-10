@@ -7,8 +7,8 @@
 // enrolled players with 20 bystanders each, it recognised 77% of players at a 5% bystander
 // acceptance rate, against 34% for the colour + MobileNet signature. This is a *game-level*
 // number (several checks, the tracker's hysteresis, 20 bystanders at once); identify.js's
-// REID_MATCH_THRESHOLD comment gives the *per-single-check* figures the 0.72 threshold was
-// picked from (83% recognised / 7.6% bystanders accepted at that threshold alone) - the two
+// REID_DEFAULT_THRESHOLD comment gives the *per-single-check* figures the threshold was
+// picked from (at 0.70: 87% recognised / 10.8% bystanders accepted per check) - the two
 // aren't the same measurement, so don't expect them to match if you're comparing numbers.
 //
 // Because of that, it overrides the other appearance signals outright rather than being blended
@@ -43,7 +43,17 @@ export async function createReid() {
   ort.env.wasm.wasmPaths = '/vendor/ort/';
   // Threads need cross-origin isolation; a single thread is plenty for this small model.
   ort.env.wasm.numThreads = globalThis.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
-  const session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  // Run inference in a Web Worker ("proxy") so it never blocks the main thread, where the person
+  // detector and the drawing run. Falls back to the main thread if the worker can't start.
+  ort.env.wasm.proxy = true;
+  let session;
+  try {
+    session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  } catch (err) {
+    console.warn('Re-identification worker unavailable, running on the main thread', err);
+    ort.env.wasm.proxy = false;
+    session = await ort.InferenceSession.create(MODEL_URL, { executionProviders: ['wasm'] });
+  }
 
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;

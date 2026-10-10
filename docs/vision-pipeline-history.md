@@ -24,7 +24,7 @@ model inventory.
 | PR #7 | `84e374c` | `closedSet` assignment, and `SHOT_REFRESH_MAX_AGE_MS` — a forced fresh detection when you fire. |
 | improved-classifier | `f4dfa39` | **OSNet x0.25** (4th model), purpose-built person re-identification. |
 | **PR #9** | `3a428dc` | **Phone motion matching** — the first signal that isn't vision at all. |
-| unmerged (`detection-tuning`) | `05c78f0` … `3a9f783` | Colour features skipped when re-id covers the room; OSNet moved to a Web Worker; cadence 80/120 ms with a duty cap; velocity-projected boxes; every re-id gate tied to the accept threshold. |
+| `detection-tuning` (Basiliskenzahn) | `05c78f0` … `3a9f783` | Colour features skipped when re-id covers the room; OSNet moved to a Web Worker; a detection duty cap; velocity-projected boxes; a 3 s median over re-id scores; every re-id gate tied to one `?reid=`-tunable accept threshold (0.65). Merged here **without** its last commit (`335ccac`, camera zoom) and **without** its 80/120 ms cadence — see [BRANCH.md](../BRANCH.md). |
 
 ## Two things the history makes obvious
 
@@ -93,4 +93,8 @@ real tradeoff, not a free win, which is why it is recorded here rather than acte
 - [Scanning](client/scanning.md) — enrolment, and the scan path's own model usage
 - [Detection pipeline audit](detection-pipeline-audit.md) — per-stage cost and accuracy, and which
   of those numbers are measured versus simulated
-- [Streamlining](streamlining.md) — the open backlog, including the inert `shape` feature
+- [Streamlining](streamlining.md) — the open backlog
+- [The `shape` feature was inert](shape-feature-bug.md) and
+  [what fixing it measured](shape-normalisation-evaluation.md) — one guard that scored 0 for the
+  correct person on both model-free paths, now corrected with its thresholds deliberately left
+  alone

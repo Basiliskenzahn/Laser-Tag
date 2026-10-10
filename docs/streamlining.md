@@ -59,6 +59,38 @@ directly instead of through `hitTest()`.
 Now: moved to `deprecated/public-dead-code.js` and deleted from the live files. See that file's
 header for exactly what each piece used to do.
 
+### `shape` similarity was silently broken - now fixed, with the tuning call still deferred
+
+Was: found while documenting `identify.js`. `shapeSignature()` returns a raw `[aspect,
+heightRatio/widthRatio]` pair. Live signatures kept that raw; but every **gallery** entry is the
+output of `averageSignatures()`, which ran everything (including `shape`) through
+`averageVectors()` - which L2-**normalises**. So a live signature's `shape` vector and the
+matching gallery sample's were on different scales, and `shapeSimilarity()` (the one comparison in
+the file that isn't scale-invariant) compared them anyway: live `[2.25, 3.0]` vs. the same
+person's gallery entry `[0.6, 0.8]` returned 0 instead of ~1. Worse than it first looked, because
+the two components are collinear - normalising cancelled the aspect out and gave *every* enrolled
+person the same gallery value, 0.600 in a 4:3 frame.
+
+Practical effect: `MIN_SHAPE_SCORE` (0.36) always rejected, and because `EVIDENCE_MIN_PART`
+requires the same floor of every colour part, **the evidence accumulator never fired at all** -
+identification rested entirely on the closed-set forced-accept path and the `INITIAL_STREAK`
+fast-lock, bypassing the slower, more careful evidence-based path. This applied to the
+MobileNet-embedding path as well as the colour-only one, since the per-part floors are skipped only
+for `hasReid`; the original write-up said colour-only and was too narrow.
+`frontend/public/identify.test.js` and `test/reid-matching.test.js` didn't catch it because their
+hand-built galleries use raw `shape` values on both sides, matching the bug's assumption.
+
+Now (`luxkaiwalker/shape-normalisation`): `shape` is averaged raw (`meanVector`) while every
+cosine-compared field keeps the normalised path, `SCAN_CACHE_VERSION` is bumped to 12, and
+`test/shape-signature.test.js` covers the seam through the real extraction path.
+
+What's still open, deliberately: `MIN_SHAPE_SCORE` and `EVIDENCE_MIN_PART` are **unchanged**. The
+fix makes them reachable rather than retuned, and choosing new values needs a real colour-only
+score distribution off a phone - the only ones that exist are synthetic
+([the evaluation](shape-normalisation-evaluation.md), [the report](shape-feature-bug.md)). That is
+the product/tuning decision this document exists to flag, and it is now the *only* part of this
+item left.
+
 ## Structural (highest impact)
 
 ### No CI test gate before deploy
@@ -75,28 +107,6 @@ from whoever owns the hackathon server credentials, not a drive-by change bundle
 restructuring pass.
 
 ## Known bugs / risks, deferred on purpose
-
-### `shape` similarity is silently broken in colour-only matching
-
-Found while documenting `identify.js`. `shapeSignature()` returns a raw `[aspect,
-heightRatio/widthRatio]` pair. Live signatures keep that raw; but every **gallery** entry is the
-output of `averageSignatures()`, which runs everything (including `shape`) through
-`averageVectors()` - which L2-**normalises**. So a live signature's `shape` vector and the
-matching gallery sample's `shape` vector are on different scales, and `shapeSimilarity()` (the
-one comparison in the file that isn't scale-invariant) compares them anyway. Measured for a
-typical box: live `[2.25, 3.0]` vs. the same person's gallery entry `[0.6, 0.8]` - `shapeSimilarity`
-returns 0 instead of ~1.
-
-Practical effect: `MIN_SHAPE_SCORE` (0.36) always rejects on the colour-only path, and because
-`EVIDENCE_MIN_PART` requires the same floor, **the evidence accumulator never fires in colour-only
-mode** - identification there rests entirely on the closed-set forced-accept path and the
-`INITIAL_STREAK` fast-lock, bypassing the slower, more careful evidence-based path the other three
-signals get. `identify.test.js` doesn't catch this because its hand-built test galleries use raw
-`shape` values on both sides, matching the bug's assumption.
-
-Not fixed because: normalising consistently, or making `shapeSimilarity` scale-invariant, changes
-real matching behaviour and would need re-tuning `MIN_SHAPE_SCORE`/`EVIDENCE_MIN_PART` afterward -
-a product-quality tradeoff, not a mechanical fix.
 
 ### Motion fusion can veto or silently retarget a correct identification
 
@@ -150,6 +160,32 @@ code calls them today - listed so they don't surprise someone who changes a call
   caller passes both.
 - `visualActivity()` divides by box height with no guard against zero. `detectTrackedPeople`
   already filters boxes to `h > 8`, so unreachable in practice.
+
+## Model delivery: two header problems holding back the client
+
+Both are one-line nginx changes with real, measurable client wins, and neither can be fixed from
+JavaScript. Found while cutting the join → lobby wait (`luxkaiwalker/startup-latency`).
+
+- **OSNet always ran single-threaded — now fixed.** `reid.js` asks for
+  `crossOriginIsolated ? min(4, hardwareConcurrency) : 1` WASM threads, and nothing served the
+  `Cross-Origin-Opener-Policy: same-origin` / `Cross-Origin-Embedder-Policy: require-corp` headers
+  that `crossOriginIsolated` requires, so the ternary had only ever taken its `1` branch — the
+  image shipped `ort-wasm-simd-threaded.wasm` and used it to do the non-threaded build's job.
+  `frontend/cross-origin-isolation.conf` now serves both headers from every static location.
+  The caveat recorded here was checked rather than assumed: `require-corp` blocks any
+  cross-origin subresource that does not opt in, and the client loads none — no CDN, no web
+  font, no analytics — while the camera is a `MediaStream`, not a fetched subresource, so it is
+  unaffected. Failure is one-directional: if isolation does not take effect,
+  `crossOriginIsolated` is false and the fallback is exactly the old behaviour.
+  **Still unmeasured on a phone** — the thread count is visible in `?debug`.
+- **The models are served `no-store`, so they are re-downloaded every single page load.**
+  `frontend/common-locations.conf` sets `Cache-Control: no-store, max-age=0` on `.tflite`, `.task`,
+  `.wasm` and `.mjs`. For the HTML and the app JS that is deliberate and right. For 18 MB of
+  immutable model weights with content-addressable names it means a phone that reloads the page —
+  or rejoins after a crash, which the `activeLobby` resume path exists to make cheap — pays the
+  whole 18 MB again. It also forecloses the obvious startup optimisation: you cannot prefetch a
+  model into the HTTP cache to overlap its download with another model's initialisation, because
+  the browser is forbidden from reusing the response. `startup.js` documents why it does not try.
 
 ## Smaller things
 

@@ -1,6 +1,6 @@
 # Stage 1: just to get the browser runtimes (MediaPipe tasks-vision, ONNX Runtime Web) onto disk -
 # nginx has no npm, and the frontend doesn't need anything else from node_modules.
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
@@ -14,6 +14,8 @@ COPY --from=deps /app/node_modules/@mediapipe/tasks-vision/ /usr/share/nginx/htm
 COPY --from=deps /app/node_modules/onnxruntime-web/dist/ /usr/share/nginx/html/vendor/ort/
 COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
 COPY frontend/common-locations.conf /etc/nginx/common-locations.conf
+# Included by every static location in common-locations.conf; without it nginx refuses to start.
+COPY frontend/cross-origin-isolation.conf /etc/nginx/cross-origin-isolation.conf
 COPY frontend/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 

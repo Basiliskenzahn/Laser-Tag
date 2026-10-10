@@ -20,17 +20,28 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
-`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one replaces the first poll's waiter, which never resolves on its own.
+`/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. The client is expected to hold only one poll open per session, but two are handled: each parked poll gets its own future and all of them are woken, so neither can orphan the other.
 
 A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
+
+A mailbox can also be *evicted* before that, which makes its next poll — and any poll already parked on it — a `410` rather than leaving the phone to be answered `200` with nothing in it. A `200` is the one thing the client reads as "nothing has happened", so a dead session has to fail a poll or the phone never finds out. Evictions happen when another session adopts the player's seat (`replaced`), when the reaper drops it for going quiet (`expired`), and when the mailbox overflows (`overflow`).
 
 Errors:
 
 | Status | When | Client should |
 | --- | --- | --- |
-| `410 {"error": "Unknown session"}` | Unknown or expired token | Reconnect with a new `/api/connect` |
-| `400` | Body isn't valid JSON | Fix the request |
-| `413` | Body over `MAX_BODY_BYTES` (1 MB) | Send less |
+| `410 {"error": "Unknown session", "reason": "replaced"}` | Another session took over this player's seat | **Not** come back as the same player — the seat is in use. See [Seat handover](#seat-handover) |
+| `410 {"error": "Unknown session", "reason": …}` | `expired`, `overflow`, or `unknown` for a token already forgotten | Reconnect with a new `/api/connect` |
+| `400 {"error": …}` | Body isn't valid JSON, or isn't a JSON object where one is required | Fix the request |
+| `413 {"error": "Body too large"}` | Body at or over `MAX_BODY_BYTES` (1 MB) | Send less |
+
+`reason` is advisory: it is only known while the server still holds the mailbox, so a token the reaper has already forgotten reports `unknown`. Any `410` without `reason: "replaced"` means reconnecting is right.
+
+### Seat handover
+
+A phone that reloads or whose connection dropped comes back with the `playerId` it remembers and adopts its old seat, keeping its hp and wins (see [`join`](#join)). Whoever held that seat is displaced: their mailbox is evicted with `reason: "replaced"`, so their poll fails and they stop being the push target.
+
+The server cannot tell a genuine reconnect from a second tab — both are "a phone claiming a seat whose previous holder still looks live" — and it resolves that in favour of the reconnect, because a phone that lost its connection mid-round must be able to get its seat back. The consequence is that two tabs on one seat will take it from each other in turn rather than one of them silently freezing. A client that honours `reason: "replaced"` by *not* re-adopting ends that exchange after one round trip; one that re-adopts unconditionally will keep swapping.
 
 ### `POST /api/hit`
 
@@ -80,7 +91,7 @@ Sent with `POST /api/send`.
 | `gallery` | No | The player's scan, if they already have one. See [Gallery format](#gallery-format). |
 | `debug` | No | `true` also adds a [debug clone](game-rules.md#debug-clones) |
 
-Only the first `join` per session counts. Replies: `welcome`, then `state` and `roster` to everyone in the room; or `error` (*"Lobby is already running."*, *"Room is full"*).
+Only the first `join` per session counts. Replies: `welcome`, then `state` and `roster` to everyone in the room; or `error` (*"Lobby is already running."*, *"Room is full"*). The joiner's own `roster` is always the **complete** one, including when it is a resume — see [The roster delta](#the-roster-delta).
 
 ### `scan`
 
@@ -88,7 +99,7 @@ Only the first `join` per session counts. Replies: `welcome`, then `state` and `
 { "type": "scan", "targetId": "<player id>", "gallery": [ … ] }
 ```
 
-Saves a scan for any player in the room. Replies `scanSaved` to the sender, then `roster` and `state` to everyone; or `error`.
+Saves a scan for any player in the room. Replies `scanSaved` to the sender, then `roster` and `state` to everyone; or `error`. Only the scanned player's gallery travels, not the whole room's — see [The roster delta](#the-roster-delta).
 
 ### `start`
 
@@ -119,11 +130,60 @@ Delivered through `/api/poll`.
 | `welcome` | `id` | Joiner | Join succeeded. `id` is your player id. |
 | `error` | `message` | Sender | A join, scan or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
-| `roster` | `players: [{id, name, gallery}]` | Everyone in the room | Joins, leaves, scans |
+| `roster` | `players: [{id, name, gallery?}]` | Everyone in the room, each their own [delta](#the-roster-delta) | Joins, leaves, scans |
 | `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
 | `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
+
+### The roster delta
+
+Every phone matches locally against everyone's signatures, so every gallery genuinely has to reach every phone ([Identification](../client/identification.md)). What does *not* have to happen is sending all of them to everyone again whenever one of them changes.
+
+So `roster` is a per-connection delta:
+
+- **Membership is always complete.** Every player in the room appears in every `roster` message, with `id` and `name`. One message is enough to tell who is in the room and who left.
+- **`gallery` is conditional.** It is attached only when that player's scan differs from the one this connection was last handed. An entry with **no `gallery` key** means *keep the one you already have*.
+- An entry **with** `gallery: []` is a real value — a player nobody has scanned yet — and is not the same thing as a withheld gallery.
+
+```json
+{ "type": "roster", "players": [
+  { "id": "a", "name": "Alice" },
+  { "id": "b", "name": "Bob", "gallery": [ … ] }
+] }
+```
+
+Alice's scan is unchanged; Bob was just scanned.
+
+The server tracks what it has sent per *session* (`Session.sent_gallery_revs`, keyed by the `gallery_rev` counter on each `Player`), not per player. That is what makes this safe without any version negotiation or client acknowledgement: a session is one conversation with one phone, and every way of losing a message — a dropped poll, a `410`, a reload, a reconnect, an evicted mailbox — ends that conversation. The phone then opens a new session, which has an empty record and is therefore sent **the whole roster in full**. There is no state a phone can reach where it believes it holds a gallery the server never delivered, and deltas cannot arrive out of order because the server only ever withholds what it has already put on that same wire.
+
+That last clause is the load-bearing one, and four things hold it up:
+
+- A revision is recorded only *after* the mailbox has accepted the message carrying it (`broadcast_roster` keys off what `Session.send` returns), never before building it.
+- An over-full mailbox never drops a `roster`. It sheds superseded `state` snapshots and the oldest `motion` relays, both of which the client can lose without being misinformed, and is evicted outright once only undroppable messages are left (`Poller._shed`).
+- Eviction clears `sent_gallery_revs` along with the queue, so a mailbox that *did* have messages thrown away cannot also claim it delivered them.
+- `Room.join` refuses to reseat an id that is already in the room, because that would reset `gallery_rev` to `0` and make "same revision" mean two different galleries.
+
+What remains outside the server's knowledge is a poll response that is built and then fails to reach the phone: the mailbox has already handed it over. The client covers that by treating any failed poll as fatal and discarding its token, which ends the session. **A client that retried a poll instead of reconnecting would reintroduce the stale-gallery bug** — on a failed poll it must reconnect.
+
+A clone's entry follows the owner it borrows its gallery from (`Room.mirrored_gallery_rev`), so rescanning the owner re-sends the clone's entry too.
+
+Client side: `mergeRoster()` in `frontend/public/roster.js`.
+
+#### Why: the cost it replaces
+
+A full gallery is ~190 KB of JSON. Sending the whole roster to everyone meant **N × N** copies of that per scan. Measured against the real server with 24-sample galleries, for one scan in a room of N:
+
+| Players | Was (egress / scan) | Now | What the scanning phone waits for |
+| --- | --- | --- | --- |
+| 2 | 865 KB | 382 KB | 433 KB → 191 KB |
+| 4 | 3459 KB | 764 KB | 865 KB → 191 KB |
+| 6 | 7782 KB | 1148 KB | 1297 KB → 191 KB |
+| 8 | 13833 KB | 1533 KB | 1729 KB → 192 KB |
+
+Egress is now linear in the room size instead of quadratic, and what the *scanner* waits for is flat: one gallery, whatever the room size. That last column was the user-visible bug — `scanSaved` shares a poll response with the roster, so the scanning phone had to pull down its whole share of the fan-out before it could see its own scan being confirmed.
+
+(Part of the drop is unrelated to the delta: poll responses are now serialised without `json.dumps`' default whitespace, which was ~13% of every body. See `compact_dumps` in `app.py`.)
 
 ### State snapshot
 
@@ -167,4 +227,10 @@ A gallery is an array of samples, one per viewing angle. The server cleans it de
 
 Field meanings: [Identification → Signatures](../client/identification.md#signatures). A new signature field must be added to `GALLERY_FIELDS` in **both** servers, or it will be silently dropped. `reid` is the [person re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs); it's optional in the format because a phone where the ONNX model failed to load still produces a usable colour-only gallery.
 
-**Watch the size.** `embed` and `reid` are rounded to 4 decimals by the client; the colour fields are sent at full float precision. A full 24-sample gallery is roughly **150 KB** of JSON with colour features only, and about **210 KB** with both embeddings. `MAX_BODY_BYTES` is 1 MB on both servers, and nginx allows 2 MB on `/api/`, so there's comfortable headroom — but if you add a field or more samples, round the values (as `compactEmbedding` and `reid.js`'s `normalize` do) and re-check both limits.
+`shape` is the one field whose *magnitude* matters: it holds raw box proportions (aspect ~0.6–7) rather than a unit vector, because it is compared as a log ratio rather than by cosine similarity. `clean_vector` only requires finite floats, so that passes through unchanged — but a sanitiser that ever starts clamping values to [-1, 1] would silently break it.
+
+**Watch the size.** `embed` and `reid` are rounded to 4 decimals by the client; the colour fields are sent at full float precision, which makes them the expensive half per number even though they are the smaller half per count. A full 24-sample gallery is roughly **150 KB** of JSON with colour features only and **190–300 KB** with both embeddings, depending on how many digits the colour features come out with — measured at **190 KB** with everything rounded to 4 decimals, which is the floor. `MAX_BODY_BYTES` is 1 MB on both servers, and nginx allows 2 MB on `/api/`, so there's comfortable headroom — but if you add a field or more samples, round the values (as `compactEmbedding` and `reid.js`'s `normalize` do) and re-check both limits.
+
+Rounding the **colour** fields the way the embeddings already are would be the single biggest saving still on the table, and unlike dropping a field it costs no matching accuracy that 4 decimals of a normalised histogram bin can carry. It belongs with whoever owns the scan capture, not here.
+
+`embed` is the other obvious candidate, and it is **deliberately still sent**: ~22% of a gallery that the normal path never reads, because `identify.js` lets re-identification decide alone whenever every enrolled player has a `reid` vector. But it is the fallback for a phone whose OSNet model failed to load, and that is a property of the *receiving* phone, which the scanning phone cannot know — and `reid` loads asynchronously, after `join`, so a phone cannot usefully declare it up front either. Dropping it would silently remove graceful degradation for exactly the phone that needs it. Left in on purpose; see [Identification](../client/identification.md#signatures).

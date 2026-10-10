@@ -42,7 +42,9 @@ There's no timer that moves `countdown` to `playing`. Instead `update()` checks 
 
 ### `join(id, name, gallery)`
 
-Adds a player with full HP, 0 wins and the given gallery (possibly empty). Fails if a round is running or the room is full.
+Adds a player with full HP, 0 wins and the given gallery (possibly empty). Fails if a round is running, the room is full, or the id is **already seated** (*"Already in this room"*).
+
+That last one never happens in play: a reconnecting phone is routed to the seat-adoption path in `transport.Session._join` and a new one brings an id of its own. It is refused anyway because reseating would replace the `Player` and take `gallery_rev` back to `0`, which would tell every phone holding revision 0 to keep what it had about a different gallery — see [the roster delta](protocol.md#the-roster-delta).
 
 ### `setGallery(id, gallery)`
 
@@ -86,7 +88,8 @@ The surrounding server deletes a room once it's empty.
 The server sends two views of a room, so the big gallery data isn't resent on every shot:
 
 - `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive). Sent after every change.
-- `roster()`: each player's id, name and gallery. Sent only when membership or scans change.
+- `roster()`: each player's id, name and gallery. Sent only when membership or scans change — and then only the galleries the receiving phone doesn't already hold. `roster()` itself is the complete picture, which is what a freshly connected phone gets; `roster_entry(player, gallery=False)` is the identity-only line the transport uses for the rest. See [the roster delta](protocol.md#the-roster-delta).
+- `mirrored_gallery_rev()`: a counter that moves whenever `mirrored_gallery()` would return something new. Not a game rule — it exists so the transport can tell "already has it" from "has a stale copy".
 
 Exact formats: [Protocol](protocol.md#server--client-messages).
 
