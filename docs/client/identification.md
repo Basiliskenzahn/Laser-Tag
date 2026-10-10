@@ -36,7 +36,9 @@ Being optional is why neither is on the critical path into the lobby. It is also
 | `grid` | 192 | 6×8 grid of brightness, saturation and hue (as sin/cos weighted by saturation). A rough colour+shape fingerprint that *does* change with viewing angle. | x 8–92%, y 6–94% |
 | `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame. The only field kept on its **raw** scale rather than L2-normalised — see below | whole box |
 | `embed` | 256 | Optional MobileNetV3 embedding, compacted from the model's output and rounded to 4 decimals so galleries stay small | box with a little padding |
-| `usable` | bool | Whether the box is big and whole enough to trust (not sent to the server) | |
+| `usable` | bool | Whether the box passed `boxQuality()` outright — big and whole enough to trust (not sent to the server) | |
+| `range` | string | If it didn't, why: `far-reid`, `below-floor`, `partial-body` or `edge-clipped`. See [Box range](#box-range-and-the-far-band) | |
+| `rangePenalty` | number | How much extra a re-identification score must clear for this box. `0` for anything `usable` | |
 
 A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. Because inference is asynchronous it is attached by the caller afterwards — and the two callers do it very differently:
 
@@ -48,6 +50,62 @@ Colour features are computed by drawing the region onto a tiny canvas (18×24 fo
 **`shape` is the one exception to normalisation.** `hist`, `lower`, `grid`, `embed` and `reid` are all L2-normalised, on both the live and the gallery side (`averageVectors`), which costs nothing because they are compared with cosine similarity — it divides by the magnitudes anyway. `shape` is compared as a **log ratio of aspects**, which is scale-*sensitive*, so it is averaged raw (`meanVector`) and an enrolled `shape[0]` is a genuine aspect ratio you can read. Normalising it, as the code used to, divided each aspect by its own vector's magnitude; since the second component is just the aspect times the frame's aspect ratio, that cancelled the aspect out entirely and every enrolled person ended up with the same value — 0.600 in a 4:3 frame — so the correct person scored 0. Fixed; the whole story is in [the bug report](../shape-feature-bug.md), and the gallery format change is why `SCAN_CACHE_VERSION` is 12.
 
 `averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning attaches `reid` *after* averaging, `scan-reid.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
+
+## Box range and the far band
+
+`boxQuality()` decides whether a detector box is worth a signature at all, and the answer is the
+advice shown during enrolment ("step a little closer"), checked in that order: too small
+(`too-far`), a bad aspect ratio (`partial-body`), then touching the frame edge while still small
+(`edge-clipped`).
+
+For live matching the size limit is `MIN_MATCH_HEIGHT_RATIO`, **0.18 of frame height**. At 720p
+that is 130 px, which is a 1.7 m person at roughly 10–12 m through a ~45° vertical field of view.
+It used to be an outright refusal: `usable: false`, and `bestAngleScore()` returned `null`, so a
+player past that distance was never identified **at any score**.
+
+That limit is real for the colour features and for the MobileNet blend, which read a crop that at
+this size is mostly interpolation. It is *not* real for re-identification, the one signal trained
+across scales and viewpoints. So below 0.18 a box falls into a **far band** where
+re-identification alone may still try it:
+
+| `range` | When | What may score it |
+| --- | --- | --- |
+| `ok` | passed `boxQuality()` | everything, unchanged — `rangePenalty` is `0` and the field is absent from the match |
+| `far-reid` | under 0.18 but above the far floor | `reid` only, and only above a **stricter** score |
+| `below-floor` | under `FAR_REID_MIN_HEIGHT_RATIO` (0.09) or `FAR_REID_MIN_WIDTH_RATIO` (0.025), or tall but too narrow | nothing, and no OSNet inference is spent on it either |
+| `partial-body` / `edge-clipped` | `boxQuality()`'s two non-distance refusals | nothing. Unchanged by the band |
+
+Both far floors are read off OSNet's own input size (128 × 256 in `reid.js`) at the point where the
+crop is **4× upscaled** — a quarter of the linear detail, a sixteenth of the pixels the model
+expects, which is where a standing person's distinguishing bands drop under about 8 px and a pixel
+of box jitter moves them by more than one band. Which floor binds depends on how slim the box is:
+for a standing person (aspect ~2.5 in a 16:9 frame) it is the width one, reached at about 0.111 of
+frame height, so the band buys roughly 1.6× the range — 10–12 m becomes 16–19 m. The height floor
+binds only for squatter boxes, where it reaches 0.09.
+
+A band box is charged a **penalty on the score it has to clear**, not a discount: a small crop is
+less trustworthy, so it must beat a higher bar. The penalty is the normalised shortfall below 0.18,
+squared — 0 at the line, rising to `FAR_REID_MAX_PENALTY` (0.11) at the floor, which puts the
+floor's requirement at 0.65 + 0.11 = **0.76**, the strictest row in [the measured
+table](#with-a-re-identification-embedding) below. Squared rather than linear so there is no step
+at 0.18: a detector box jittering across the line behaves the same on both sides.
+
+Two consequences are worth stating plainly, because they are what makes the band safe:
+
+- **At or above 0.18, behaviour is unchanged.** The penalty is 0 and `rangePenalty` is absent from
+  the match object entirely. `npm run eval:shape` is byte-identical over its 2880 sightings.
+- **A band box that can't clear its bar produces no ranking at all** — not a rejected one. That is
+  byte for byte what it produced before, so evidence accumulation, soft labels, the closed-set
+  assignment and a latched name all carry on behaving exactly as they did.
+
+`Tracker.update()` also stops asking `reid.js` for an embedding on a `below-floor` box. It used to
+request one before matching and the result was discarded at the `usable` gate, so every too-small
+box in frame bought a full 128 × 256 inference on every check.
+
+`rangeDiagnostics()` returns counts of why live boxes were refused since the last
+`resetRangeDiagnostics()` — `{ ok, tooFar, farReid, belowFloor, partialBody, edgeClipped }`, one
+increment per check. `farReid` is a box the band got through; `tooFar` is one it refused, for want
+of an embedding or for failing the stricter bar.
 
 ## The re-identification embedding (`reid.js`)
 
@@ -113,7 +171,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.65 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune), plus the box's [range penalty](#box-range-and-the-far-band) if it was in the far band; inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`), ±motion | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
