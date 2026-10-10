@@ -92,6 +92,29 @@ those names needs rework before it can rebase onto this. `luxkaiwalker/motion-on
 the known case: it imports four of them and adds a `track.motionBreakdown` field, which now has
 to become another entry in the provider's `WeakMap` rather than a property on the track.
 
+## Held back from the PR into `dev`
+
+**The CI workflow.** `.github/workflows/ci-cd-action.yml` is byte-identical to `dev` on this
+branch — reverted on purpose, so the pull request carries **no CI diff at all**. Deploy
+behaviour is shared infrastructure that affects everyone, and bundling it with eight branches of
+game fixes would mean one review covering both.
+
+The worked version is preserved on **`luxkaiwalker/deploy-robustness`** and is worth its own PR.
+It moves the trigger from `pull_request: types: [closed]` to `push: branches: [dev]` (so a PR
+closed *unmerged* stops being a case rather than being filtered out by an `if:`), adds a `test`
+job both triggers run with `deploy: needs: test`, pins the deployed tree to `${{ github.sha }}`
+instead of `git pull`, and adds `concurrency`, `timeout-minutes`, `permissions: {}` and an image
+prune. `docs/operations/deployment.md` still documents today's behaviour, including the
+unmerged-close hazard, and points at that branch.
+
+Five tests that pinned the new workflow were removed with it; a sixth kept its
+`package.json` ↔ compose half and dropped its `node-version:` arm, with a comment saying to
+restore it if that branch lands.
+
+**Still in the PR** (container-level, independent of CI): `restart: unless-stopped`, the backend
+healthcheck with `depends_on: service_healthy`, the cert expiry/SAN work in `entrypoint.sh`, the
+`.dockerignore` and `.gitattributes` fixes, and the `scripts/` corrections.
+
 ## What deliberately does *not* merge here
 
 Experiment and test-harness branches stay separate — they are instruments, not product:

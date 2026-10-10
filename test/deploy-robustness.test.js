@@ -25,7 +25,6 @@ function stripComments(text) {
 }
 
 const COMPOSE = stripComments(read('docker-compose.yml'));
-const WORKFLOW = stripComments(read('.github/workflows/ci-cd-action.yml'));
 const ENTRYPOINT = stripComments(read('frontend/entrypoint.sh'));
 
 /**
@@ -135,53 +134,17 @@ test('the backend health route the probe uses is the one the app actually serves
 
 // ---- Item 3 and 4: the deploy trigger, and a real test gate ----
 
-test('the deploy hangs off push, not off a pull request closing', () => {
-  // `pull_request: types: [closed]` fires when a PR is closed WITHOUT merging too, and the
-  // old job had no `if:` guard. A push event only exists if something actually landed, so
-  // the case dissolves rather than being filtered after the fact.
-  const on = WORKFLOW.match(/^on:\s*\n((?:(?:\s{2,}.*)?\n)+?)(?=^\S)/m);
-  assert.ok(on, 'the workflow must declare triggers');
-  assert.match(on[1], /^\s{2}push:\s*\n\s+branches:\s*\n\s+-\s*dev/m, 'push to dev must be a trigger');
-  assert.doesNotMatch(
-    on[1],
-    /types:\s*\n\s*-\s*closed/,
-    'a pull_request "closed" trigger fires on abandoned PRs as well as merges',
-  );
-});
 
-test('the deploy job is gated on the tests passing', () => {
-  const deploy = WORKFLOW.match(/^\s{2}deploy:\s*\n((?:\s{4}.*\n|\s*\n)+)/m);
-  assert.ok(deploy, 'the workflow must have a deploy job');
-  assert.match(deploy[1], /^\s{4}needs:\s*(test|\[\s*test\s*\])/m, 'deploy must need the test job');
-  // Without this, a pull_request run would deploy, which is the whole bug inverted.
-  assert.match(
-    deploy[1],
-    /^\s{4}if:.*github\.event_name\s*!=\s*'pull_request'/m,
-    'deploy must not run for pull_request events',
-  );
-  assert.match(deploy[1], /^\s{4}timeout-minutes:\s*\d+/m, 'deploy needs a timeout');
-  // Two deploys in one server directory would build each other's code.
-  assert.match(deploy[1], /concurrency:\s*\n\s+group:\s*\S+/m, 'deploy needs a concurrency group');
-});
 
-test('the test job runs both suites natively, not through docker compose', () => {
-  const job = WORKFLOW.match(/^\s{2}test:\s*\n((?:\s{4}.*\n|\s*\n)+?)(?=^\s{2}\w+:)/m);
-  assert.ok(job, 'the workflow must have a test job');
-  assert.match(job[1], /actions\/checkout@v\d/, 'the test job needs the workspace');
-  assert.match(job[1], /actions\/setup-node@v\d/, 'the node suite needs a node');
-  assert.match(job[1], /run:\s*npm test/, 'the node suite must actually run');
-  assert.match(job[1], /actions\/setup-python@v\d/, 'the python suite needs a python');
-  assert.match(job[1], /unittest discover -s backend/, 'the python suite must actually run');
-  // `docker compose run --rm tests` on a runner would npm ci ~180 MB that no test imports.
-  assert.doesNotMatch(job[1], /docker compose/, 'the runner should not go through compose');
-});
 
-test('CI, package.json and the compose test service agree on one node major', () => {
+test('package.json and the compose test service agree on one node major', () => {
   // Cross-checked against each other rather than against a number written here, so this
   // fails when they drift apart instead of when they are all updated together.
-  const ci = WORKFLOW.match(/node-version:\s*'?(\d+)/);
-  assert.ok(ci, 'setup-node must pin a major version');
-
+  //
+  // CI is deliberately NOT part of this check: the workflow is shared infrastructure and was
+  // reverted out of this branch so the game-fix PR carries no CI diff. The version that also
+  // pins setup-node to this major lives on `luxkaiwalker/deploy-robustness`. If that lands,
+  // add the `node-version:` arm back.
   const pkg = JSON.parse(read('package.json'));
   const floor = pkg.engines.node.match(/(\d+)/);
   assert.ok(floor, 'package.json must declare an engines.node floor');
@@ -189,7 +152,6 @@ test('CI, package.json and the compose test service agree on one node major', ()
   const composeImage = serviceBody('tests').match(/image:\s*node:(\d+)/);
   assert.ok(composeImage, 'the compose tests service must pin a node image');
 
-  assert.equal(ci[1], floor[1], 'CI runs a different node major than engines.node claims');
   assert.equal(composeImage[1], floor[1], 'the compose tests image disagrees with engines.node');
 
   // The test script passes a quoted glob for the runner itself to expand, which node 20's
@@ -204,37 +166,7 @@ test('CI, package.json and the compose test service agree on one node major', ()
 
 // ---- Item 5: the deploy must be reproducible ----
 
-test('the deploy pins the commit and never uses git pull', () => {
-  // `git pull` on a live server could deploy a tree that exists in no commit: a non-
-  // conflicting dirty tree merges around the local edits and then builds origin/dev plus
-  // someone's leftover debugging, silently and green.
-  assert.doesNotMatch(WORKFLOW, /git\s+pull/, 'git pull can deploy a tree that is in no commit');
-  assert.match(WORKFLOW, /git\s+fetch/, 'the deploy must fetch explicitly');
-  assert.match(
-    WORKFLOW,
-    /\$\{\{\s*github\.sha\s*\}\}/,
-    'the deploy must be pinned to the triggering commit, or two racing deploys can land '
-    + "each other's code",
-  );
-  // Whatever resets the tree has to be forceful; a plain checkout stops at local edits.
-  assert.match(WORKFLOW, /git\s+(checkout\s+-f|reset\s+--hard)/, 'the tree must be reset, not merged');
-  assert.match(WORKFLOW, /git\s+clean\s+-fd/, 'untracked leftovers must go too');
-  // -x would also delete the .gitignore'd files the VM legitimately keeps (.env, certs).
-  assert.doesNotMatch(
-    WORKFLOW,
-    /git\s+clean\s+-[a-z]*x/,
-    'git clean -x would delete the gitignored state a human put on the server on purpose',
-  );
-});
 
-test('the deploy prunes the images it strands', () => {
-  // Each deploy builds new images and leaves the old ones dangling; the frontend image
-  // carries ~18 MB of models plus ~170 MB of vendored runtime. Nothing pruned anywhere, and
-  // the eventual out-of-disk shows up as a mysterious red deploy, not a disk alarm.
-  assert.match(WORKFLOW, /docker image prune -f/, 'the deploy must prune dangling images');
-  // -a would delete images that are merely unused, including ones a rollback wants.
-  assert.doesNotMatch(WORKFLOW, /docker image prune\s+(-f\s+)?-a|prune\s+-af/, 'prune -a is too broad');
-});
 
 // ---- Item 6: the certificate ----
 
