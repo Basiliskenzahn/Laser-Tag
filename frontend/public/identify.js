@@ -250,20 +250,27 @@ const REID_REQUEST_MS = 220;
 // Box position and velocity are filtered separately, and both are specified as time constants
 // rather than as a per-detection blend factor. A blend factor only means something at a fixed
 // detection interval, and the interval here is neither fixed nor the same on every phone: it is
-// 80-180 ms by schedule, longer on a slow device, and longer again whenever a detection is missed
+// 50-100 ms by schedule, longer on a slow device, and longer again whenever a detection is missed
 // and the track coasts. With a time constant, both filters behave the same in seconds everywhere,
 // a long gap is correctly weighted more than a short one, and a burst of two detections 10 ms
 // apart cannot yank the estimate (small dt -> small blend), which is what kept the old fixed
 // 0.68 from being safe to raise.
 //
-// Position: how far the drawn box trails a target moving at v px/s. For dt << tau the steady
-// state lag is v * tau; for larger dt it is less, so tau is the worst case. Measured against the
-// detector jitter model in test/motion.test.js (sigma = 0.87% of box height) at dt = 120 ms and
-// v = 400 px/s: the old 0.68 was tau = 105 ms and trailed 22.6 px, with 1.9 px of visible box
-// noise. 60 ms trails 7.5 px for 2.3 px of noise - a 3x lag cut for 22% more jitter. Going lower
-// buys little: tau = 40 ms removes only another 5 px and takes the noise to 2.5 px, most of the
-// detector's raw 2.6 px.
-const BOX_SMOOTHING_TAU_MS = 60;
+// Position: how far the drawn box trails a target moving at v px/s. Sampled every dt the steady
+// state lag is v * dt * (1 - a) / a with a = 1 - exp(-dt / tau), which *grows* as dt shrinks,
+// toward the worst case v * tau. This is the one way a time constant is not free of the detection
+// rate: it fixes the filter's behaviour in seconds, and a faster rate spends more of the tau it
+// was given. Measured against the detector jitter model in test/motion.test.js (sigma = 0.87% of
+// box height) at v = 400 px/s, tau = 60 trailed 7.5 px at the 120 ms interval it was chosen at -
+// where a = 0.86 and the filter was barely filtering - against 22.6 px for the old 0.68 blend
+// (tau = 105 ms) it replaced. At the 50 ms searching tier a = 0.57 and the same tau = 60 trails
+// 15.4 px: double the figure it was accepted on, and the drawn box is also the shot box, so that
+// lag lands on the aim. 38.5 ms reproduces 7.5 px exactly at 50 ms. 40 - the next value down,
+// already bracketed here when it bought only 5 px at 120 ms - gives 8.0 px at the searching tier
+// and 3.6 px at the 100 ms settled one, for 14% *less* box noise than the 120 ms / tau = 60
+// operating point (1.16 px rms against 1.36 over the same jitter series): both halves of the
+// trade improve, so there is nothing to weigh.
+const BOX_SMOOTHING_TAU_MS = 40;
 // Velocity: deliberately slower than the position filter, and measured from the *raw* detection
 // centres rather than from the smoothed box (see updateTrackBox). Keeping the two separate is the
 // point - track.vx/vy decide box-to-track association (predictedBox), where a noisy velocity
@@ -273,12 +280,32 @@ const BOX_SMOOTHING_TAU_MS = 60;
 // merely raising the old factor to 0.85 would have taken it to 24 px/s. 250 ms would halve it
 // again, but velocity then needs a quarter second to notice someone reversing direction, which
 // is the whole window the overlay projects over.
+//
+// Unlike the position filter above, this one really is free of the detection rate, and the reason
+// is worth writing down because it is why only one of the two needed retuning: the noise of a
+// filtered difference quotient is (a / dt) * sigma * sqrt(2 / (2 - a)), and a / dt -> 1 / tau as
+// dt shrinks, so the extra differencing noise at a shorter interval is paid for exactly by the
+// extra averaging. Going from 120 ms to 50 ms costs 11% more velocity noise by that formula and
+// 9.5% measured over the same jitter series, against a 19% asymptote as dt -> 0. Position is a
+// level and velocity is a derivative: a shorter interval quiets the first and costs the second
+// nothing, which is why only one of the two needed a new number. 180 ms is left alone.
 const VELOCITY_SMOOTHING_TAU_MS = 180;
 // Over a longer gap than this, the straight line between two detections is not a velocity: a
 // person can turn around within it. Keep the coasted estimate instead of inventing a confident
 // wrong one. TRACK_TIMEOUT_MS lets a track coast more than twice this long.
+//
+// Left alone at the new cadence on purpose. This is a bound on human dynamics - how long it takes
+// someone to reverse - not on the detector, so it is already in the units it should be in and a
+// faster detection rate does not change it. What changed is only how often it fires: eight missed
+// detections in a row at 50 ms is rarer than the three it took at 120 ms. The cases past it are
+// another gate's: further away than the association score tolerates and the box starts a new
+// track instead.
 const VELOCITY_MAX_GAP_MS = 400;
-const MIN_FRAME_DT_S = 0.016; // never divide a displacement by less than about one frame
+// One video frame at 60 Hz, and still the shortest real gap there is: the shot path can force a
+// detection a millisecond after a scheduled one, and 1 ms of displacement divided by 1 ms is not
+// a speed. 50 ms is well clear of it, so at the normal cadence it never binds - it is purely the
+// guard on that forced detection, which is why the new rates do not touch it.
+const MIN_FRAME_DT_S = 0.016;
 // How far association may extrapolate a track along its velocity. Kept at 0.5 s, and the reason
 // is the coast decay below rather than this number: the projection is a decaying velocity times a
 // growing elapsed time, so it peaks and then falls, and with COAST_VELOCITY_TAU_MS the peak sits
