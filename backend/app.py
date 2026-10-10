@@ -74,12 +74,16 @@ async def api_send(request):
 
 
 async def api_disconnect(request):
-    """Voluntary goodbye (page unload), so the room drops the player at once."""
+    """Voluntary goodbye, so the room drops the player at once.
+
+    ``?forfeit=1`` marks it as the player quitting on purpose, which mid-round
+    counts as being knocked out (see :meth:`backend.transport.Session.close`).
+    """
     token = request.query.get("token")
     poller = pollers.pop(token, None)
     if poller:
         poller.wake()
-        await poller.session.close()
+        await poller.session.close(forfeit=request.query.get("forfeit") == "1")
     return web.Response(status=204, headers={"Cache-Control": "no-store"})
 
 

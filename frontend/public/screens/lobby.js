@@ -80,7 +80,8 @@ export function showLobby(message = '') {
 export function leaveLobby() {
   state.autoScanning = false;
   state.postProcessingScan = false;
-  state.conn?.close({ notify: true });
+  // Leaving is always on purpose, so mid-round the server counts it as a knockout.
+  state.conn?.close({ notify: true, forfeit: true });
   state.conn = null;
   state.events?.close();
   state.events = null;

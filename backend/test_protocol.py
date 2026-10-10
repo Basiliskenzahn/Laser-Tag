@@ -100,8 +100,9 @@ class PollingClient:
     async def send(self, msg):
         return await self.client.post("/api/send", params={"token": self.token}, json=msg)
 
-    async def disconnect(self):
-        return await self.client.post("/api/disconnect", params={"token": self.token})
+    async def disconnect(self, forfeit=False):
+        params = {"token": self.token, **({"forfeit": "1"} if forfeit else {})}
+        return await self.client.post("/api/disconnect", params=params)
 
     def stop(self):
         if self._task:
@@ -193,6 +194,31 @@ class ProtocolTests(AioHTTPTestCase):
         await b.disconnect()
         await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 1)
         self.assertEqual(last_state(a.messages)["players"][0]["name"], "A")
+
+    async def test_forfeiting_mid_round_is_a_death_and_cannot_be_resumed(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        c = self.track(await self.polling_client())
+        room = unique_room("forfeit")
+        for client, name in ((a, "A"), (b, "B"), (c, "C")):
+            await client.send({"type": "join", "name": name, "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 3)
+        b_id = b.welcome_id()
+        events_resp = await self.client.get(f"/events/{room}")
+
+        await a.send({"type": "start"})
+        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await b.disconnect(forfeit=True)
+
+        event = await read_sse_event(events_resp, "death")
+        self.assertEqual((event["playerId"], event["killerId"]), (b_id, None))
+        await wait_for(lambda: next((p for p in last_state(a.messages)["players"] if p["id"] == b_id), {}).get("forfeited"))
+        self.assertEqual(last_state(a.messages)["status"], "playing")
+
+        rejoin = self.track(await self.polling_client())
+        await rejoin.send({"type": "join", "name": "B", "room": room, "playerId": b_id, "gallery": GALLERY})
+        await wait_for(lambda: any(m["type"] == "error" for m in rejoin.messages))
+        self.assertFalse(any(m["type"] == "welcome" for m in rejoin.messages))
 
     async def test_debug_clone_receives_the_local_players_scan(self):
         debug = self.track(await self.polling_client())

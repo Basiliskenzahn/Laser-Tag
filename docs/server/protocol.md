@@ -11,7 +11,7 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 | `POST` | `/api/connect` | — | `200 {"token": "<uuid>"}` |
 | `POST` | `/api/send?token=T` | One [client message](#client--server-messages) | `204` |
 | `GET` | `/api/poll?token=T` | — | `200 [ …server messages ]` |
-| `POST` | `/api/disconnect?token=T` | — | `204` |
+| `POST` | `/api/disconnect?token=T[&forfeit=1]` | — | `204` |
 | `POST` | `/api/hit` | [Hit request](#post-apihit) | `200` result, or `400`/`404` with `{ok: false, error}` |
 | `GET` | `/events/<room>` | — | `text/event-stream` |
 | `GET` | `/` | — | `laser-tag python backend` (health check) |
@@ -21,6 +21,8 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
 `/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. Only one poll is held per session; a second one replaces the first poll's waiter, which never resolves on its own.
+
+`/api/disconnect` closes the session and removes the player at once. With `forfeit=1` the player is leaving on purpose: mid-round that counts as a knockout (a `death` SSE event with `killerId: null`, and the player stays in `state` as down with `forfeited: true` until the round ends). See [`forfeit()`](game-rules.md#forfeitid).
 
 A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
 
@@ -60,7 +62,7 @@ event: death
 data: {"type":"death","room":"demo","playerId":"…","killerId":"…"}
 ```
 
-`death` follows `health` when a hit knocks a player out. No authentication: anyone who knows a room code can listen.
+`death` follows `health` when a hit knocks a player out. A [forfeit](#sessions-and-long-polling) sends `death` alone, with `killerId: null`. No authentication: anyone who knows a room code can listen.
 
 ## Client → server messages
 
@@ -137,7 +139,7 @@ Delivered through `/api/poll`.
   "minPlayers": 2,
   "maxPlayers": 8,
   "players": [
-    { "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true }
+    { "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true, "forfeited": false }
   ]
 }
 ```
@@ -147,6 +149,7 @@ Delivered through `/api/poll`.
 | `status` | `waiting`, `countdown`, `playing` or `over` |
 | `startsInMs` | Milliseconds until play starts during `countdown`, else `null` |
 | `winner` | Player id of the last round's winner, or `null` |
+| `players[].forfeited` | `true` for a player who left mid-round; they stay listed as down until the round ends |
 
 ## Gallery format
 

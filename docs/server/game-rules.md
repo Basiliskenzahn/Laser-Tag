@@ -24,7 +24,7 @@ stateDiagram-v2
   waiting --> countdown: start() with ≥2 players, all scanned
   countdown --> playing: COUNTDOWN_MS elapsed
   countdown --> waiting: a player leaves and <2 remain
-  playing --> over: ≤1 player alive
+  playing --> over: ≤1 player alive (after a knockout, forfeit or leave)
   over --> countdown: start()
   over --> waiting: the winner leaves
 ```
@@ -69,7 +69,7 @@ The server trusts the shooter's phone about *who* was hit and *where*. See [Arch
 
 ### Winning
 
-`finishIfDecided()` runs after each knockout and departure. With one survivor, that player wins and their `wins` counter goes up. With none (only possible if players leave), the round ends with no winner. Wins persist across rounds for as long as the player stays in the room.
+`finishIfDecided()` runs after each knockout and departure. With one survivor, that player wins and their `wins` counter goes up. With none (only possible if players leave or forfeit), the round ends with no winner. Wins persist across rounds for as long as the player stays in the room.
 
 ### `leave(id)`
 
@@ -81,11 +81,19 @@ Removes the player, then:
 
 The surrounding server deletes a room once it's empty.
 
+### `forfeit(id)`
+
+A deliberate leave (the player tapped *leave*). If the round is `playing` and the player is still alive, it counts as a knockout: HP drops to 0, `alive` becomes false and `forfeited` true, and the round is checked for a winner just as after a shot. The player stays on the scoreboard, shown as down, until the round ends; `finishIfDecided()` then removes every forfeited player. A forfeited seat can't be resumed with `playerId`.
+
+In any other situation (lobby, countdown, already knocked out) it's a plain `leave(id)`.
+
+A phone that just stops polling is **not** forfeited: it is removed with `leave()`, because it might be a dropped connection rather than a choice.
+
 ## Snapshot and roster
 
 The server sends two views of a room, so the big gallery data isn't resent on every shot:
 
-- `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive). Sent after every change.
+- `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive, forfeited). Sent after every change.
 - `roster()`: each player's id, name and gallery. Sent only when membership or scans change.
 
 Exact formats: [Protocol](protocol.md#server--client-messages).

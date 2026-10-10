@@ -134,7 +134,7 @@ export function renderHud() {
     const row = document.createElement('div');
     row.className = `player${p.id === state.myId ? ' me' : ''}${!p.alive ? ' down' : ''}`;
     row.innerHTML = `
-      <div class="label"><span>${escapeHtml(p.name)}${p.id === state.myId ? ' (you)' : ''}</span>${p.wins ? `<span class="wins">★${p.wins}</span>` : ''}</div>
+      <div class="label"><span>${escapeHtml(p.name)}${p.id === state.myId ? ' (you)' : ''}${p.forfeited ? ' (left)' : ''}</span>${p.wins ? `<span class="wins">★${p.wins}</span>` : ''}</div>
       <div class="hp"><div class="hp-fill${p.hp / game.maxHp <= 0.3 ? ' low' : ''}" style="width:${(p.hp / game.maxHp) * 100}%"></div></div>`;
     hud.append(row);
   }

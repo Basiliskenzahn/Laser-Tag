@@ -160,6 +160,31 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(room.winner, "a")
         self.assertEqual(room.players["a"].wins, 1)
 
+    def test_forfeit_mid_round_is_a_knockout_that_stays_on_the_scoreboard(self):
+        room, _ = started_room(("a", "b", "c"))
+        self.assertEqual(room.forfeit("b"), {"ok": True, "ko": True})
+        self.assertEqual(room.status, "playing")
+        down = next(p for p in room.snapshot()["players"] if p["id"] == "b")
+        self.assertEqual((down["hp"], down["alive"], down["forfeited"]), (0, False, True))
+        self.assertFalse(room.shoot("a", "b", "body")["ok"])
+
+    def test_forfeit_can_decide_the_round_and_then_leaves_the_room(self):
+        room, _ = started_room(("a", "b", "c"))
+        room.forfeit("b")
+        room.forfeit("c")
+        self.assertEqual(room.status, "over")
+        self.assertEqual(room.winner, "a")
+        self.assertEqual(room.players["a"].wins, 1)
+        self.assertEqual(list(room.players), ["a"])
+
+    def test_forfeit_outside_a_live_round_is_a_plain_leave(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        room.join("b", "Bob", GALLERY)
+        self.assertEqual(room.forfeit("b"), {"ok": True, "ko": False})
+        self.assertNotIn("b", room.players)
+        self.assertFalse(room.forfeit("ghost")["ok"])
+
     def test_roster_carries_gallery_snapshot_does_not(self):
         room, _ = make_room()
         room.join("a", "Alice", [{"hist": [1, 0], "grid": [0.5]}])

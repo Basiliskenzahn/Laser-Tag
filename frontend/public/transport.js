@@ -3,6 +3,7 @@
 //   const conn = openPolling(handlers)
 //   conn.send(msg)   // queue a JSON message to the server
 //   conn.close()     // stop; the server notices and drops the player
+//   conn.close({ notify: true, forfeit: true })  // tell it now, and quit the round as a knockout
 //   handlers: { onOpen(), onMessage(msg), onClose() }
 //
 // HTTP long-polling uses only ordinary fetch() requests, which keeps the game working through
@@ -57,9 +58,9 @@ export function openPolling({ onOpen, onMessage, onClose }) {
         )
         .catch(fail);
     },
-    close({ notify = false } = {}) {
+    close({ notify = false, forfeit = false } = {}) {
       if (notify && token) {
-        const path = `/api/disconnect?token=${encodeURIComponent(token)}`;
+        const path = `/api/disconnect?token=${encodeURIComponent(token)}${forfeit ? '&forfeit=1' : ''}`;
         if (!navigator.sendBeacon?.(path, '')) {
           fetch(path, { method: 'POST', cache: 'no-store', keepalive: true }).catch(() => {});
         }

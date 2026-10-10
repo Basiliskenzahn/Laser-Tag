@@ -35,6 +35,9 @@ class Player:
 
     ``last_shot_at`` starts at negative infinity so that a player's very first
     shot is never held back by the cooldown check.
+
+    ``forfeited`` marks a player who left mid-round: they stay seated, knocked
+    out, until the round ends, then :meth:`Room.finish_if_decided` drops them.
     """
 
     id: str
@@ -43,6 +46,7 @@ class Player:
     hp: int = MAX_HP
     wins: int = 0
     alive: bool = True
+    forfeited: bool = False
     last_shot_at: float = float("-inf")
 
 
@@ -151,7 +155,11 @@ class Room:
             player.alive = True
 
     def finish_if_decided(self):
-        """End the round once at most one player is left standing."""
+        """End the round once at most one player is left standing.
+
+        Forfeited players have nobody behind them any more, so this is where
+        they finally leave the room.
+        """
         survivors = [player for player in self.players.values() if player.alive]
         if len(survivors) > 1:
             return
@@ -159,6 +167,27 @@ class Room:
         self.winner = survivors[0].id if survivors else None
         if self.winner:
             self.players[self.winner].wins += 1
+        self.players = {pid: player for pid, player in self.players.items() if not player.forfeited}
+
+    def forfeit(self, player_id):
+        """Leave on purpose. Mid-round that counts as a knockout, not a vanish.
+
+        A player still standing in a live round is knocked out and kept on the
+        scoreboard as down until the round ends; anywhere else this is a plain
+        :meth:`leave`. ``ko`` in the result says which happened.
+        """
+        self.update()
+        player = self._player(player_id)
+        if not player:
+            return {"ok": False, "error": "Unknown player"}
+        if self.status != "playing" or not player.alive:
+            self.leave(player_id)
+            return {"ok": True, "ko": False}
+        player.hp = 0
+        player.alive = False
+        player.forfeited = True
+        self.finish_if_decided()
+        return {"ok": True, "ko": True}
 
     def leave(self, player_id):
         if player_id not in self.players:
@@ -256,6 +285,7 @@ class Room:
                     "hp": player.hp,
                     "wins": player.wins,
                     "alive": player.alive,
+                    "forfeited": player.forfeited,
                 }
                 for player in self.players.values()
             ],

@@ -261,7 +261,7 @@ class Session:
         name = clean_name(msg.get("name"))
         gallery = clean_gallery(msg.get("gallery"))
         requested_id = clean_player_id(msg.get("playerId"))
-        if requested_id and requested_id in room.players:
+        if requested_id and requested_id in room.players and not room.players[requested_id].forfeited:
             self.id = requested_id
             self.clone_id = f"{self.id}{CLONE_SUFFIX}"
             await self._enter(room, code)
@@ -290,8 +290,12 @@ class Session:
         await broadcast_state(room)
         await broadcast_roster(room)
 
-    async def close(self):
+    async def close(self, forfeit=False):
         """Remove this phone's player (and clone) and drop the room if it empties.
+
+        ``forfeit`` is a deliberate leave (the player tapped "leave"), which
+        mid-round counts as a knockout - see :meth:`Room.forfeit`. A phone that
+        merely went quiet is not forfeited, since it may still come back.
 
         The identity check keeps a stale session from evicting the live one: on a
         reconnect the new session takes over the id in ``connections``, and the
@@ -303,8 +307,20 @@ class Session:
         if not self.room:
             return
         room = self.room
-        room.leave(self.id)
-        room.leave(self.clone_id)
+        knocked_out = []
+        for player_id in (self.id, self.clone_id):
+            if forfeit:
+                if room.forfeit(player_id).get("ko"):
+                    knocked_out.append(player_id)
+            else:
+                room.leave(player_id)
+        for player_id in knocked_out:
+            await broadcast_room_event(room, {
+                "type": "death",
+                "room": room.code,
+                "playerId": player_id,
+                "killerId": None,
+            })
         if room.is_empty:
             if room.start_timer:
                 room.start_timer.cancel()
