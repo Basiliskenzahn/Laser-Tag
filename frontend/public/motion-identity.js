@@ -30,6 +30,8 @@ const MOTION_SCORE_PENALTY = 0.08;
 // object: nothing outside here can reach it, and with the provider uninstalled none of it exists.
 let sensor = null; // this phone's motion sensor (motion/sensor.js), once permitted
 let permissionPending = false;
+let flushTimer = null; // the outgoing-sample interval, so stopMotion can clear it
+let generation = 0; // bumped by stopMotion, so a permission prompt it outlived starts nothing
 const remoteActivity = new Map(); // playerId -> [{ t, v }] activity reported by that player's phone
 const trackBoxes = new WeakMap(); // track -> [{ t, box }] where the camera saw that person
 const trackChecks = new WeakMap(); // track -> { at, checks } the last motionChecks() for that track
@@ -37,13 +39,37 @@ const trackChecks = new WeakMap(); // track -> { at, checks } the last motionChe
 function startMotion() {
   if (sensor || permissionPending) return;
   permissionPending = true;
+  const attempt = generation;
   MotionSensor.requestPermission().then((granted) => {
     permissionPending = false;
-    if (!granted) return;
+    // The player may have left the room while the permission prompt was up; this attempt is over,
+    // and starting a sensor now would be exactly the leak stopMotion exists to prevent.
+    if (!granted || attempt !== generation) return;
     sensor = new MotionSensor();
     sensor.start();
-    setInterval(flushMotion, MOTION_SEND_INTERVAL_MS);
+    flushTimer = setInterval(flushMotion, MOTION_SEND_INTERVAL_MS);
   });
+}
+
+// Leaving a room gives all of this back. None of it used to be: the flush interval and the
+// devicemotion listener ran for the life of the page whatever screen was showing, so a phone
+// parked on the join screen kept waking its accelerometer, and remoteActivity accumulated a
+// player id for everyone this phone had ever shared a room with. A stale id could not be shot
+// (fuseMotion only names opponents the current snapshot lists as alive), so this was a leak
+// rather than a wrong-target bug - but it is still a room's worth of state outliving the room.
+//
+// The per-track maps are WeakMaps keyed by the track objects, so they go when the tracker drops
+// the tracks; there is nothing to clear by hand.
+function stopMotion() {
+  generation++;
+  permissionPending = false;
+  if (flushTimer !== null) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
+  sensor?.stop();
+  sensor = null;
+  remoteActivity.clear();
 }
 
 function flushMotion() {
@@ -150,6 +176,7 @@ function scoreAdjust(track, playerId, now = performance.now()) {
 
 export const motionIdentity = {
   start: startMotion,
+  stop: stopMotion,
   observe: recordTrackMotion,
   resolve: resolveIdentity,
   scoreAdjust,

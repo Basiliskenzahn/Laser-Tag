@@ -13,8 +13,12 @@ export const state = {
   name: '',
   room: '',
   conn: null, // connection to the game server (transport.js)
+  connected: false, // is that connection live? false while net.js is between retries
   myId: null,
-  game: null, // latest state snapshot from the server (hp, status, ...)
+  // Latest state snapshot from the server (hp, status, ...). Deliberately kept across a
+  // connection blip rather than cleared, so the HUD and firing survive one; `connected` above is
+  // what says whether it is still live (net.js).
+  game: null,
   roster: [], // latest roster from the server (id, name, gallery)
   detector: null,
   poseDetector: null,
