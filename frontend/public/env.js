@@ -6,6 +6,8 @@
 // every module has to be looking at the same two elements; importing them from here is what
 // guarantees that.
 
+import { parseZoomParam } from './camera-zoom.js';
+
 export const $ = (id) => document.getElementById(id);
 export const params = new URLSearchParams(location.search);
 export const DEBUG = params.has('debug');
@@ -18,6 +20,11 @@ export const REQUIRE_MOTION = motionMode === 'strict';
 export const MOTION_OFF = !MOTION_ENABLED;
 // ?reid=0.70: the re-identification accept threshold, for tuning in the field (identify.js).
 export const REID_THRESHOLD = params.has('reid') ? Number(params.get('reid')) : null;
+// ?zoom=2 (or ?zoom=on): magnify the camera sensor during gameplay, so far-away players are big
+// enough to detect and to recognise. Off by default - it narrows the field of view - and null for
+// any value that cannot be read, so a typo cannot stop the camera. camera-zoom.js explains the
+// whole design, including why enrolment deliberately stays at 1x.
+export const CAMERA_ZOOM = parseZoomParam(params.get('zoom'));
 
 export const video = $('video');
 export const canvas = $('overlay');

@@ -21,8 +21,14 @@
 // That warm-up is now per model, as each one arrives, rather than one batch once everything has
 // loaded: the models no longer finish together, and a model that arrived after the player reached
 // the lobby has exactly the same unpaid first inference as one that arrived before.
+//
+// The camera's optional extra is sensor zoom (`?zoom=`, off by default), which lives in
+// camera-zoom.js and is wired in at the bottom of this file. It is applied after the stream
+// exists and never awaited, so it cannot delay or block the lobby gate, and it only ever engages
+// on the gameplay screen - enrolment stays at 1x. camera-zoom.js carries the reasoning.
 
-import { DEBUG, video } from './env.js';
+import { CAMERA_ZOOM, DEBUG, video } from './env.js';
+import { createZoomController } from './camera-zoom.js';
 import { beginStartup, startupTimingLine } from './startup.js';
 import { createEmbedder, createObjectDetector, createPoseDetector, createVisionFileset, detectTrackedPeopleFast } from './detector.js';
 import { createReid } from './reid.js';
@@ -90,10 +96,16 @@ export async function prepareCameraAndDetector() {
 // `GPU+Pose+Embed+ReID`, for the debug overlay's first line. Rebuilt from `state` every time a
 // model lands rather than assembled once, because the optional three now arrive separately and
 // the suffixes are how the overlay reports which of them this phone actually got.
+//
+// Camera zoom appends to the same string (` zoom 2x`), because what the field needs to know is
+// what this phone's hardware is actually doing, and that is the one line that already answers
+// that. It is empty unless `?zoom=` was given, so a phone with no zoom asked for produces exactly
+// the string it produces today.
 function refreshDelegateLabel() {
   state.delegate =
     `${state.objectDelegate}` +
-    `${state.poseDetector ? '+Pose' : ''}${state.embedder ? '+Embed' : ''}${state.reid ? '+ReID' : ''}`;
+    `${state.poseDetector ? '+Pose' : ''}${state.embedder ? '+Embed' : ''}${state.reid ? '+ReID' : ''}` +
+    `${zoom?.label() ?? ''}`;
 }
 
 // ---- What enrolment has to wait for ----
@@ -239,11 +251,71 @@ async function startCamera() {
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
   });
   await video.play();
+  // Deliberately after the stream exists and deliberately NOT awaited - see startZoomWatcher.
+  startZoomWatcher();
 }
 
 export function stopCamera() {
+  stopZoomWatcher();
   for (const track of video.srcObject?.getTracks?.() ?? []) track.stop();
   video.srcObject = null;
+}
+
+// ---- Camera zoom (?zoom=, camera-zoom.js) ----
+
+// How often the screen the player is on is compared with the zoom the track is at. This is a
+// quarter-second string comparison off the render path, not per-frame work: the whole point of
+// zooming the sensor instead of cropping a second detector pass is that the frame arrives already
+// magnified and the pipeline does nothing extra. The watcher only exists at all when `?zoom=` was
+// given, and it is the only thing that changes zoom, so there is no cost whatsoever by default.
+//
+// Polling `state.mode` rather than being told: the gameplay screen does not call into this module
+// (screens/game.js imports nothing from here), and a quarter second of latency is invisible
+// against the countdown that precedes both the game and the scan recording.
+const ZOOM_POLL_MS = 250;
+
+let zoom = null;
+let zoomTimer = null;
+
+// Zoom is applied with a follow-up applyConstraints, not in the getUserMedia constraints, for
+// three reasons. A `zoom` entry in the initial constraints is a required constraint on a property
+// most phones do not have, which is an OverconstrainedError and a camera that never starts - the
+// exact failure that is worse than having no zoom. Clamping needs getCapabilities(), which needs a
+// live track. And enrolment has to run at 1x anyway, so the level has to be able to change after
+// the stream exists regardless.
+//
+// Nothing here is awaited by startCamera, so none of it can reach `startup.js`'s camera promise,
+// which is half of the lobby gate: the player reaches the lobby on exactly today's timing whether
+// the camera can zoom, cannot zoom, or hangs on being asked. The first sync also lands while the
+// lobby is on screen, where zoomForMode asks for 1x and the model warm-up is the only thing
+// running - so zoom cannot renegotiate the stream underneath a warm-up frame either.
+function startZoomWatcher() {
+  stopZoomWatcher();
+  zoom = createZoomController({
+    getTrack: () => video.srcObject?.getVideoTracks?.()?.[0] ?? null,
+    getMode: () => state.mode,
+    requested: CAMERA_ZOOM,
+    onStatus: (status) => {
+      refreshDelegateLabel();
+      // One line per change of state, and only in debug: an unsupported camera says this once and
+      // then never again (the controller stops probing), so it cannot become console spam.
+      if (DEBUG) console.debug(`Camera zoom: ${status.state}${status.reason ? ` (${status.reason})` : ''}`);
+    },
+  });
+  if (!zoom.enabled) {
+    zoom = null; // Nothing to report and nothing to watch, so the label stays empty too.
+    return;
+  }
+  zoom.sync();
+  zoomTimer = setInterval(() => zoom?.sync(), ZOOM_POLL_MS);
+}
+
+function stopZoomWatcher() {
+  if (zoomTimer != null) clearInterval(zoomTimer);
+  zoomTimer = null;
+  zoom?.reset();
+  zoom = null;
+  refreshDelegateLabel();
 }
 
 export async function keepScreenOn() {
