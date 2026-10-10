@@ -45,8 +45,13 @@ export class MotionSensor {
     window.addEventListener('devicemotion', this.onMotion);
   }
 
+  // Idempotent, and safe on a sensor that was never started: motion-identity.js calls it from the
+  // leave path, which cannot know how far a permission prompt got.
   stop() {
+    if (!this.onMotion) return;
     window.removeEventListener('devicemotion', this.onMotion);
+    this.onMotion = null;
+    this.bin = null; // a stopped sensor must not flush a half-filled bin into `outgoing`
   }
 
   get receiving() {
