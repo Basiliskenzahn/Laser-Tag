@@ -37,3 +37,4 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
 - [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting
+- [The motion-only experiment](motion-only-experiment.md): the `motion-only-tracking` branch — appearance off, identity from phone motion alone

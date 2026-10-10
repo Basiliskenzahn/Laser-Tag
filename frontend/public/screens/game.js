@@ -6,9 +6,9 @@
 // shot is simply "whose hitbox is in the middle of the screen right now", with a fresh detection
 // forced first if the last one is too old to trust, and the server is the judge of the damage.
 
-import { DEBUG, canvas, ctx, video, $ } from '../env.js';
+import { APPEARANCE_OFF, DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
-import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
+import { motionBreakdown, motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
@@ -65,6 +65,10 @@ function scaleBoxes(boxes, scaleX, scaleY) {
   }));
 }
 
+// Note for the motion-only branch: `track.playerId` is only ever set by appearance matching, so
+// with appearance off this always returns the faster acquiring interval. That is left alone
+// deliberately - a denser box history is a better motion series to correlate against, which is
+// the one thing this branch is trying to measure.
 function gameDetectInterval(now) {
   const liveTracks = state.tracks.filter((track) => isLiveTrack(track, now));
   return liveTracks.length && liveTracks.every((track) => track.playerId)
@@ -95,9 +99,12 @@ function refreshGameDetection({ forcePose = false } = {}) {
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
     identifyOnce: false,
-    embedder: state.embedder,
-    reid: state.reid,
+    // With appearance off there is nothing for the models to contribute, so they are not even
+    // handed over: the tracker only associates boxes and motion decides the rest.
+    embedder: APPEARANCE_OFF ? null : state.embedder,
+    reid: APPEARANCE_OFF ? null : state.reid,
     closedSet: true,
+    appearanceOff: APPEARANCE_OFF,
   });
   recordTrackMotion(state.tracks, t0);
   state.lastGameDetectAt = t0;
@@ -413,5 +420,51 @@ function drawGame({ vw, vh, toScreen }) {
           ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
           : 'Person';
     ctx.fillText(label, x + 4, y + 16);
+    if (APPEARANCE_OFF) drawMotionBreakdown(track, id, x, y, now);
   }
+}
+
+// The motion-only readout: under every person, one line per player with how strongly that
+// player's phone matches them, and the raw correlation it came from. The whole point of this
+// branch is being able to read these off the screen during a real game, so it draws without
+// ?debug and shows the players it rejected as well as the one it picked.
+const BREAKDOWN_LINE_H = 15;
+function drawMotionBreakdown(track, id, x, y, now) {
+  const { rows, none } = track.motionBreakdown ?? motionBreakdown(track, now);
+  const lines = [
+    ...rows.map((row) => {
+      const share = `${Math.round(row.share * 100)}%`.padStart(4);
+      const r = Number.isFinite(row.correlation) ? `r${row.correlation >= 0 ? '+' : ''}${row.correlation.toFixed(2)}` : row.reason || '--';
+      const chosen = row.id === id.playerId ? '>' : ' ';
+      return { text: `${chosen}${share} ${row.name} ${r}${row.alive ? '' : ' down'}`, row };
+    }),
+    { text: ` ${`${Math.round(none * 100)}%`.padStart(4)} nobody`, row: null },
+  ];
+
+  const top = y + 24;
+  ctx.font = '500 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  const width = Math.max(...lines.map((line) => ctx.measureText(line.text).width)) + 10;
+  ctx.fillStyle = 'rgba(8, 11, 16, 0.72)';
+  ctx.fillRect(x, top - 11, width, lines.length * BREAKDOWN_LINE_H + 6);
+
+  lines.forEach((line, i) => {
+    const status = line.row?.status;
+    ctx.fillStyle = !line.row
+      ? '#8a97a6'
+      : line.row.id === id.playerId
+        ? '#39ff88'
+        : status === 'consistent'
+          ? '#ffd166'
+          : status === 'inconsistent'
+            ? '#ff6b6b'
+            : '#8a97a6';
+    ctx.fillText(line.text, x + 5, top + i * BREAKDOWN_LINE_H);
+  });
+
+  // Why nobody was picked, when nobody was: the reason is the finding, not an error.
+  if (!id.playerId) {
+    ctx.fillStyle = '#8a97a6';
+    ctx.fillText(`unidentified: ${id.reason}`, x + 5, top + lines.length * BREAKDOWN_LINE_H);
+  }
+  ctx.font = '600 13px system-ui, sans-serif';
 }

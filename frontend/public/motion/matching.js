@@ -118,6 +118,85 @@ export function motionCheck({ visual, remote, ego = [], now, ...options }) {
   return { status, correlation: best.correlation, lagMs: best.lagMs, reason: status === 'unknown' ? 'unclear' : '' };
 }
 
+// ---- Motion-only identity (the motion-only branch) ----
+//
+// With the appearance classifier switched off, all that is left is one correlation per
+// (person on screen, player) pair, and the question becomes "which of these players, if any,
+// is this person". motionShares turns those correlations into one comparable share each.
+//
+// Deliberately NOT a probability: nothing here is calibrated against real play, because
+// collecting that measurement is the whole point of the branch this serves. It is a normalised
+// affinity built out of the two thresholds above, monotonic in the correlation, which is all an
+// on-screen readout needs. Callers show the raw r alongside it so the real signal is never
+// hidden behind the derived number.
+
+// A correlation at or below `inconsistentAt` argues *against* this player, so it earns nothing;
+// above that it ramps to a perfect correlation and is squared, widening the gap between a
+// convincing match and a merely-not-bad one.
+function affinity(correlation, o) {
+  if (!Number.isFinite(correlation)) return 0;
+  const ramp = (correlation - o.inconsistentAt) / (1 - o.inconsistentAt);
+  return Math.max(0, Math.min(1, ramp)) ** 2;
+}
+
+// Players scored against one tracked person, best first, plus the share left over for "nobody".
+//
+// That leftover share is what stops a lone bystander being assigned 100% to whichever player
+// correlated least badly. It is pinned to the affinity of a correlation sitting exactly on
+// `consistentAt`, so a player ties with being a stranger at precisely the threshold this module
+// already treats as confirmation, and only beats it above that. One consequence worth knowing
+// before reading the numbers: it also caps a single player's share at ~71%, so a near-perfect
+// correlation reads as "65%, and r is 0.92" rather than "99%" - the ceiling is the honest
+// statement that a stranger could always have moved the same way.
+//
+// players: [{ id, name, alive }]; checks: { [playerId]: motionCheck() }.
+export function motionShares(players, checks, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const rows = players.map((player) => {
+    const check = checks[player.id] ?? { status: 'unknown', reason: 'no data' };
+    return {
+      id: player.id,
+      name: player.name,
+      alive: player.alive !== false,
+      status: check.status,
+      reason: check.reason,
+      correlation: check.correlation,
+      lagMs: check.lagMs,
+      // A contradicted pair earns nothing wherever its correlation landed.
+      weight: check.status === 'inconsistent' ? 0 : affinity(check.correlation, o),
+    };
+  });
+  const noneWeight = affinity(o.consistentAt, o);
+  const total = rows.reduce((sum, row) => sum + row.weight, 0) + noneWeight;
+  for (const row of rows) row.share = row.weight / total;
+  rows.sort((a, b) => b.share - a.share);
+  return { rows, none: noneWeight / total };
+}
+
+// Who a tracked person is from motion alone. The leader has to be a living player whose motion
+// actually confirms them, beat "nobody", and have no second confirmed player behind it: two
+// people moving alike is a tie, and guessing between them is worse than saying nothing.
+export function motionOnlyMatch(players, checks, options = {}) {
+  const breakdown = motionShares(players, checks, options);
+  const living = breakdown.rows.filter((row) => row.alive);
+  const best = living[0];
+  if (!best) return { playerId: null, reason: 'no players', breakdown };
+  if (best.status === 'inconsistent') return { playerId: null, reason: 'contradicted', breakdown };
+  if (best.status !== 'consistent') return { playerId: null, reason: best.reason || 'unclear', breakdown };
+  if (best.share <= breakdown.none) return { playerId: null, reason: 'weak', breakdown };
+  if (living[1]?.status === 'consistent') return { playerId: null, reason: 'ambiguous', breakdown };
+  return {
+    playerId: best.id,
+    name: best.name,
+    verified: true,
+    source: 'motion',
+    reason: 'motion-only',
+    share: best.share,
+    motion: { status: best.status, correlation: best.correlation, lagMs: best.lagMs },
+    breakdown,
+  };
+}
+
 // The appearance classifier and motion together (same rules as for sonar distances):
 //
 //   classifier names P, P's phone moves with the person   -> P, confirmed by both

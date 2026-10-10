@@ -8,7 +8,7 @@
 
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
-import { DEBUG, $ } from './env.js';
+import { APPEARANCE_OFF, DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
 import { localSelfId, scannedGallery } from './roster.js';
 import { onRemoteMotion } from './motion-identity.js';
@@ -42,6 +42,13 @@ export function connect() {
   state.conn = conn;
 }
 
+// The backend refuses to start a round until every player has a gallery, which on this branch
+// would mean sitting through a 15-second rotation scan per player to produce data nothing reads.
+// A one-sample stub satisfies that gate (it only checks the gallery is non-empty) and is never
+// matched against, since appearance is off. Obviously fake on purpose - if this ever shows up in
+// a real game's roster, appearance identification is silently running on garbage.
+const MOTION_TEST_STUB_GALLERY = [{ hist: [1], grid: [1] }];
+
 function sendJoin() {
   if (state.name && state.room) {
     send({
@@ -49,7 +56,7 @@ function sendJoin() {
       name: state.name,
       room: state.room,
       playerId: state.resumePlayerId,
-      gallery: state.localGallery,
+      gallery: APPEARANCE_OFF ? MOTION_TEST_STUB_GALLERY : state.localGallery,
       debug: DEBUG,
     });
   }

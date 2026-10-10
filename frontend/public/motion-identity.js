@@ -7,9 +7,9 @@
 // sealed in this one file, so the game loop never has to know motion exists. Motion is disabled
 // by default; ?motion=on enables it, and ?motion=strict demands the motion confirmation.
 
-import { fuseMotion, motionCheck, visualActivity } from './motion/matching.js';
+import { fuseMotion, motionCheck, motionOnlyMatch, motionShares, visualActivity } from './motion/matching.js';
 import { MotionSensor } from './motion/sensor.js';
-import { MOTION_ENABLED, MOTION_OFF, REQUIRE_MOTION } from './env.js';
+import { APPEARANCE_OFF, MOTION_ENABLED, MOTION_OFF, REQUIRE_MOTION } from './env.js';
 import { send } from './net.js';
 import { gamePlayer, localSelfId } from './roster.js';
 import { state } from './state.js';
@@ -62,6 +62,41 @@ export function recordTrackMotion(tracks, seenAt) {
     list.push({ t: now, box: { ...track.box } });
     while (list.length && list[0].t < now - MOTION_HISTORY_MS) list.shift();
     state.trackMotion.set(track, list);
+  }
+}
+
+// ---- Motion-only identity (this branch's experiment) ----
+//
+// The scoring itself is pure and lives in motion/matching.js (motionShares / motionOnlyMatch),
+// where Node can test it. This half is only the browser-side glue: gather the per-player checks
+// for one track, hand them over, and stash the breakdown for the overlay to draw.
+
+// Everyone it is possible to be, from this phone's point of view: the room minus its owner.
+function opponentList() {
+  return (state.game?.players ?? [])
+    .filter((player) => player.id !== localSelfId())
+    .map((player) => ({ id: player.id, name: player.name, alive: player.alive !== false }));
+}
+
+// Every player scored against one tracked person, best first, plus the "nobody" share.
+export function motionBreakdown(track, now = performance.now()) {
+  refreshMotionChecks(track, now);
+  return motionShares(opponentList(), track.motionChecks ?? {});
+}
+
+function motionOnlyIdentity(track, now) {
+  refreshMotionChecks(track, now);
+  const result = motionOnlyMatch(opponentList(), track.motionChecks ?? {});
+  track.motionBreakdown = result.breakdown; // the overlay reads this rather than recomputing
+  return result;
+}
+
+// Motion checks are recomputed on a schedule rather than per frame, and both the fused and the
+// motion-only paths need that, so it lives here.
+function refreshMotionChecks(track, now) {
+  if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
+    track.motionAt = now;
+    track.motionChecks = motionChecks(track);
   }
 }
 
@@ -125,14 +160,14 @@ function classifierOpinion(track, now) {
 // and skips sensor permission prompts, outgoing samples and remote motion history.
 export function resolveIdentity(track, now = performance.now()) {
   if (MOTION_OFF) return appearanceOnlyIdentity(track, now);
-  if (!track.motionAt || now - track.motionAt >= MOTION_CHECK_MS) {
-    track.motionAt = now;
-    track.motionChecks = motionChecks(track);
-  }
-  const opponents = (state.game?.players ?? [])
-    .filter((p) => p.id !== localSelfId())
-    .map((p) => ({ id: p.id, name: p.name, alive: p.alive !== false }));
-  return fuseMotion({ classifier: classifierOpinion(track, now), opponents, checks: track.motionChecks, requireMotion: REQUIRE_MOTION });
+  if (APPEARANCE_OFF) return motionOnlyIdentity(track, now);
+  refreshMotionChecks(track, now);
+  return fuseMotion({
+    classifier: classifierOpinion(track, now),
+    opponents: opponentList(),
+    checks: track.motionChecks,
+    requireMotion: REQUIRE_MOTION,
+  });
 }
 
 // The identification the game used before motion matching existed, in the same shape

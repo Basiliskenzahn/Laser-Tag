@@ -20,6 +20,7 @@ Read once at startup in `frontend/public/env.js`:
 | `?room=<code>` | Pre-fills the room code on the join screen |
 | `?motion=on` | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
+| `?appearance=on` | **`motion-only-tracking` branch only.** Restores the normal appearance pipeline, which that branch disables by default. See [the motion-only experiment](../motion-only-experiment.md). |
 | `?motion=off` or no motion parameter | Sets `MOTION_OFF`: skips motion permission, sample sharing and motion fusion, so targeting uses appearance identity + `isStableTarget()` only. This is the default. |
 
 ## Game rules

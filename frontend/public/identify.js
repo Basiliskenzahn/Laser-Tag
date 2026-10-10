@@ -802,13 +802,18 @@ export class Tracker {
   }
 
   // boxes: detectPeople() output. players: room roster with galleries. selfId: the local player.
+  //
+  // appearanceOff keeps the frame-to-frame tracking below but skips every appearance signal:
+  // no signature is extracted and no gallery is matched, so tracks come back unnamed and
+  // something else (motion-identity.js) is expected to decide who they are. This is what the
+  // motion-only experiment on this branch runs on.
   update(
     boxes,
     video,
     players,
     selfId,
     now = performance.now(),
-    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false } = {},
+    { includeRejected = false, embedder = null, reid = null, identifyOnce = false, closedSet = false, appearanceOff = false } = {},
   ) {
     for (const track of this.tracks) track.seenThisFrame = false;
 
@@ -881,6 +886,11 @@ export class Tracker {
       });
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
+
+    // Everything from here down is appearance: extracting a signature, scoring it against the
+    // galleries, and the evidence/streak/closed-set machinery that turns those scores into a
+    // name. With appearance off none of it runs, and the tracks above are the whole output.
+    if (appearanceOff) return this.tracks;
 
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
