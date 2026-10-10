@@ -18,6 +18,10 @@ MAX_PLAYERS = 8
 MAX_HP = 100
 DAMAGE = {"body": 20, "head": 50}
 SHOT_COOLDOWN_MS = 350
+#: How much sooner than ``SHOT_COOLDOWN_MS`` a shot may arrive and still count. The phone
+#: spaces shots by when they were fired, but network jitter can bunch two of them up on the
+#: way here, and a shot the player saw fire should not be thrown away for that.
+SHOT_COOLDOWN_SLACK_MS = 60
 COUNTDOWN_MS = 3000
 
 #: Suffix that marks the second, fake player a phone can add to a room for
@@ -304,7 +308,7 @@ class Room:
             return {"ok": False, "error": "Unknown zone"}
 
         now = self.now()
-        if now - shooter.last_shot_at < SHOT_COOLDOWN_MS:
+        if now - shooter.last_shot_at < SHOT_COOLDOWN_MS - SHOT_COOLDOWN_SLACK_MS:
             return {"ok": False, "error": "Cooldown"}
         shooter.last_shot_at = now
         shooter.stats.shots += 1

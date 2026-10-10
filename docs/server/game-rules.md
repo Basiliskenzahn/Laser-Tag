@@ -14,6 +14,7 @@ Node implementation this replaced, archived under `deprecated/server/`).
 | `DAMAGE.body` | 20 | Body hit damage |
 | `DAMAGE.head` | 50 | Headshot damage |
 | `SHOT_COOLDOWN_MS` | 350 | Minimum time between a player's accepted shots |
+| `SHOT_COOLDOWN_SLACK_MS` | 60 | Shots may arrive this much sooner and still pass, since network jitter can bunch them up |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round starts |
 
 ## Room states
@@ -61,7 +62,7 @@ Any player can start. Fails if a round is already running, there are fewer than 
 3. Round is playing: *"Round not running"*.
 4. Shooter is alive: *"You are down"*.
 5. With a target, `zone` is `body` or `head`: *"Unknown zone"*.
-6. Shooter's cooldown has passed: *"Cooldown"*.
+6. Shooter's cooldown (less the slack) has passed: *"Cooldown"*.
 
 A shot that passes counts as fired. A miss, or a shot at a player who is already down (the shooter's phone hadn't heard yet), returns `{ok: true, hit: false}` and changes nothing else. A hit subtracts damage (never below 0). At 0 HP the target is knocked out, and if at most one player is still alive the round ends.
 

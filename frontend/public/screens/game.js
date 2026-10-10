@@ -32,6 +32,7 @@ export function enterGame() {
   // animationend, and would replay the moment the screen shows again.
   $('damage').classList.remove('flash');
   $('crosshair').classList.remove('firing', 'hit');
+  $('cooldown').classList.remove('cooling');
   $('popups').replaceChildren();
   clearHitBars();
   for (const bar of $('hud').querySelectorAll('.hurt')) bar.classList.remove('hurt');
@@ -321,6 +322,8 @@ export function fire() {
   state.lastShotAt = now;
   sound.shoot();
   restartAnimation($('crosshair'), 'firing');
+  $('cooldown').style.setProperty('--cooldown', `${FIRE_COOLDOWN_MS}ms`);
+  restartAnimation($('cooldown'), 'cooling');
 
   // The crosshair is the centre of the screen, which is also the centre of the video
   // because the video is scaled with object-fit: cover around its centre.

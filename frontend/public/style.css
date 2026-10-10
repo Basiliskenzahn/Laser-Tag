@@ -516,6 +516,46 @@ input {
   }
 }
 
+/* Fire cooldown: a short grey bar under the crosshair whose white fill drains to the left, and
+   the whole bar is gone the moment it's empty. game.js sets --cooldown to the cooldown length. */
+#cooldown {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 38px);
+  width: 40px;
+  height: 4px;
+  margin-left: -20px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(140, 140, 140, 0.7);
+  pointer-events: none;
+  filter: drop-shadow(0 0 2px #000);
+  visibility: hidden;
+}
+
+#cooldown > div {
+  height: 100%;
+  background: #fff;
+  transform-origin: left;
+}
+
+#cooldown.cooling {
+  visibility: visible;
+}
+
+#cooldown.cooling > div {
+  animation: cooldown var(--cooldown, 350ms) linear;
+}
+
+@keyframes cooldown {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
 /* The scoreboard: your own bar first, on the Leave button's line, then everyone else in a tight
    grid underneath - two short rows for a full room of 8 on a phone, one row on a wider screen. */
 #hud {
@@ -884,7 +924,7 @@ input {
    a dark wash over the still-running camera. Then the rank lands, the stats come in line by line
    and the buttons last; results.js sets each element's animation-delay. */
 
-#game-screen.show-results :is(#hud, #banner, #crosshair, #popups, #hit-bars, #leave-game-btn) {
+#game-screen.show-results :is(#hud, #banner, #crosshair, #cooldown, #popups, #hit-bars, #leave-game-btn) {
   display: none;
 }
 

@@ -34,6 +34,7 @@ Defined in `backend/models.py`.
 | `MAX_HP` | 100 | Starting HP |
 | `DAMAGE` | body 20, head 50 | Damage per hit zone |
 | `SHOT_COOLDOWN_MS` | 350 | Server-side minimum time between shots |
+| `SHOT_COOLDOWN_SLACK_MS` | 60 | How much early a shot may arrive and still pass the cooldown (network jitter) |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round |
 
 The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `frontend/public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `frontend/public/screens/lobby.js`). Keep them equal to the server values.

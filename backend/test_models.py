@@ -16,7 +16,7 @@ clock" the methods already call as ``self.now()``.
 
 import unittest
 
-from backend.models import DAMAGE, MAX_HP, MAX_PLAYERS, Room, SHOT_COOLDOWN_MS, COUNTDOWN_MS
+from backend.models import DAMAGE, MAX_HP, MAX_PLAYERS, Room, SHOT_COOLDOWN_MS, SHOT_COOLDOWN_SLACK_MS, COUNTDOWN_MS
 
 GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 
@@ -94,6 +94,14 @@ class RoomTests(unittest.TestCase):
         clock.advance(SHOT_COOLDOWN_MS)
         self.assertEqual(room.shoot("a", "b", "head")["damage"], DAMAGE["head"])
         self.assertEqual(room.players["b"].hp, MAX_HP - DAMAGE["body"] - DAMAGE["head"])
+
+    def test_cooldown_allows_a_little_slack_for_network_jitter(self):
+        room, clock = started_room()
+        room.shoot("a", None, None)
+        clock.advance(SHOT_COOLDOWN_MS - SHOT_COOLDOWN_SLACK_MS - 1)
+        self.assertEqual(room.shoot("a", None, None)["error"], "Cooldown")
+        clock.advance(1)
+        self.assertTrue(room.shoot("a", None, None)["ok"])
 
     def test_cannot_target_self_or_someone_outside_the_room(self):
         room, _ = started_room()
