@@ -19,7 +19,7 @@ A debug session and a normal session for the same room don't resume each other: 
 A text overlay shows live numbers. A typical game-screen readout:
 
 ```
-GPU+Pose+Embed+ReID · 8 fps · 23 ms
+GPU+Pose+Embed+ReID · draw 58 fps · det 19/20 · id 10/10 Hz · 23 ms · reid ≥ 0.65
 1280×720 · 2 people · 2/3 live tracks · 1 identified
 Bob:0.78 reid u0.82 l0.77 g0.69 s0.93 e0.61
 Ranks #4 Bob:0.78/0.21,Alice:0.57/-0.21 | #5 self:0.80/0.22
@@ -28,13 +28,46 @@ Rejected Alice:0.49 score u0.61 l0.40 g0.52 s0.88 e0.30
 
 | Line | Meaning |
 | --- | --- |
-| 1 | Delegate (`GPU` or `CPU`, plus `+Pose`, `+Embed` and `+ReID` for each optional model that loaded); detection runs per second; time of the last detection in ms |
+| 1 | Delegate (`GPU` or `CPU`, plus `+Pose`, `+Embed` and `+ReID` for each optional model that loaded); then the three rates — [see below](#the-three-rates); then the last detection's own time in ms, and the re-identification accept threshold |
 | 2 | Video resolution; people in the last detection; tracks seen recently / all tracks; tracks identified as another player |
 | 3 | Each identified track: name, overall score, the marker `reid` if the [re-identification embedding](../client/identification.md#the-re-identification-embedding-reidjs) decided the match, then **u**pper-body, **l**ower-body, **g**rid, **s**hape and **e**mbedding similarity |
 | `Ranks` | Per track (`#id`), the top 3 candidates as `name:score/margin`. `self` is you (the [self-match guard](../client/identification.md#the-self-match-guard)). |
 | `Rejected` | Unidentified tracks with their best rejected candidate, the rejection reason (`score`, `upper`, `lower`, `grid`, `shape`, `margin`, `self`) and the part scores |
 
-"fps" here is detections per second, not screen frame rate. In the game, detection runs every 120–180 ms, and less often if a phone can't keep up, so 5–8 is normal; boxes are moved along between detections.
+### The three rates
+
+Line 1 used to carry a single number called `fps`. It meant *detections* per second, it was read as
+screen frame rate, and that ambiguity is how taking the forced detection off the shot path looked
+like a frame-rate regression when it was not one — removing it genuinely lowered the displayed
+number, because a forced detection counted as a detection. There are now three numbers and each
+says what it is.
+
+```
+draw 58 fps · det 19/20 · id 10/10 Hz lost
+```
+
+| Field | Meaning |
+| --- | --- |
+| `draw 58 fps` | Animation frames per second: how smooth the overlay actually is, and the only one of the three a player would call "fps". The boxes are redrawn every frame from `liveBox()`'s velocity projection, so this stays near the display rate however slowly detection runs. If it dips while `det` holds up, a detection is starving the draw — the same main-thread contention as button lag |
+| `det 19/20` | Detections per second, achieved against the target. 20 is the searching target (a 50 ms interval); the target shown is always the searching one, so `det 10/20` in the settled tier is expected and fine — the tier suffix says which |
+| `id 10/10 Hz` | Identification checks per live track per second, achieved against `RECHECK_MS`. Measured, not derived: it is the share of (track, cycle) pairs that were a real check, at the rate those cycles happened. `-` until something has been on screen |
+| *(tier suffix)* | Why the loop is running at the rate it is: `lost` (a live track the detector missed this cycle — fast tier, pose relaxed), `acquiring` (a live track with no identity — fast tier), or absent (everything found and named — settled tier, 10 fps) |
+
+Reading it:
+
+- **`det` well under target with `ms` over ~35.** The duty cap is holding the rate down, which is
+  correct behaviour and not a bug: detection may use at most 70% of the main thread
+  (`DETECT_MAX_BUSY_SHARE`), so 50 ms per detection settles at a 71 ms interval and 70 ms at
+  100 ms. The phone is as fast as it can be without starving the button.
+- **`det` under target with `ms` small.** Then the cap is not the limit and the camera probably is:
+  the loop only detects on a video frame it has not seen, so a 15 fps camera caps detection at
+  15 fps whatever the interval asks for.
+- **`id` under target while `det` is at target.** Identification is being throttled by `RECHECK_MS`
+  rather than by the loop. Expected in the settled tier, where detection is 10 fps and a check is
+  due on every one of them.
+- **A `lost` tier that will not clear.** The detector keeps losing somebody who is on screen. That
+  is the case the fast tier and the relaxed pose interval exist for; if it persists, it is a
+  detection-quality problem (light, distance, framing), not a cadence one.
 
 ### Startup and scan costs
 
