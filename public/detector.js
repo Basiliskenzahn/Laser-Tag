@@ -145,14 +145,18 @@ function centerDistanceRatio(a, b) {
   return Math.hypot(ax - bx, ay - by) / scale;
 }
 
-export function detectScanPeople(detector, poseDetector, source, timestamp) {
-  const boxes = [...detectPeople(detector, source, timestamp), ...poseBoxes(poseDetector, source, timestamp)];
+function keepDistinct(boxes, isDistinct) {
   boxes.sort((a, b) => b.score - a.score);
   const kept = [];
-  for (const box of boxes) {
-    if (kept.every((other) => overlap(box, other) < 0.75)) kept.push(box);
-  }
+  for (const box of boxes) if (kept.every((other) => isDistinct(box, other))) kept.push(box);
   return kept;
+}
+
+export function detectScanPeople(detector, poseDetector, source, timestamp) {
+  return keepDistinct(
+    [...detectPeople(detector, source, timestamp), ...poseBoxes(poseDetector, source, timestamp)],
+    (box, other) => overlap(box, other) < 0.75,
+  );
 }
 
 export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
@@ -161,13 +165,10 @@ export function detectTrackedPeople(detector, poseDetector, source, timestamp) {
     poseBox.score >= TRACKED_POSE_MIN_SCORE &&
     objectBoxes.every((objectBox) => overlap(poseBox, objectBox) < 0.12 && centerDistanceRatio(poseBox, objectBox) > 0.65),
   );
-  const boxes = [...objectBoxes, ...poseFallbacks];
-  boxes.sort((a, b) => b.score - a.score);
-  const kept = [];
-  for (const box of boxes) {
-    if (kept.every((other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55)) kept.push(box);
-  }
-  return kept;
+  return keepDistinct(
+    [...objectBoxes, ...poseFallbacks],
+    (box, other) => overlap(box, other) < 0.5 && centerDistanceRatio(box, other) > 0.55,
+  );
 }
 
 export function headBox(box) {

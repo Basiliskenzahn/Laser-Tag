@@ -1,21 +1,16 @@
 // The realtime game server: rooms, players and the message protocol on top of game.js's
-// pure Room logic. No static file serving or TLS here, so this can be attached to any
-// http.Server or https.Server - the combined dev server (server/index.js) attaches it to
-// both its HTTP and HTTPS listeners; the Docker split's backend container (server/ws-server.js)
-// attaches it to a single plain HTTP server instead.
+// pure Room logic. No static file serving or TLS here; server/index.js handles those for
+// local development, while Docker uses the Python backend.
 //
-// Phones talk to it over one of two transports carrying the same JSON messages:
-//   WebSocket       /ws          preferred, lowest latency
-//   HTTP long poll  /api/...     fallback for networks whose proxies reject WebSocket upgrades
-//                                (e.g. the hackathon's SSO gateway answers every upgrade with 502)
+// Phones use HTTP long polling for game control/state and SSE for health/death events.
 
 import crypto from 'node:crypto';
-import { WebSocketServer } from 'ws';
 import { MAX_PLAYERS, Room } from './game.js';
 
 const rooms = new Map(); // code -> Room
 const connections = new Map(); // player id -> { send(msg) }, whichever transport they use
 const startTimers = new Map(); // room code -> timeout
+const eventStreams = new Map(); // room code -> Set<http.ServerResponse> for local-dev SSE
 
 function sendTo(id, msg) {
   connections.get(id)?.send(msg);
@@ -39,6 +34,35 @@ function broadcastRoster(room) {
   for (const id of room.players.keys()) sendTo(id, { type: 'roster', players });
 }
 
+function sendRoomEvent(room, event) {
+  const streams = eventStreams.get(room.code);
+  if (!streams?.size) return;
+  const data = `event: ${event.type || 'message'}\ndata: ${JSON.stringify(event)}\n\n`;
+  for (const res of streams) res.write(data);
+}
+
+function processHit(room, shooterId, targetId, zone) {
+  const result = room.shoot(shooterId, targetId, zone);
+  if (!result.ok) return result;
+  const target = room.players.get(result.victimId);
+  const enriched = { ...result, hp: target?.hp ?? 0, alive: target?.alive ?? false };
+  sendTo(shooterId, { type: 'hitConfirmed', zone: result.zone, damage: result.damage, ko: result.ko });
+  sendTo(result.victimId, { type: 'gotHit', zone: result.zone, damage: result.damage, ko: result.ko });
+  sendRoomEvent(room, {
+    type: 'health',
+    room: room.code,
+    shooterId,
+    targetId: result.victimId,
+    zone: result.zone,
+    damage: result.damage,
+    hp: enriched.hp,
+    alive: enriched.alive,
+  });
+  if (result.ko) sendRoomEvent(room, { type: 'death', room: room.code, playerId: result.victimId, killerId: shooterId });
+  broadcastState(room);
+  return enriched;
+}
+
 function cleanRoomCode(code) {
   return String(code || 'demo').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 16) || 'demo';
 }
@@ -49,6 +73,14 @@ function cleanName(name) {
 
 // Appearance gallery from enrolment: a capped set of angle samples, each a couple of
 // short numeric vectors. Capped defensively since it comes straight from the client.
+const GALLERY_FIELDS = [
+  ['hist', 64, true],
+  ['grid', 256, true],
+  ['lower', 64],
+  ['shape', 8],
+  ['embed', 512],
+];
+
 function cleanVector(v, maxLen) {
   return Array.isArray(v) ? v.slice(0, maxLen).map(Number).filter(Number.isFinite) : [];
 }
@@ -56,16 +88,11 @@ function cleanVector(v, maxLen) {
 function cleanGallery(gallery) {
   if (!Array.isArray(gallery)) return [];
   return gallery.slice(0, 24).map((sample) => {
-    const clean = {
-      hist: cleanVector(sample?.hist, 64),
-      grid: cleanVector(sample?.grid, 256),
-    };
-    const lower = cleanVector(sample?.lower, 64);
-    const shape = cleanVector(sample?.shape, 8);
-    const embed = cleanVector(sample?.embed, 512);
-    if (lower.length) clean.lower = lower;
-    if (shape.length) clean.shape = shape;
-    if (embed.length) clean.embed = embed;
+    const clean = {};
+    for (const [field, maxLen, required] of GALLERY_FIELDS) {
+      const vector = cleanVector(sample?.[field], maxLen);
+      if (required || vector.length) clean[field] = vector;
+    }
     return clean;
   });
 }
@@ -114,11 +141,7 @@ function openSession(conn) {
     if (!room) return;
 
     if (msg.type === 'shoot') {
-      const result = room.shoot(id, msg.targetId, msg.zone);
-      if (!result.ok) return;
-      conn.send({ type: 'hitConfirmed', zone: result.zone, damage: result.damage, ko: result.ko });
-      sendTo(result.victimId, { type: 'gotHit', zone: result.zone, damage: result.damage, ko: result.ko });
-      broadcastState(room);
+      processHit(room, id, msg.targetId, msg.zone);
     } else if (msg.type === 'start') {
       const result = room.start();
       if (!result.ok) {
@@ -145,42 +168,6 @@ function openSession(conn) {
   }
 
   return { receive, close };
-}
-
-// ---- WebSocket transport ----
-
-function handleWebSocket(ws) {
-  const session = openSession({
-    send: (msg) => {
-      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
-    },
-  });
-  ws.isAlive = true;
-  ws.on('pong', () => (ws.isAlive = true));
-  ws.on('message', (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
-      return;
-    }
-    session.receive(msg);
-  });
-  ws.on('close', () => session.close());
-}
-
-// Drop phones that went to sleep without closing the socket.
-function startHeartbeat(wss) {
-  setInterval(() => {
-    for (const ws of wss.clients) {
-      if (!ws.isAlive) {
-        ws.terminate();
-        continue;
-      }
-      ws.isAlive = false;
-      ws.ping();
-    }
-  }, 10_000).unref();
 }
 
 // ---- HTTP long-polling transport ----
@@ -293,13 +280,57 @@ async function receivePosted(poller, req, res) {
   respondJson(res, 204);
 }
 
-// Handles /api/* requests. Returns false for anything else, so the caller can serve it.
+async function receiveHit(req, res) {
+  let msg;
+  try {
+    msg = JSON.parse(await readBody(req));
+  } catch {
+    respondJson(res, 400, { ok: false, error: 'Invalid or oversized JSON body' });
+    return;
+  }
+  const shooterId = msg?.shooterId;
+  const room = rooms.get(cleanRoomCode(msg?.room)) ?? [...rooms.values()].find((candidate) => candidate.players.has(shooterId));
+  if (!room) {
+    respondJson(res, 404, { ok: false, error: 'Unknown player' });
+    return;
+  }
+  const result = processHit(room, shooterId, msg?.targetId, msg?.zone);
+  respondJson(res, result.ok ? 200 : 400, result);
+}
+
+function openEvents(roomCode, req, res) {
+  const code = cleanRoomCode(roomCode);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+  });
+  res.write(': connected\n\n');
+  const streams = eventStreams.get(code) ?? new Set();
+  streams.add(res);
+  eventStreams.set(code, streams);
+  req.on('close', () => {
+    streams.delete(res);
+    if (!streams.size) eventStreams.delete(code);
+  });
+}
+
+// Handles /api/* and /events/* requests. Returns false for anything else, so the caller can serve it.
 export function handleHttp(req, res) {
   const url = new URL(req.url, 'http://x');
+  if (req.method === 'GET' && url.pathname.startsWith('/events/')) {
+    openEvents(decodeURIComponent(url.pathname.slice('/events/'.length)), req, res);
+    return true;
+  }
   if (!url.pathname.startsWith('/api/')) return false;
 
   if (req.method === 'POST' && url.pathname === '/api/connect') {
     connectPoller(res);
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/hit') {
+    receiveHit(req, res);
     return true;
   }
 
@@ -315,13 +346,4 @@ export function handleHttp(req, res) {
   else if (isPoll) poll(poller, req, res);
   else receivePosted(poller, req, res);
   return true;
-}
-
-// Attaches the WebSocket game server (path /ws) to an existing http(s).Server. The server's
-// request handler must also pass /api/* requests to handleHttp() for the polling fallback.
-export function attachGameServer(server) {
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  wss.on('connection', handleWebSocket);
-  startHeartbeat(wss);
-  return wss;
 }
