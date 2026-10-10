@@ -84,6 +84,7 @@ If you add, remove or resize a signature field in `identify.js`:
 - check the [gallery size](../server/protocol.md#gallery-format) still fits under `MAX_BODY_BYTES` (and nginx's `client_max_body_size`);
 - update the scan cache validator `validScanCache()` if the field is required;
 - round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
+- decide whether `averageSignatures()` should L2-normalise it. The default (`averageVectors`) does, and that is free for anything compared with `cosine()`. A field compared any other way may need the raw mean (`meanVector`) instead — `shape` is compared as a log ratio of aspects and does, which is [what went wrong](../shape-feature-bug.md) when it didn't. Changing a field's scale is itself a format change: bump the cache version for it.
 - decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `motion-identity.js` too.
 
 `reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).

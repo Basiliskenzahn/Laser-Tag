@@ -30,7 +30,10 @@ import { showLobby } from './lobby.js';
 
 const SCAN_SAMPLE_COUNT = 6;
 const SCAN_SAMPLE_INTERVAL_MS = 70;
-const SCAN_CACHE_VERSION = 11; // 11: samples carry a re-identification embedding
+// 12: `shape` is stored raw instead of L2-normalised (identify.js averageSignatures). A version-11
+// cache's `shape` is a unit vector, which the fixed comparison reads as a wildly wrong aspect
+// ratio - exactly the silently-wrong case the version exists for.
+const SCAN_CACHE_VERSION = 12;
 const SCAN_MIN_SAMPLES = 12;
 const SCAN_TARGET_SAMPLES = 24;
 const SCAN_MIN_DETECTION_SCORE = 0.16;

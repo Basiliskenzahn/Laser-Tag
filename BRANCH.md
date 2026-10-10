@@ -12,9 +12,12 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 24 JS tests
+npm test                                              # 32 JS tests
 python -m unittest discover -s backend -p "test_*.py" # 32 backend tests
 ```
+
+`npm run eval:shape` is **not** part of that gate — it is a measurement instrument, see the
+`shape-normalisation` row below.
 
 ## What merges here
 
@@ -22,6 +25,7 @@ python -m unittest discover -s backend -p "test_*.py" # 32 backend tests
 | --- | --- | --- |
 | `luxkaiwalker/tracking-smoothing` | **merged** | Position and velocity now have separate exponential time constants instead of one shared per-detection blend factor. Trailing 22.6 px → 7.5 px *and* velocity noise 18 → 12 px/s; the old coupling meant you could only trade one for the other. Interval-independent, which matters because the detection interval isn't fixed |
 | `luxkaiwalker/motion-isolation` | **merged** | Motion is now behind one seam, `identity.js`, which installs a single provider at load. `screens/game.js`, `net.js`, `state.js` and `app.js` contain zero occurrences of the word "motion" |
+| `luxkaiwalker/shape-normalisation` | **not merged yet** | LuxKaiwalker branch. Fixes the `shape` signature's scale mismatch: it is averaged raw instead of L2-normalised, so a live signature and its own gallery entry are finally comparable and the feature stops scoring **0 for the correct person**. `MIN_SHAPE_SCORE` (0.36) and `EVIDENCE_MIN_PART` (0.24) are **unchanged on purpose** — the fix makes them reachable, not retuned. `SCAN_CACHE_VERSION` 11 → 12, since a cached version-11 `shape` is a unit vector the corrected comparison misreads. Adds `test/shape-signature.test.js` (8 cases through the real extraction path) and the `npm run eval:shape` harness. See [the bug report](docs/shape-feature-bug.md) and [the evaluation](docs/shape-normalisation-evaluation.md) |
 | `luxkaiwalker/scan-optimisation` | **merged** | Select-then-embed: OSNet now runs on the frames backing chosen samples rather than every usable frame, pose becomes a rescue-only pass, detection moves to 512 px, thumbnails deferred. **240 → 150 model inferences per scan.** Plus rewritten scanning/detection/identification docs |
 
 | `detection-tuning` (Basiliskenzahn) | **merged, minus two things** | The larger performance change in this area: colour features skipped when re-identification covers the room, OSNet in a Web Worker, velocity-projected boxes, a 3 s median over re-id scores, and every re-id gate tied to one `?reid=`-tunable accept threshold (0.65 instead of a frozen 0.72). See the two exclusions below |
@@ -63,6 +67,13 @@ Experiment and test-harness branches stay separate — they are instruments, not
 | --- | --- |
 | `luxkaiwalker/motion-only-tracking` | Disables appearance identification entirely and stubs the scan gate. A measuring rig for the motion signal; see [the motion-only experiment](docs/motion-only-experiment.md) |
 | `luxkaiwalker/motion-capture-harness` | Capture/replay tooling for real accelerometer data. Test infrastructure, so it stays out — but its `backend/sanitize.py` fix **has** been taken here (motion samples were truncated from the oldest end, discarding exactly the recent samples the 6 s correlation window needs), along with `backend/test_sanitize.py`. **Note it is now stale against this branch:** it hooks `motion-identity.js`, which `motion-isolation` has since rewritten |
+
+## Open items
+
+| Item | Owner of the decision | State |
+| --- | --- | --- |
+| **`MIN_SHAPE_SCORE` / `EVIDENCE_MIN_PART` recalibration.** Deferred out of `luxkaiwalker/shape-normalisation` deliberately. The corrected `shape` gate is now *reachable* at 0.36 and, on synthetic fixtures, rejects 0% of correct pairs and 0% of wrong-person pairs — harmless but near-inert as a way of telling people apart. Whether it should be stricter (or should stop being a hard rejection criterion at all) needs real colour-only `s` scores off a phone where OSNet does not load, via `?debug`. **Do not pick new numbers from the synthetic distributions**; they give the same person the same body aspect by construction and are far too tight. | LuxKaiwalker | open, and deliberately so — the safe state is the one it is in |
+| **Motion on by default.** Flagged under the `detection-tuning` exclusions above. | — | open |
 
 ## Also on this branch
 

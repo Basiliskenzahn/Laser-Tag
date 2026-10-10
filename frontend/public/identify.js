@@ -112,6 +112,10 @@ const MATCH_MARGIN = 0.06; // the winner must clear the runner-up by this much
 const MIN_UPPER_SCORE = 0.5;
 const MIN_LOWER_SCORE = 0.38;
 const MIN_GRID_SCORE = 0.4;
+// 0.36 was chosen against a `shape` that always returned 0 (see averageSignatures), so it has
+// never actually gated anything. It is left as it was on purpose: the normalisation fix makes the
+// gate *reachable*, and picking a new number needs real colour-only score distributions from a
+// phone, not the synthetic ones in docs/shape-normalisation-evaluation.md.
 const MIN_SHAPE_SCORE = 0.36;
 
 // -- re-identification thresholds (cosine similarity of OSNet embeddings) --
@@ -215,7 +219,11 @@ const EVIDENCE_DECAY = 0.82; // per check, so old evidence fades within a second
 const EVIDENCE_ACCEPT = 0.58; // bucket level at which the leader can name the track
 const EVIDENCE_MARGIN = 0.12; // ...and by how much it must lead the runner-up
 const EVIDENCE_MIN_SCORE = 0.42; // colour-path floor for a check to count as evidence
-const EVIDENCE_MIN_PART = 0.24; // ...and the floor for each individual colour part
+// ...and the floor for each individual colour part. `shape` used to be stuck at 0 here too, which
+// meant no check without a re-identification embedding counted as evidence at all; left unchanged
+// for the same reason as MIN_SHAPE_SCORE, so the fix restores the accumulator rather than retuning
+// it.
+const EVIDENCE_MIN_PART = 0.24;
 const EVIDENCE_WEIGHT_ACCEPTED = 1.25; // an accepted check is worth more than a near miss
 const EVIDENCE_WEIGHT_SOFT = 0.45; // a near miss still counts, scaled by how near it was
 const SOFT_LABEL_SCORE = 0.48; // colour-path equivalent of reidSoftLabelScore()
@@ -367,6 +375,9 @@ function bodyGrid(source, box) {
   return normalize(grid);
 }
 
+// Box proportions, deliberately *raw*: shapeSimilarity compares aspect ratios as a log ratio, so
+// unlike every other feature here this one is not scale-invariant and must stay on its own scale
+// on both sides of the comparison. See meanVector for the averaging path that keeps it that way.
 function shapeSignature(source, box) {
   const { aspect, heightRatio, widthRatio } = boxMetrics(source, box);
   return [aspect, heightRatio / Math.max(widthRatio, 0.001)];
@@ -424,23 +435,43 @@ export function extractSignature(source, box, embedder = null, timestamp = perfo
   };
 }
 
-function averageVectors(vectors) {
+// Plain component-wise mean, on whatever scale the samples were on. Missing or non-finite
+// components count as 0, and a short vector is padded, so one bad sample cannot shorten an entry.
+function meanVector(vectors) {
   const len = Math.max(0, ...vectors.map((v) => v?.length ?? 0));
   const avg = new Array(len).fill(0);
   if (!len || !vectors.length) return avg;
   for (const vector of vectors) {
     for (let i = 0; i < len; i++) avg[i] += Number.isFinite(vector?.[i]) ? vector[i] : 0;
   }
-  return normalize(avg.map((v) => v / vectors.length));
+  return avg.map((v) => v / vectors.length);
+}
+
+// ...and the same mean made a unit vector. For everything compared with cosine() the normalisation
+// is free (cosine divides by the magnitudes anyway) and it keeps stored vectors on a uniform scale.
+// `shape` is the one field it is *not* free for - see averageSignatures.
+function averageVectors(vectors) {
+  return normalize(meanVector(vectors));
 }
 
 // One gallery entry out of several samples of the same person at (roughly) the same angle.
+// `shape` is averaged raw while everything else is normalised: shapeSimilarity compares aspect
+// ratios through log(aspectA / aspectB), which is scale-*sensitive*, so an L2-normalised aspect is
+// not an aspect ratio at all. It used to go through averageVectors with the rest, which divided
+// every gallery aspect by its own vector's magnitude and left the live side raw - and because
+// shapeSignature's second component is just the aspect times the frame's own aspect ratio, that
+// divisor collapsed every enrolled person to the same constant (0.600 in a 4:3 frame). A standing
+// person's live aspect of 2-3 against a gallery 0.600 is more than the log(2.2) tolerance, so
+// `shape` scored 0 for the correct person, and both MIN_SHAPE_SCORE and EVIDENCE_MIN_PART were
+// unreachable on every path that applies them - which is both model-free ones, since
+// rejectionReason and evidenceWeight skip the per-part floors only for hasReid.
+// See docs/shape-feature-bug.md.
 export function averageSignatures(signatures) {
   return {
     hist: averageVectors(signatures.map((s) => s.hist)),
     lower: averageVectors(signatures.map((s) => s.lower)),
     grid: averageVectors(signatures.map((s) => s.grid)),
-    shape: averageVectors(signatures.map((s) => s.shape)),
+    shape: meanVector(signatures.map((s) => s.shape)),
     embed: averageVectors(signatures.map((s) => s.embed).filter((v) => v?.length)),
     reid: averageVectors(signatures.map((s) => s.reid).filter((v) => v?.length)),
     usable: signatures.some((s) => s.usable !== false),

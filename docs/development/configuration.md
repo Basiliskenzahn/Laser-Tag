@@ -136,7 +136,7 @@ All of these go into one flag, `isStableTarget()`, which is the classifier's "co
 | `ROTATION_SAMPLE_AVERAGE_COUNT` | 4 | Frames averaged per sample |
 | `SCAN_DETECT_MAX_WIDTH` | 512 | Width detection runs at while processing a recording. Signatures still read the full-resolution frame. Mirrors `GAME_DETECT_MAX_WIDTH`. |
 | `ROTATION_PROCESS_BATCH` | 3 | Recorded frames handled between renderer yields. Lower keeps the progress counter and ✕ snappier; higher spends less time waiting on frames. |
-| `SCAN_CACHE_VERSION` | 11 | Bump when the signature format changes (11 = samples carry a re-identification embedding) |
+| `SCAN_CACHE_VERSION` | 12 | Bump when the signature format changes (11 = samples carry a re-identification embedding; 12 = `shape` is stored raw rather than L2-normalised) |
 
 `SCAN_SAMPLE_COUNT` (6) and `SCAN_SAMPLE_INTERVAL_MS` (70) belong to an older capture path (`captureScanSignature`) that the current rotation scan doesn't use.
 
@@ -171,7 +171,16 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 | `MIN_UPPER_SCORE` | 0.50 |
 | `MIN_LOWER_SCORE` | 0.38 |
 | `MIN_GRID_SCORE` | 0.40 |
-| `MIN_SHAPE_SCORE` | 0.36 |
+| `MIN_SHAPE_SCORE` | 0.36 — **deliberately unchanged**, see below |
+
+`MIN_SHAPE_SCORE` is worth a paragraph, because its value does not mean what the others' do. Until
+[the normalisation fix](../shape-feature-bug.md), `shape` returned 0 for everyone, so 0.36 had
+never gated anything and was chosen against a dead feature. The fix made the gate *reachable*
+without retuning it: that is the conservative state to leave it in, since lowering or raising it
+both need a real distribution of colour-only `s` scores, and the only numbers that exist are
+[synthetic](../shape-normalisation-evaluation.md) (on which 0.36 rejects 0% of correct pairs and
+0% of wrong-person ones). Collect real values with `?debug` on a device where OSNet does not load
+before moving it. The same applies to `EVIDENCE_MIN_PART` below.
 
 **Acceptance, re-identification embedding.** These replace all of the above whenever both sides have a `reid` vector. The source comments record the measurement behind them:
 
@@ -200,7 +209,7 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 | `EVIDENCE_DECAY` | 0.82 | Evidence kept per check |
 | `EVIDENCE_ACCEPT` / `EVIDENCE_MARGIN` | 0.58 / 0.12 | Evidence needed to win, and lead needed over the next player |
 | `EVIDENCE_MIN_SCORE` | 0.42 | Colour score below which a match contributes no evidence |
-| `EVIDENCE_MIN_PART` | 0.24 | Minimum per-part similarity for evidence or a soft label |
+| `EVIDENCE_MIN_PART` | 0.24 | Minimum per-part similarity for evidence or a soft label. **Deliberately unchanged** alongside `MIN_SHAPE_SCORE`: it applies to all four colour parts, so while `shape` was stuck at 0 no colour-path check accumulated evidence at all. The fix restored that path rather than retuning its floor — a real game on a phone without OSNet is the check it wants, not more fixtures. |
 | `SOFT_LABEL_SCORE` | 0.48 | Colour score at which a rejected match can still be the track's candidate |
 
 **Box quality gates** (what counts as a person worth matching at all):
