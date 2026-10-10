@@ -67,6 +67,18 @@ export function emptyInputStats() {
 // would make it false - a synthesized event stamped 0, a legacy event stamped in Unix epoch
 // milliseconds, a stamp from a different time origin - comes out as a number that is impossible
 // for a queueing delay, and each is returned as null rather than printed as a measurement.
+//
+// Two things this figure includes, both deliberate and both worth knowing when reading it:
+//
+//   The platform hop. Chromium stamps a hardware pointer event with the operating system's input
+//   time, which is before the browser's main thread has the event at all. So there is a small
+//   floor here - a few milliseconds - even on a completely idle thread. That is honest: it is
+//   part of what the player waits, and it is far below the delay being investigated.
+//
+//   The listener's own preamble. app.js calls identity.start() before fire(), so whatever that
+//   costs lands in this figure rather than in the shot figure. It is a no-op on the appearance
+//   provider and a cheap early return on the motion one, but it is the reason this is "tap to
+//   fire() entry" rather than "tap to listener entry".
 export function deliveryWait(eventTimeStamp, entryAt) {
   if (!Number.isFinite(eventTimeStamp) || !Number.isFinite(entryAt)) return null;
   // A stamp of exactly 0 is the page's time origin. Some synthesized events carry it, and taken

@@ -132,9 +132,15 @@ function refreshScanPreview() {
 // first, and the detection runs on the next frame about 16 ms later.
 //
 // Chromium-only (`navigator.scheduling.isInputPending`), so it is feature-detected rather than
-// assumed, and wrapped: on any browser without it this reads false and the loop behaves exactly
-// as it did before. Spelled out as two checks because `navigator.scheduling` exists without the
-// method on some builds.
+// assumed: on any browser without it - every iPhone - this reads false and the loop behaves
+// exactly as it did before. The try/catch is a second line of defence for a build where the
+// method exists but refuses to run (it is documented as restricted in some contexts).
+//
+// Those two guards overlap: the try/catch alone would also turn a missing method into `false`,
+// via a TypeError. The feature check stays because catching an exception on every frame of a
+// 60 Hz loop is not a way to answer a question you can answer with a typeof - but it does mean
+// removing either one on its own leaves the suite green, which is recorded deliberately in
+// test/helpers/mutate-input-latency.py rather than left for someone to discover.
 function inputPending() {
   const scheduling = globalThis.navigator?.scheduling;
   if (typeof scheduling?.isInputPending !== 'function') return false;
