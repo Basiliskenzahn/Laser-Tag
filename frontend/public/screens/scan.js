@@ -459,8 +459,10 @@ async function recordRotationVideo() {
 
   // Suppresses the scan screen's preview detection for the duration (see the loop in game.js):
   // the player has been told to turn away from the phone, so the green box has nobody to inform,
-  // and the main thread is wanted for the frame copies.
+  // and the main thread is wanted for the frame copies. The last countdown boxes go with it,
+  // or drawScan would spend twelve seconds outlining where the player used to be standing.
   state.recordingScan = true;
+  state.boxes = [];
   try {
     while (state.autoScanning && performance.now() < endsAt) {
       await nextFrame();

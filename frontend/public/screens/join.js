@@ -93,6 +93,10 @@ export async function enterLobbyFromForm({ resumePlayerId = null, auto = false }
   state.mode = 'lobby';
   markLobbyVisible();
   renderLobby();
+  // The connection has been open through the whole wait, so it may already have failed and
+  // retried. showConnectionProblem only writes to the screen that is showing, and the join screen
+  // was showing at the time, so re-apply whatever it last said now that the lobby can show it.
+  showConnectionProblem(state.bannerOverride);
   if (!state.loopStarted) {
     state.loopStarted = true;
     requestAnimationFrame(loop);
