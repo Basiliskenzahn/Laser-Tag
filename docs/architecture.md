@@ -58,7 +58,7 @@ sequenceDiagram
   Note over S: Every 120–180 ms: detect people,<br/>update tracks, identify them
   S->>S: FIRE: refresh detection if stale,<br/>hit-test the crosshair
   S->>B: POST /api/hit {room, shooterId, targetId, zone}
-  B->>B: Room.shoot(): checks, cooldown, damage
+  B->>B: Room.shoot(): checks, cooldown, damage, stats
   B-->>S: hitConfirmed (via its poll)
   B-->>V: gotHit (via its poll)
   B-->>S: state
@@ -67,7 +67,7 @@ sequenceDiagram
   B--)O: SSE "health" (and "death" on a knockout)
 ```
 
-The shooter's phone decides *whether* the shot hit and *who* was hit. The server checks that the shot is legal (round running, both alive, not yourself, cooldown passed) but trusts the identification. That's a deliberate trade-off for a hackathon game and means a modified client could cheat.
+The shooter's phone decides *whether* the shot hit and *who* was hit. The server checks that the shot is legal (round running, shooter alive, not yourself, cooldown passed) but trusts the identification. A shot that hit nobody is posted too, with no `targetId`: it only counts toward the shooter's stats, and nothing else follows from it. That's a deliberate trade-off for a hackathon game and means a modified client could cheat.
 
 ## Why HTTP polling instead of WebSockets
 

@@ -40,15 +40,17 @@ Errors:
 { "room": "demo", "shooterId": "<player id>", "targetId": "<player id>", "zone": "body" }
 ```
 
-`room` is optional; without it the server finds the room containing `shooterId`. On success:
+`room` is optional; without it the server finds the room containing `shooterId`. A shot that hit nobody is posted with `targetId` (and `zone`) `null` or left out, so the server can count it toward the shooter's [stats](game-rules.md#round-stats). On a hit:
 
 ```json
-{ "ok": true, "victimId": "…", "damage": 20, "zone": "body", "ko": false, "hp": 80, "alive": true }
+{ "ok": true, "hit": true, "victimId": "…", "damage": 20, "zone": "body", "ko": false, "hp": 80, "alive": true }
 ```
+
+`damage` is the zone's full damage, even when the target had less HP left. On a miss, or a shot at a player who is already down: `{ "ok": true, "hit": false }`.
 
 On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if neither room nor shooter is found. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
 
-A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message; see [Streamlining](../streamlining.md) for why one briefly existed in the protocol and why it was removed.
+A miss tells nobody. A hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message; see [Streamlining](../streamlining.md) for why one briefly existed in the protocol and why it was removed.
 
 ### `GET /events/<room>` (Server-Sent Events)
 
@@ -139,7 +141,10 @@ Delivered through `/api/poll`.
   "minPlayers": 2,
   "maxPlayers": 8,
   "players": [
-    { "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true, "forfeited": false }
+    {
+      "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true, "forfeited": false,
+      "stats": { "kills": 0, "damage": 50, "shots": 4, "hits": 2, "headshots": 1, "timeAliveMs": 41250 }
+    }
   ]
 }
 ```
@@ -150,6 +155,7 @@ Delivered through `/api/poll`.
 | `startsInMs` | Milliseconds until play starts during `countdown`, else `null` |
 | `winner` | Player id of the last round's winner, or `null` |
 | `players[].forfeited` | `true` for a player who left mid-round; they stay listed as down until the round ends |
+| `players[].stats` | What the player did this round (or the last one). See [Round stats](game-rules.md#round-stats). |
 
 ## Gallery format
 

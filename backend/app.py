@@ -98,11 +98,12 @@ async def api_poll(request):
 
 
 async def api_hit(request):
-    """Register a hit without a session - the stateless shortcut for a shot.
+    """Register a shot without a session - the stateless shortcut for a shot.
 
     Used by clients that resolve aiming locally and only need the server to
-    arbitrate. The room is taken from the body when given, otherwise it is found
-    by looking for whichever room the shooter is sitting in.
+    arbitrate. Every shot comes here, a miss too (no ``targetId``), so the
+    shooter's accuracy is counted. The room is taken from the body when given,
+    otherwise it is found by looking for whichever room the shooter is sitting in.
     """
     try:
         msg = await request.json()

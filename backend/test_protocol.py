@@ -308,6 +308,30 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
 
+    async def test_a_posted_miss_counts_as_a_shot_and_tells_nobody(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("miss")
+        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        a_id, b_id = a.welcome_id(), b.welcome_id()
+        await a.send({"type": "start"})
+        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+
+        miss = await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": None, "zone": None})
+        self.assertEqual(miss.status, 200)
+        self.assertEqual(await miss.json(), {"ok": True, "hit": False})
+        await asyncio.sleep(0.38)
+        await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "head"})
+
+        await wait_for(lambda: next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]["shots"] == 2)
+        stats = next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]
+        self.assertEqual((stats["hits"], stats["headshots"], stats["damage"]), (1, 1, 50))
+        await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
+        self.assertEqual(sum(m["type"] == "hitConfirmed" for m in a.messages), 1)
+        self.assertEqual(sum(m["type"] == "gotHit" for m in b.messages), 1)
+
     async def test_three_players_can_play_a_free_for_all_to_one_winner(self):
         a = self.track(await self.polling_client())
         b = self.track(await self.polling_client())

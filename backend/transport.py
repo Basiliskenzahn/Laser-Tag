@@ -153,9 +153,13 @@ async def process_hit(room, shooter_id, target_id, zone):
     a private confirmation to the shooter, a private "you were hit" to the
     victim, a ``health`` (and on a KO, ``death``) event to SSE listeners, and a
     fresh scoreboard to the room.
+
+    A miss only counts toward the shooter's stats, so nobody is told. The next
+    ``state`` carries it, and one always follows before a player's round is
+    over: their own knockout, or the end of the round.
     """
     result = room.shoot(shooter_id, target_id, zone)
-    if not result.get("ok"):
+    if not result.get("ok") or not result["hit"]:
         return result
     await send_to(shooter_id, {
         "type": "hitConfirmed",

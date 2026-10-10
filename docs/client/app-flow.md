@@ -80,7 +80,7 @@ An overlay inside the game screen, opened by `showResults()`. It switches `state
 
 - **The reveal** is all CSS: a flash (red when knocked out, white when you win) fades into a dark wash, then the rank lands, the stat lines come in one every 110 ms with a soft tick each, and the buttons appear last. `results.js` only sets each element's `animation-delay`.
 - **The rank** is `#1` for the winner, otherwise one more than the number of other players still standing when you went down. `#1`–`#3` are gold, silver and bronze; the rest are white.
-- **The stats** are placeholders (`PLACEHOLDER_STATS`) until the server tracks per-player stats.
+- **The stats** are your entry's `stats` in the `state` that opened the screen (see [Round stats](../server/game-rules.md#round-stats)): kills, damage dealt, shots fired, accuracy (hits ÷ shots, `–` with no shots), headshots and time alive as `m:ss`. They're final by then, since a downed player can't shoot.
 - **Rematch** stays disabled, with *"Waiting for the round to end…"*, while anyone is still playing. It goes through the lobby (`showLobby()` then `launchGame()`), so a missing scan or a refused start lands on a screen that can show it. **Done** returns to the lobby.
 - A `countdown` (someone else started the next round) takes every phone on this screen straight back into the game.
 
@@ -107,7 +107,7 @@ When enabled, motion itself runs on its own timers rather than in the loop: this
 2. Plays the shot sound and button animation.
 3. If the last detection is older than 90 ms, runs a fresh one (including the pose model when there are at least two candidates), so the shot uses an up-to-date frame.
 4. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
-5. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
+5. POSTs `/api/hit` with the target and zone if a targetable player is under the crosshair, or with no target if not. The miss still goes to the server so it can count your shots fired and accuracy.
 
 ### Who counts as a target
 

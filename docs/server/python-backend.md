@@ -32,7 +32,8 @@ On its own it serves no client. To play against it locally, put something in fro
 | --- | --- | --- |
 | Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
 | Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
-| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time |
+| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time, round stats |
+| `RoundStats` (dataclass) | `models.py` | One player's kills, damage, shots, hits and headshots this round |
 | `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: message queue, last-seen time, the pending poll's future, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |

@@ -260,10 +260,11 @@ export function fire() {
     refreshGameDetection({ forcePose: rosterCandidateCount() > 1 });
   }
   const hit = targetUnderCrosshair(video.videoWidth / 2, video.videoHeight / 2);
-  if (hit) postHit(hit.identity.playerId, hit.zone);
+  // A miss is posted too, with no target: the server counts every shot for your accuracy.
+  postShot(hit?.identity.playerId ?? null, hit?.zone ?? null);
 }
 
-async function postHit(targetId, zone) {
+async function postShot(targetId, zone) {
   try {
     const res = await fetch('/api/hit', {
       method: 'POST',

@@ -11,7 +11,7 @@ truth for the Python backend, which is the deployment that actually runs.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 MIN_PLAYERS = 2
 MAX_PLAYERS = 8
@@ -23,6 +23,22 @@ COUNTDOWN_MS = 3000
 #: Suffix that marks the second, fake player a phone can add to a room for
 #: single-device testing. See :meth:`Room.clone_owner_id`.
 CLONE_SUFFIX = ":debug-clone"
+
+
+@dataclass
+class RoundStats:
+    """What one player did in the current round (or the last one), for the results screen.
+
+    ``shots`` counts every shot the server accepted, misses included, so that
+    ``hits / shots`` is the player's accuracy. ``damage`` is the HP actually taken
+    off opponents: a 50-point headshot on a target with 20 HP left counts as 20.
+    """
+
+    kills: int = 0
+    damage: int = 0
+    shots: int = 0
+    hits: int = 0
+    headshots: int = 0
 
 
 @dataclass
@@ -38,6 +54,9 @@ class Player:
 
     ``forfeited`` marks a player who left mid-round: they stay seated, knocked
     out, until the round ends, then :meth:`Room.finish_if_decided` drops them.
+
+    ``stats`` and ``out_at`` (when this round ended for them: knocked out or
+    forfeited) are reset by :meth:`Room.start`.
     """
 
     id: str
@@ -48,6 +67,8 @@ class Player:
     alive: bool = True
     forfeited: bool = False
     last_shot_at: float = float("-inf")
+    stats: RoundStats = field(default_factory=RoundStats)
+    out_at: float | None = None
 
 
 class Room:
@@ -66,6 +87,10 @@ class Room:
         self.status = "waiting"  # waiting | countdown | playing | over
         self.starts_at = None
         self.winner = None
+        # When the current (or last) round went from countdown to playing, and when it
+        # ended - the bounds of every player's time alive.
+        self.started_at = None
+        self.ended_at = None
         # Handle for the pending "countdown finished, re-broadcast state" task.
         # Owned entirely by the transport layer (see transport.broadcast_state);
         # it lives here only so every Room has the slot, which keeps this module
@@ -164,6 +189,7 @@ class Room:
         if len(survivors) > 1:
             return
         self.status = "over"
+        self.ended_at = self.now()
         self.winner = survivors[0].id if survivors else None
         if self.winner:
             self.players[self.winner].wins += 1
@@ -186,6 +212,7 @@ class Room:
         player.hp = 0
         player.alive = False
         player.forfeited = True
+        player.out_at = self.now()
         self.finish_if_decided()
         return {"ok": True, "ko": True}
 
@@ -214,7 +241,11 @@ class Room:
         for player in self.players.values():
             player.hp = MAX_HP
             player.alive = True
+            player.stats = RoundStats()
+            player.out_at = None
         self.winner = None
+        self.started_at = None
+        self.ended_at = None
         self.status = "countdown"
         self.starts_at = self.now() + COUNTDOWN_MS
         return {"ok": True}
@@ -227,38 +258,58 @@ class Room:
         """
         if self.status == "countdown" and self.starts_at is not None and self.now() >= self.starts_at:
             self.status = "playing"
+            self.started_at = self.starts_at
             self.starts_at = None
 
     def shoot(self, shooter_id, target_id, zone):
+        """Resolve one pull of the trigger.
+
+        ``target_id`` of ``None`` is a shot that hit nobody. It is still checked
+        and still counts toward the shooter's ``shots``, which is what makes their
+        accuracy real. A shot at someone who is already down (the shooter's phone
+        had not heard yet) is a miss the same way. ``hit`` in the result says
+        which it was; the rest of the fields are only there for a hit.
+        """
         self.update()
         shooter = self._player(shooter_id)
-        target = self._player(target_id)
-        if not shooter or not target:
+        target = None if target_id is None else self._player(target_id)
+        if not shooter or (target_id is not None and not target):
             return {"ok": False, "error": "Unknown player"}
-        if target.id == shooter.id:
+        if target is shooter:
             return {"ok": False, "error": "Can't target yourself"}
         if self.status != "playing":
             return {"ok": False, "error": "Round not running"}
-        if not shooter.alive or not target.alive:
-            return {"ok": False, "error": "Target is down"}
+        if not shooter.alive:
+            return {"ok": False, "error": "You are down"}
         # isinstance first: an unhashable JSON value (list/dict) as the zone
         # would otherwise raise TypeError out of the dict lookup.
-        if not isinstance(zone, str) or zone not in DAMAGE:
+        if target and (not isinstance(zone, str) or zone not in DAMAGE):
             return {"ok": False, "error": "Unknown zone"}
 
         now = self.now()
         if now - shooter.last_shot_at < SHOT_COOLDOWN_MS:
             return {"ok": False, "error": "Cooldown"}
         shooter.last_shot_at = now
+        shooter.stats.shots += 1
+        if not target or not target.alive:
+            return {"ok": True, "hit": False}
 
         damage = DAMAGE[zone]
-        target.hp = max(0, target.hp - damage)
+        dealt = min(damage, target.hp)
+        target.hp -= dealt
+        shooter.stats.hits += 1
+        shooter.stats.damage += dealt
+        if zone == "head":
+            shooter.stats.headshots += 1
         ko = target.hp == 0
         if ko:
             target.alive = False
+            target.out_at = now
+            shooter.stats.kills += 1
             self.finish_if_decided()
         return {
             "ok": True,
+            "hit": True,
             "victimId": target.id,
             "damage": damage,
             "zone": zone,
@@ -266,6 +317,15 @@ class Room:
             "hp": target.hp,
             "alive": target.alive,
         }
+
+    def time_alive_ms(self, player):
+        """From the start of the round until it ended for ``player``, or until now."""
+        if self.started_at is None:
+            return 0
+        end = player.out_at if player.out_at is not None else self.ended_at
+        if end is None:
+            end = self.now()
+        return max(0, round(end - self.started_at))
 
     def snapshot(self):
         """The public scoreboard, safe to send to everyone (no galleries)."""
@@ -286,6 +346,14 @@ class Room:
                     "wins": player.wins,
                     "alive": player.alive,
                     "forfeited": player.forfeited,
+                    "stats": {
+                        "kills": player.stats.kills,
+                        "damage": player.stats.damage,
+                        "shots": player.stats.shots,
+                        "hits": player.stats.hits,
+                        "headshots": player.stats.headshots,
+                        "timeAliveMs": self.time_alive_ms(player),
+                    },
                 }
                 for player in self.players.values()
             ],

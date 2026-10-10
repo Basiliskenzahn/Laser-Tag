@@ -12,15 +12,23 @@ import * as sound from '../sound.js';
 import { closeLeaveDialog } from './game.js';
 import { launchGame, showLobby } from './lobby.js';
 
-// Placeholder numbers until the server tracks per-player stats.
-const PLACEHOLDER_STATS = [
-  ['Kills', '3'],
-  ['Damage dealt', '240'],
-  ['Shots fired', '41'],
-  ['Accuracy', '37%'],
-  ['Headshots', '5'],
-  ['Time alive', '2:14'],
-];
+// Your round in numbers, from the stats the server keeps for each player (models.RoundStats).
+function statLines(me) {
+  const s = me?.stats ?? { kills: 0, damage: 0, shots: 0, hits: 0, headshots: 0, timeAliveMs: 0 };
+  return [
+    ['Kills', String(s.kills)],
+    ['Damage dealt', String(s.damage)],
+    ['Shots fired', String(s.shots)],
+    ['Accuracy', s.shots ? `${Math.round((s.hits / s.shots) * 100)}%` : '–'],
+    ['Headshots', String(s.headshots)],
+    ['Time alive', formatDuration(s.timeAliveMs)],
+  ];
+}
+
+function formatDuration(ms) {
+  const seconds = Math.floor(ms / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+}
 
 // Reveal timing, in ms from the moment the screen opens. The flash itself lasts 800ms.
 const RANK_AT = 450;
@@ -51,6 +59,7 @@ function cancelPendingResults() {
 
 export function showResults(game) {
   const won = game.status === 'over' && game.winner === state.myId;
+  const stats = statLines(game.players.find((p) => p.id === state.myId));
   // Everyone still standing finishes ahead of you; the winner is always #1.
   const rank = won ? 1 : game.players.filter((p) => p.alive && p.id !== state.myId).length + 1;
 
@@ -69,7 +78,7 @@ export function showResults(game) {
 
   const list = $('results-stats');
   list.innerHTML = '';
-  PLACEHOLDER_STATS.forEach(([label, value], i) => {
+  stats.forEach(([label, value], i) => {
     const row = document.createElement('div');
     row.style.animationDelay = `${FIRST_STAT_AT + i * STAT_STEP}ms`;
     const dt = document.createElement('dt');
@@ -79,7 +88,7 @@ export function showResults(game) {
     row.append(dt, dd);
     list.append(row);
   });
-  const footerAt = `${FIRST_STAT_AT + PLACEHOLDER_STATS.length * STAT_STEP + 150}ms`;
+  const footerAt = `${FIRST_STAT_AT + stats.length * STAT_STEP + 150}ms`;
   $('results-status').style.animationDelay = footerAt;
   $('results-actions').style.animationDelay = footerAt;
 
@@ -87,7 +96,7 @@ export function showResults(game) {
   results.hidden = false; // coming out of display: none replays every animation from the start
 
   won ? sound.win() : sound.lose();
-  sound.statTicks(PLACEHOLDER_STATS.length, FIRST_STAT_AT / 1000, STAT_STEP / 1000);
+  sound.statTicks(stats.length, FIRST_STAT_AT / 1000, STAT_STEP / 1000);
 }
 
 // A rematch can only start once the round is over for everyone, not just for you.
