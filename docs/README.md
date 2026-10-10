@@ -11,7 +11,7 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 
 ## Client (`public/`)
 
-- [App flow and screens](client/app-flow.md): join → lobby → scan → game, and what `app.js` does on each
+- [App flow and screens](client/app-flow.md): join → lobby → scan → game, and which module owns each
 - [Networking](client/networking.md): long polling, hit posts, motion sharing, SSE, reconnect and resume
 - [Person detection and hitboxes](client/detection.md): MediaPipe models and `detector.js`
 - [Scanning (enrolment)](client/scanning.md): how a player's appearance is recorded
@@ -37,3 +37,4 @@ Laser tag that runs entirely in phone browsers: the camera is the gun, on-device
 - [Debug mode](development/debug-mode.md)
 - [Configuration and tuning](development/configuration.md): every constant worth changing
 - [Contributing](development/contributing.md): conventions and gotchas
+- [Streamlining candidates](streamlining.md): known structural issues, deferred bugs and dead code worth revisiting
