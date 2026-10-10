@@ -3,7 +3,7 @@
 The Python backend (used in Docker and production) is an [aiohttp](https://docs.aiohttp.org/) application with no other dependencies, split into four modules:
 
 - `backend/models.py` - `Player` and `Room`: pure game rules, no networking.
-- `backend/sanitize.py` - cleaning every value that comes from the client (room codes, names, galleries, motion samples) before it touches `models.py`.
+- `backend/sanitize.py` - cleaning every value that comes from the client (room codes, names, galleries) before it touches `models.py`.
 - `backend/transport.py` - the long-polling `Poller`, per-phone `Session`, SSE broadcast helpers, and the room/connection registries.
 - `backend/app.py` - the entrypoint: the seven route handlers, `create_app()`, and `python -m backend.app`. This is the only module `backend/Dockerfile`'s `CMD` launches.
 
@@ -37,14 +37,14 @@ On its own it serves no client. To play against it locally, put something in fro
 | Part | Module | What it is |
 | --- | --- | --- |
 | Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
-| Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `SWEEP_INTERVAL_S`, `MAX_QUEUED_MOTION`, `MAX_QUEUED_MESSAGES`, `MAX_SSE_BACKLOG`, `MAX_BODY_BYTES` (1 MB), `MAX_MOTION_SAMPLES`, `GALLERY_FIELDS` |
+| Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `SWEEP_INTERVAL_S`, `MAX_QUEUED_MESSAGES`, `MAX_SSE_BACKLOG`, `MAX_BODY_BYTES` (1 MB), `GALLERY_FIELDS` |
 | `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time, gallery revision |
 | `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: its token, a capped message queue, last-seen time, a future per parked poll, an eviction reason, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller), `sse_clients` (room code → set of queues) |
-| `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
+| `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids and galleries (including the optional `reid` field) |
 | `broadcast_*`, `roster_for`, `process_hit` | `transport.py` | Fan-out of `state`, `roster`, SSE events and hit messages. `roster_for()` is the per-connection roster [delta](protocol.md#the-roster-delta) |
-| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `motion`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead - see [Streamlining](../streamlining.md). Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
+| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead - see [Streamlining](../streamlining.md). Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
 | `evict`, `displace`, `poller_for` | `transport.py` | Ending one conversation without touching the room: marks a mailbox, drops its queue and delivery record, and wakes its parked poll so the phone is told `410`. See [Seat handover](protocol.md#seat-handover) |
 | `api_*`, `events`, `health`, `create_app` | `app.py` | HTTP handlers and app assembly - the entrypoint |
 | `sweep_once` / `sweep_pollers` | `transport.py` | One reaping pass, and the loop that runs it every 5 s: closes sessions not seen for 30 s |
@@ -87,11 +87,10 @@ All state is in process memory. Restarting the container ends every game and dro
   there is one response shape rather than two.
 - The client is expected to hold only one `/api/poll` open per session, but two are handled: each
   parked poll gets its own future and all of them are woken.
-- Each mailbox is capped (`MAX_QUEUED_MOTION`, `MAX_QUEUED_MESSAGES`). A phone that stops draining
-  it sheds superseded `state` snapshots first, then its oldest `motion` relays, and is evicted
-  rather than trimmed once only messages that cannot be dropped silently are left. Motion and
-  state alone can never evict anybody. See [the roster delta](protocol.md#the-roster-delta) for why
-  a `roster` is never among what is dropped.
+- Each mailbox is capped (`MAX_QUEUED_MESSAGES`). A phone that stops draining it sheds superseded
+  `state` snapshots, and is evicted rather than trimmed once only messages that cannot be dropped
+  silently are left. State alone can never evict anybody. See [the roster
+  delta](protocol.md#the-roster-delta) for why a `roster` is never among what is dropped.
 - SSE queues are capped too (`MAX_SSE_BACKLOG`); a spectator page that stops reading loses its
   oldest events rather than growing without bound. `sse_clients` drops a room's entry with its last
   listener, since room codes are client-chosen and an empty set per code would never be freed.

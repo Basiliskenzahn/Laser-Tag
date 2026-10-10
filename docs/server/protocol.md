@@ -109,18 +109,6 @@ Saves a scan for any player in the room. Replies `scanSaved` to the sender, then
 
 Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
 
-### `motion`
-
-```json
-{ "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
-```
-
-This phone's own motion activity, for [motion-based identity confirmation](../client/identification.md#motion-confirmation-motion). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
-
-The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `v >= 0`, `t` truncated to an integer and `v` rounded to 2 decimals. An empty result is dropped, not relayed.
-
-There's no reply, and no error if the room has nobody else in it.
-
 ## Server → client messages
 
 Delivered through `/api/poll`.
@@ -131,7 +119,6 @@ Delivered through `/api/poll`.
 | `error` | `message` | Sender | A join, scan or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
 | `roster` | `players: [{id, name, gallery?}]` | Everyone in the room, each their own [delta](#the-roster-delta) | Joins, leaves, scans |
-| `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
 | `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
@@ -160,7 +147,7 @@ The server tracks what it has sent per *session* (`Session.sent_gallery_revs`, k
 That last clause is the load-bearing one, and four things hold it up:
 
 - A revision is recorded only *after* the mailbox has accepted the message carrying it (`broadcast_roster` keys off what `Session.send` returns), never before building it.
-- An over-full mailbox never drops a `roster`. It sheds superseded `state` snapshots and the oldest `motion` relays, both of which the client can lose without being misinformed, and is evicted outright once only undroppable messages are left (`Poller._shed`).
+- An over-full mailbox never drops a `roster`. It sheds superseded `state` snapshots, which the client can lose without being misinformed, and is evicted outright once only undroppable messages are left (`Poller._shed`).
 - Eviction clears `sent_gallery_revs` along with the queue, so a mailbox that *did* have messages thrown away cannot also claim it delivered them.
 - `Room.join` refuses to reseat an id that is already in the room, because that would reset `gallery_rev` to `0` and make "same revision" mean two different galleries.
 

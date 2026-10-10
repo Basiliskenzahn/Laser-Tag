@@ -14,7 +14,7 @@
 //   it actually skips, and that sustained input cannot stop detection happening.
 //
 // Real here: screens/game.js, detector.js's box plumbing, identify.js's tracker, roster.js,
-// appearance-identity.js and every threshold. Faked: the camera's pixels, the object detector's
+// target.js and every threshold. Faked: the camera's pixels, the object detector's
 // answer, the clock, and `navigator.scheduling`.
 //
 // `?debug` is OFF in this file (installFakeDom leaves location.search empty and ESM evaluates

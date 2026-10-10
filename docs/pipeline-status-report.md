@@ -5,6 +5,11 @@ changed, what was found, and the four decisions that need a human rather than an
 
 Test state at the time of writing: **19 JS + 32 backend tests passing.**
 
+> **Historical.** Phone motion matching and camera sensor zoom have since been deleted — both
+> were off by default and neither was ever measured in a real game. Everything below about
+> motion is a record of what was true then, not of how the client works now; see
+> [Streamlining](streamlining.md) and [BRANCH.md](../BRANCH.md).
+
 ## What changed
 
 | Change | Effect |

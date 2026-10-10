@@ -143,7 +143,7 @@ test('two people equidistant from two galleries stay unresolved, and so unshoota
   const frames = driveTwo(() => between, 3);
   for (const [i, frame] of frames.entries()) {
     for (const side of ['left', 'right']) {
-      // playerId is what every shot gate starts from (appearance-identity.js isStableTarget and
+      // playerId is what every shot gate starts from (target.js isStableTarget and
       // everything built on it), so an unresolved track is unshootable by construction - asserted
       // without importing across that seam, which would drag in the DOM.
       assert.equal(frame[side].playerId, null, `check ${i}, ${side}: a tie must stay unresolved`);

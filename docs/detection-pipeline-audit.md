@@ -8,11 +8,12 @@ and which are simulated.**
 > landed and before the `detection-tuning` work existed. Two things have changed since and are
 > *not* reflected below:
 >
-> - **Motion is now opt-in.** This document was written when motion fusion ran by default and
->   `?motion=off` was the new escape hatch. That is now inverted: motion is **off unless** you
->   pass `?motion=on` or `?motion=strict`. The risk described under *Phone motion matching* is
->   therefore dormant by default rather than live — which is the better answer to it than any
->   flag.
+> - **Phone motion matching has been deleted.** This document was written when motion fusion ran
+>   by default; it later became opt-in, and has now been removed entirely along with its backend
+>   relay and the identity-provider seam. Everything below under *Phone motion matching* is
+>   history: the risk it describes is gone rather than dormant, and the simulated accuracy figures
+>   it flags as never validated against a real accelerometer were the reason it went. Targeting is
+>   `isStableTarget()` in `frontend/public/target.js` and nothing else.
 > - **Several costs below have been improved** on `detection-tuning` (colour features skipped
 >   when re-identification covers the room, OSNet moved to a Web Worker, cadence raised). See
 >   the newer pipeline overview for current state.

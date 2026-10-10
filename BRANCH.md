@@ -6,14 +6,14 @@
 
 Collect the work from one working session, verify it together, and open **one** pull request into
 `dev` rather than several competing ones. Several of the changes below touch the same files
-(`identify.js`, `motion-identity.js`, `env.js`, `screens/game.js`), so merging them here first is
+(`identify.js`, `env.js`, `screens/game.js`), so merging them here first is
 what makes the conflicts resolvable in one pass instead of three.
 
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 119 JS tests
-python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
+npm test                                              # 264 JS tests
+python -m unittest discover -s backend -p "test_*.py" # 64 backend tests
 ```
 
 `npm run eval:shape` is **not** part of that gate — it is a measurement instrument, see the
@@ -24,18 +24,24 @@ python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
 | Branch | Status | What it does |
 | --- | --- | --- |
 | `luxkaiwalker/tracking-smoothing` | **merged** | Position and velocity now have separate exponential time constants instead of one shared per-detection blend factor. Trailing 22.6 px → 7.5 px *and* velocity noise 18 → 12 px/s; the old coupling meant you could only trade one for the other. Interval-independent, which matters because the detection interval isn't fixed |
-| `luxkaiwalker/motion-isolation` | **merged** | Motion is now behind one seam, `identity.js`, which installs a single provider at load. `screens/game.js`, `net.js`, `state.js` and `app.js` contain zero occurrences of the word "motion" |
+| `luxkaiwalker/motion-isolation` | **merged, since superseded** | Put motion behind one seam, `identity.js`, which installed a single provider at load. `luxkaiwalker/drop-optional-features` has since deleted both the motion provider and the seam — with one implementation left it was pure indirection |
 | `luxkaiwalker/shape-normalisation` | **merged** | LuxKaiwalker branch. Fixes the `shape` signature's scale mismatch: it is averaged raw instead of L2-normalised, so a live signature and its own gallery entry are finally comparable and the feature stops scoring **0 for the correct person**. `MIN_SHAPE_SCORE` (0.36) and `EVIDENCE_MIN_PART` (0.24) are **unchanged on purpose** — the fix makes them reachable, not retuned. `SCAN_CACHE_VERSION` 11 → 12, since a cached version-11 `shape` is a unit vector the corrected comparison misreads. Adds `test/shape-signature.test.js` (8 cases through the real extraction path) and the `npm run eval:shape` harness. See [the bug report](docs/shape-feature-bug.md) and [the evaluation](docs/shape-normalisation-evaluation.md) |
 | `luxkaiwalker/scan-optimisation` | **merged** | Select-then-embed: OSNet now runs on the frames backing chosen samples rather than every usable frame, pose becomes a rescue-only pass, detection moves to 512 px, thumbnails deferred. **240 → 150 model inferences per scan.** Plus rewritten scanning/detection/identification docs |
 | `luxkaiwalker/roster-fanout` | **merged** | The server half of the "nothing happens after a scan" complaint. The `roster` message carried every player's full gallery and was re-sent to everyone whenever anyone scanned, i.e. **N × N copies of ~190 KB per scan** (7.8 MB for six players, over captive-portal wifi). It is now a per-connection delta: membership always complete, a gallery attached only to the phone that doesn't have it yet. **6 players: 7782 → 1148 KB per scan; the scanning phone's own wait 1297 → 191 KB, flat in room size.** Poll responses also lost `json.dumps`' default whitespace (~13%) |
 | `luxkaiwalker/startup-latency` | **merged** | Two user-reported waits. **Join → lobby:** the lobby now opens on camera + object detector alone (7.25 MB) instead of all three MediaPipe models (17.1 MB), with pose and the embedder created in parallel behind it and `connect()` dialled *before* the wait so the lobby arrives populated. Enrolment waits for the models it enrols with, so nothing degrades a gallery silently. **After the rotation:** the idle scan screen was running full-resolution object+pose on every video frame through the countdown *and* the recording (~360 inferences, more than the entire processing pass) — now a throttled object-only preview, off during recording. OSNet's deferred pass is pipelined into `reid.js`'s worker instead of serialised. New `startup.js` and `scan-reid.js`; 26 new tests |
-| `luxkaiwalker/camera-zoom` | **ready, not merged** | LuxKaiwalker branch. Extends identification range by zooming the **camera sensor** during gameplay (`?zoom=`, off by default), which is the only option costed for this that has **no per-frame cost** — it changes what the sensor delivers rather than adding inference — and the only one that helps both halves of the problem: the object detector sees a larger person *and* OSNet gets a larger, sharper crop. **Enrolment deliberately stays at 1×** whatever `?zoom=` says, because galleries are shared between phones and each phone has its own zoom capability, so "the same zoom for both" is not available and 1× is the one level every phone agrees on; `SCAN_CACHE_VERSION` is unchanged. Degrades to today's behaviour completely on a device without zoom (one probe, then never again; `advanced` constraint so a half-supporting device still gets a stream; nothing awaited on the lobby-gate path). New `camera-zoom.js` with no imports, following `startup.js`'s precedent, because `camera.js` cannot be imported under Node. 34 new tests, each mutation-checked. **Informed by but not reusing `335ccac`** — see the note below |
+| `luxkaiwalker/camera-zoom` | **not merged, and now dead** — `luxkaiwalker/drop-optional-features` deleted the feature from this branch instead (off by default, never measured on a phone; its own report said the digital-crop case shrinks the benefit toward a cheaper approach and most needed a real-phone measurement first). Kept for the reasoning below and recoverable from git history. | LuxKaiwalker branch. Extends identification range by zooming the **camera sensor** during gameplay (`?zoom=`, off by default), which is the only option costed for this that has **no per-frame cost** — it changes what the sensor delivers rather than adding inference — and the only one that helps both halves of the problem: the object detector sees a larger person *and* OSNet gets a larger, sharper crop. **Enrolment deliberately stays at 1×** whatever `?zoom=` says, because galleries are shared between phones and each phone has its own zoom capability, so "the same zoom for both" is not available and 1× is the one level every phone agrees on; `SCAN_CACHE_VERSION` is unchanged. Degrades to today's behaviour completely on a device without zoom (one probe, then never again; `advanced` constraint so a half-supporting device still gets a stream; nothing awaited on the lobby-gate path). New `camera-zoom.js` with no imports, following `startup.js`'s precedent, because `camera.js` cannot be imported under Node. 34 new tests, each mutation-checked. **Informed by but not reusing `335ccac`** — see the note below |
+| `luxkaiwalker/drop-optional-features` | **this branch** | LuxKaiwalker branch. Deletes two opt-in features neither of which has ever run in a real game: **phone-motion matching** (`motion-identity.js`, `motion/matching.js`, `motion/sensor.js`, the `identity.js` provider seam, `appearance-identity.js`, the backend `motion` relay with `clean_motion_samples`/`MAX_MOTION_SAMPLES`/`MAX_QUEUED_MOTION`, and the `?motion=` flags) and **camera sensor zoom** (`camera-zoom.js`, `?zoom=`, the `state.mode` polling watcher in `camera.js`). **−3 203 lines across 14 deleted files**, and 49 tests that only existed for them. The prize is the collapsed seam: with one provider left, `identity.js` + `appearance-identity.js` were indirection, so `isStableTarget()` and the `TARGET_*` constants move intact to `frontend/public/target.js` and `screens/game.js` calls `targetPlayerId()` directly instead of a six-method provider object. `isStableTarget()` is byte-for-byte unchanged — it is the live shot gate. No behaviour change for a player who never passed `?motion=` or `?zoom=`, which was already the default path |
 | `luxkaiwalker/asset-delivery` | **merged** | LuxKaiwalker branch. Static delivery only — no client code. Every static response was `no-store` with ETags off, so the **~18 MB of models plus the 11–14 MB WASM runtime were re-fetched on every page load, reload and rejoin**, and nothing was compressed. Now split **by path**: `/models/` and `/vendor/` are cacheable with ETag revalidation (300 s / 1 day), while the app shell stays `no-store` so `git pull && docker compose up --build -d` still takes effect at once. `gzip on` covering text and `application/wasm` — the WASM shrinks ~70%, the models only 7.9–14.0% and so are deliberately excluded (measured, tabulated in [the Docker doc](docs/operations/docker.md#compression)). `/events/` and `/api/` get an explicit `gzip off` on top of the existing `proxy_buffering off`. Adds `test/asset-delivery.test.js` (7 Docker-free checks on the shipped config). Touches no file any other branch in this session touches |
 
 | `luxkaiwalker/range-reid-gate` | **pending** | LuxKaiwalker branch. Players past ~10–12 m were never identified **at any score**: `MIN_MATCH_HEIGHT_RATIO` (0.18 of frame height, 130 px at 720p) made `extractSignature` stamp `usable: false` and `bestAngleScore` return `null`. Not a relaxed constant — below 0.18 a box now reaches a **far band** where only re-identification may score it, and only against a *stricter* bar (the squared shortfall below 0.18, 0 at the line and +0.11 at the floor, i.e. 0.76 there). Both floors are read off OSNet's own 128 × 256 input at the 4×-upscale point (0.09 height, 0.025 width), so the band buys ~1.6× range for a standing person: **10–12 m → 16–19 m**. `MIN_MATCH_HEIGHT_RATIO`, `REID_DEFAULT_THRESHOLD`, `MIN_SHAPE_SCORE`, `EVIDENCE_MIN_PART` and every weight are **unchanged**; at or above 0.18 the whole match object is identical to a pre-band one and `npm run eval:shape` is byte-identical over its 2880 sightings. Also stops the waste it uncovered: `reid.request` ran before `matchGallery` and was never gated by `usable`, so every too-small box bought a full 128 × 256 OSNet inference per check whose result was then discarded. Adds `rangeDiagnostics()` for the `?debug` range readout, exports the three thresholds `tools/shape-evaluation.mjs` had to mirror by value, and `test/range-reid-gate.test.js` (13 cases through the real pixel path, each mutation-checked) |
 | `detection-tuning` (Basiliskenzahn) | **merged, minus two things** | The larger performance change in this area: colour features skipped when re-identification covers the room, OSNet in a Web Worker, velocity-projected boxes, a 3 s median over re-id scores, and every re-id gate tied to one `?reid=`-tunable accept threshold (0.65 instead of a frozen 0.72). See the two exclusions below |
 
 ### What was deliberately left out of `detection-tuning`
+
+> **Historical.** Both features this section weighs — camera zoom and phone motion — have since
+> been deleted by `luxkaiwalker/drop-optional-features`. The reasoning is kept because it is the
+> record of *why* `335ccac` was excluded, and because the digital-crop-vs-sensor-zoom analysis
+> still applies to anyone who revisits identification range.
 
 Merged as `git merge --no-ff 3a9f783`, i.e. the branch **minus its tip commit**:
 
@@ -72,25 +78,23 @@ Merged as `git merge --no-ff 3a9f783`, i.e. the branch **minus its tip commit**:
   `GAME_TRACK_DETECT_INTERVAL_MS` stay at **120 / 180 ms**. His `DETECT_MAX_BUSY_SHARE` (0.7) *is*
   kept, which is safe in either direction: it can only *lengthen* the interval on a phone that
   can't keep up, never shorten it below the 120/180 floor.
-- **`MOTION_ENABLED` stays opt-in.** His branch reverts it to `motionMode !== 'off'` (motion on by
-  default); this branch keeps `=== 'on' || === 'strict'`, matching `b88154f` on `dev`. His score
-  nudge is ported onto the provider seam instead of reinstating the old wiring: `motion-identity.js`
-  exports a `scoreAdjust` provider method, and `screens/game.js` passes
-  `identity.scoreAdjust ?? null` — so with the appearance provider installed the adjustment is
-  simply absent rather than conditionally skipped. **Flag for review:** if the intent is to ship
-  motion on by default, that is a one-line change in `env.js`, not a re-merge.
+- **`MOTION_ENABLED` stayed opt-in**, rather than his `motionMode !== 'off'` (motion on by
+  default). **Now moot:** the whole subsystem is deleted, `MOTION_ENABLED` with it, so there is no
+  default left to choose. His score nudge went too — `screens/game.js` no longer passes a
+  `scoreAdjust`, which was the only caller of that option in `identify.js`.
 
 ### Breaking change to be aware of
 
-`motion-identity.js` now exports **only** `motionIdentity`. `startMotion`, `onRemoteMotion`,
-`recordTrackMotion`, `resolveIdentity` and `motionDebugLine` are no longer exported, and
-`state.motion` / `state.remoteMotion` / `state.trackMotion` are gone (the provider keeps its own
-module-private state and a `WeakMap` keyed on tracks).
+`motion-identity.js` is **deleted**, along with `motion/matching.js`, `motion/sensor.js`,
+`identity.js` and `appearance-identity.js`. `motion-isolation` had already narrowed the module to a
+single `motionIdentity` export and taken its state off the shared `state` object — that is what
+made the feature cleanly removable, and `luxkaiwalker/drop-optional-features` removed it.
 
-That is the point — it's what makes the feature removable — but it means any branch that imported
-those names needs rework before it can rebase onto this. `luxkaiwalker/motion-only-tracking` is
-the known case: it imports four of them and adds a `track.motionBreakdown` field, which now has
-to become another entry in the provider's `WeakMap` rather than a property on the track.
+Any branch that imported those names cannot rebase onto this without dropping the feature it was
+built on. `luxkaiwalker/motion-only-tracking` and `luxkaiwalker/motion-capture-harness` are the
+known cases, and both are dead for this reason — see *What deliberately does not merge here*. The
+one name worth knowing survived: `isStableTarget()` and the `TARGET_*` constants are now in
+`frontend/public/target.js`, unchanged.
 
 ## Held back from the PR into `dev`
 
@@ -121,15 +125,15 @@ Experiment and test-harness branches stay separate — they are instruments, not
 
 | Branch | Why it stays out |
 | --- | --- |
-| `luxkaiwalker/motion-only-tracking` | Disables appearance identification entirely and stubs the scan gate. A measuring rig for the motion signal; see [the motion-only experiment](docs/motion-only-experiment.md) |
-| `luxkaiwalker/motion-capture-harness` | Capture/replay tooling for real accelerometer data. Test infrastructure, so it stays out — but its `backend/sanitize.py` fix **has** been taken here (motion samples were truncated from the oldest end, discarding exactly the recent samples the 6 s correlation window needs), along with `backend/test_sanitize.py`. **Note it is now stale against this branch:** it hooks `motion-identity.js`, which `motion-isolation` has since rewritten |
+| `luxkaiwalker/motion-only-tracking` | **Dead.** Existed only to measure the phone-motion signal, which `luxkaiwalker/drop-optional-features` has deleted. Nothing left for it to measure; not deleted remotely, but do not expect it to apply |
+| `luxkaiwalker/motion-capture-harness` | **Dead.** Capture/replay tooling for real accelerometer data — the measurement that would have justified motion, and which never happened. With the subsystem deleted the harness has no subject: it hooks `motion-identity.js`, and its `backend/sanitize.py` fix (`clean_motion_samples` truncating from the oldest end) went with `clean_motion_samples` itself. Not deleted remotely, but it will not apply |
 
 ## Open items
 
 | Item | Owner of the decision | State |
 | --- | --- | --- |
 | **`MIN_SHAPE_SCORE` / `EVIDENCE_MIN_PART` recalibration.** Deferred out of `luxkaiwalker/shape-normalisation` deliberately. The corrected `shape` gate is now *reachable* at 0.36 and, on synthetic fixtures, rejects 0% of correct pairs and 0% of wrong-person pairs — harmless but near-inert as a way of telling people apart. Whether it should be stricter (or should stop being a hard rejection criterion at all) needs real colour-only `s` scores off a phone where OSNet does not load, via `?debug`. **Do not pick new numbers from the synthetic distributions**; they give the same person the same body aspect by construction and are far too tight. | LuxKaiwalker | open, and deliberately so — the safe state is the one it is in |
-| **Motion on by default.** Flagged under the `detection-tuning` exclusions above. | — | open |
+| **Motion on by default.** Flagged under the `detection-tuning` exclusions above. | — | **closed** — the subsystem is deleted, so there is no default to pick |
 | **The live size gate, `MIN_MATCH_HEIGHT_RATIO` (0.18).** The other half of `335ccac`'s range work, and separable from its crop pass: boxes shorter than 18% of the frame are never identified even when detected, which `335ccac` measured as leaving everyone beyond ~6 m unidentifiable and relaxed to 0.07 with a 96 px floor. `luxkaiwalker/camera-zoom` deliberately does **not** touch it — zoom raises a far player's actual share of the frame, so they clear 0.18 on real pixels, and lowering the gate as well would admit genuinely tiny crops into recognition on top of that. Worth deciding on its own, with `?debug` scores from small boxes, and ideally *after* zoom has been tried in the field, since it changes which boxes exist in the first place. Owner of `identify.js` | LuxKaiwalker | open, deliberately deferred |
 | **Starting the model fetch earlier.** `luxkaiwalker/asset-delivery` deliberately added **no** `<link rel="preload">` hints and left `frontend/public/index.html` untouched. Two reasons: the WASM path is chosen at runtime after a SIMD probe, so a static hint would have to guess among four variants and a wrong guess costs an unused 11 MB on a phone; and an `as="fetch"` hint for a model has to match the eventual request's CORS/credentials mode or the browser fetches twice, which on the 7.25 MB detector would be worse than the bug. The right mechanism is an explicit `fetch()` warm-up where load order is already being decided — i.e. in the startup-sequencing work, not in the delivery layer. | LuxKaiwalker | open, deferred to whoever owns the startup path |
 

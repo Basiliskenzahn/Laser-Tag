@@ -20,13 +20,9 @@ NET = "frontend/public/net.js"
 TRANSPORT = "frontend/public/transport.js"
 LOBBY = "frontend/public/screens/lobby.js"
 JOIN = "frontend/public/screens/join.js"
-MOTION = "frontend/public/motion-identity.js"
-SENSOR = "frontend/public/motion/sensor.js"
-APPEARANCE = "frontend/public/appearance-identity.js"
 
 CONN = "test/connection-lifecycle.test.js"
 TRANS = "test/transport-lifecycle.test.js"
-MOT = "test/motion-teardown.test.js"
 
 MUTATIONS = [
     (
@@ -151,54 +147,6 @@ MUTATIONS = [
         "    if (!token) return;",
         TRANS,
         "bug 8: the goodbye is sent more than once",
-    ),
-    (
-        "M9a-interval-never-cleared",
-        MOTION,
-        "  if (flushTimer !== null) {\n    clearInterval(flushTimer);\n    flushTimer = null;\n  }",
-        "",
-        MOT,
-        "bug 9: the flush interval leaks",
-    ),
-    (
-        "M9b-sensor-never-stopped",
-        MOTION,
-        "  sensor?.stop();\n  sensor = null;",
-        "  sensor = null;",
-        MOT,
-        "bug 9: the devicemotion listener leaks",
-    ),
-    (
-        "M9c-remote-activity-never-cleared",
-        MOTION,
-        "  remoteActivity.clear();",
-        "",
-        MOT,
-        "bug 9: player ids accumulate across rooms",
-    ),
-    (
-        "M9d-no-permission-generation-guard",
-        MOTION,
-        "    if (!granted || attempt !== generation) return;",
-        "    if (!granted) return;",
-        MOT,
-        "bug 9: a sensor starts behind a player who already left",
-    ),
-    (
-        "M9e-stopped-sensor-keeps-its-bin",
-        SENSOR,
-        "    this.bin = null; // a stopped sensor must not flush a half-filled bin into `outgoing`",
-        "",
-        MOT,
-        "bug 9: a stopped sensor can still flush a bin",
-    ),
-    (
-        "M9f-asymmetric-seam",
-        APPEARANCE,
-        "  stop() {}, // nothing to tear down: appearance alone holds no sensor and no per-room state",
-        "",
-        CONN,
-        "bug 9: the identity seam loses stop() on the appearance provider",
     ),
 ]
 

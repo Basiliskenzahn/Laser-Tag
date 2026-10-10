@@ -91,6 +91,27 @@ score distribution off a phone - the only ones that exist are synthetic
 the product/tuning decision this document exists to flag, and it is now the *only* part of this
 item left.
 
+### Motion fusion could veto or silently retarget a correct identification - resolved by deleting it
+
+Was: when motion was enabled, `targetUnderCrosshair()` routed every shot's target through
+`fuseMotion()`. A phone-motion correlation that came back "inconsistent" either discarded a
+correct, confident classifier identification (the shot silently did not register) or retargeted
+to a *different* candidate on motion correlation alone. Both verdicts rested on correlating
+accelerometer streams across two phones over a network, and the only test coverage was a
+simulation - not inter-phone clock drift beyond the +/-400 ms search window, a phone in a pocket
+rather than held, or a backgrounded tab throttling `devicemotion`.
+
+Now: the whole subsystem is deleted. It was opt-in (`?motion=on` / `?motion=strict`) and had never
+been enabled in a real game, every accuracy figure for it came from a synthetic random walk, and
+its own documentation conceded that two players standing still produce no usable correlation - so
+it was a bonus signal carrying the risk above plus ~450 lines of client code, a backend relay and
+a provider seam. Targeting is `isStableTarget()` in `frontend/public/target.js` and nothing else,
+which is exactly the gate that applied whenever the flag was absent.
+
+The seam went with it. `identity.js` and `appearance-identity.js` existed to install one of two
+providers at load; with one implementation left they were pure indirection, so `screens/game.js`
+now calls `targetPlayerId()` directly instead of a six-method provider object.
+
 ## Structural (highest impact)
 
 ### No CI test gate before deploy
@@ -108,42 +129,6 @@ restructuring pass.
 
 ## Known bugs / risks, deferred on purpose
 
-### Motion fusion can veto or silently retarget a correct identification
-
-Added by the motion-matching feature, separate from (and more behaviourally risky than) anything
-pre-existing. When motion is enabled, `targetUnderCrosshair()` routes every shot's target through `fuseMotion()`
-(`motion-identity.js` → `motion/matching.js`). When a player's phone-motion correlation comes back
-"inconsistent," `fuseMotion` either discards a correct, confident classifier identification
-entirely (the shot silently doesn't register) or retargets to a *different* candidate based on
-motion correlation alone. Both verdicts come from correlating accelerometer streams across two
-phones over a network, and the feature's test suite (`test/motion.test.js`) only covers simulated
-motion - not real-world noise like inter-phone clock drift beyond the ±400 ms search window, a
-phone in a pocket instead of held, or a backgrounded tab throttling `devicemotion` events.
-
-Separately: motion-confirmed identities skip `isStableTarget()`'s lock-time/score-floor gate
-entirely (only `LIVE_TRACK_MS` liveness applies), while classifier-only identities still need it -
-an asymmetry that may or may not be intentional.
-
-What *was* done about this: isolated all motion-integration glue into
-`frontend/public/motion-identity.js` and made motion an opt-in (`?motion=on` or `?motion=strict`).
-Without that flag, the client skips sensor permission, sample sharing, remote motion history and
-`fuseMotion`, restoring the exact pre-motion-matching targeting gate - see
-[Configuration → Tuning tips](development/configuration.md#tuning-tips). The fusion
-logic/thresholds themselves were not touched - that's a tuning decision, not a structural one.
-
-That isolation then leaked in four places, all since closed: `screens/game.js` imported
-motion-specific functions, the shared `state` object carried motion fields whether or not the
-feature was on, `net.js` had a `case 'motion':`, and motion state was stamped onto the tracker's
-own track objects. `frontend/public/identity.js` is now the single seam: it installs one identity
-provider at load - `appearance-identity.js` by default, `motion-identity.js` under the flag - and
-nothing else in the app names a signal.
-
-One cosmetic side effect of the bypass: with motion off, the overlay now labels a track
-only once its identity is stable (lock-time passed), where before the motion commit landed, a
-track was labelled as soon as the classifier named it even though only the *shot* required
-stability. If the old, looser labelling is wanted back, that's a one-line change in
-`frontend/public/screens/game.js`'s draw call.
-
 ### A few small, currently-unreachable edges in `identify.js`
 
 Found during the documentation pass, not fixed because none of them are reachable with how the
@@ -155,11 +140,6 @@ code calls them today - listed so they don't surprise someone who changes a call
   open-set mode is ever used live.
 - `averageMatches` doesn't carry a `reid` field through, while `similarityParts` produces one.
   Harmless today - only `agreement.score` is read from its result - but asymmetric.
-- `fuseMotion({ classifier, opponents, checks, requireMotion })` has no defaults for `opponents`/
-  `checks` (unlike `classifier`/`requireMotion`) and would throw on a partial call. Every current
-  caller passes both.
-- `visualActivity()` divides by box height with no guard against zero. `detectTrackedPeople`
-  already filters boxes to `h > 8`, so unreachable in practice.
 
 ## Model delivery: two header problems holding back the client
 
@@ -191,13 +171,9 @@ JavaScript. Found while cutting the join → lobby wait (`luxkaiwalker/startup-l
 
 - **Circular imports in the new frontend module graph**: `net.js` ↔ `screens/game.js`, `net.js` ↔
   `screens/join.js`, `screens/join.js` ↔ `screens/lobby.js` ↔ `screens/scan.js` ↔ `screens/game.js`,
-  and `motion-identity.js` ↔ `net.js`. Currently safe - nothing calls an imported function at
+  Currently safe - nothing calls an imported function at
   module-evaluation time, only `app.js` makes top-level calls, after the whole graph has loaded -
   but it's the thing most likely to break if someone adds top-level work to a screen module later.
-- **`isStableTarget()` and the `TARGET_*` constants live in `motion-identity.js`**, because
-  `classifierOpinion()` is their only caller - but they read like targeting constants that
-  conceptually belong next to the rest of the game loop in `screens/game.js`. Moving them would
-  create a `game.js` ↔ `motion-identity.js` import cycle, which is why they're there instead.
 ## Already fixed in this pass (recorded so nobody re-discovers them as open)
 
 - `COUNTDOWN_MS` was `5000` in the Python backend (`backend/models.py`) and `3000` everywhere else

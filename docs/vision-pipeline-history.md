@@ -25,6 +25,7 @@ model inventory.
 | improved-classifier | `f4dfa39` | **OSNet x0.25** (4th model), purpose-built person re-identification. |
 | **PR #9** | `3a428dc` | **Phone motion matching** — the first signal that isn't vision at all. |
 | `detection-tuning` (Basiliskenzahn) | `05c78f0` … `3a9f783` | Colour features skipped when re-id covers the room; OSNet moved to a Web Worker; a detection duty cap; velocity-projected boxes; a 3 s median over re-id scores; every re-id gate tied to one `?reid=`-tunable accept threshold (0.65). Merged here **without** its last commit (`335ccac`, camera zoom) and **without** its 80/120 ms cadence — see [BRANCH.md](../BRANCH.md). |
+| `luxkaiwalker/drop-optional-features` | — | **Phone motion matching deleted**, undoing PR #9, along with the identity-provider seam it needed and the `?zoom=` camera sensor zoom. Both were off by default and neither had ever been measured in a real game; every accuracy figure for motion came from a simulation. Identification is vision-only again. |
 
 ## Two things the history makes obvious
 

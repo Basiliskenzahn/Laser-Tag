@@ -81,8 +81,7 @@ remembered player id, immediate removal on disconnect, debug clones (mirroring s
 being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
 room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
 reaching both players over their poll loops and producing an SSE `health` event, a three-player
-free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
-everyone except the sender.
+free-for-all fought entirely over `/api/hit`.
 
 Five of those cover [the roster delta](../server/protocol.md#the-roster-delta), with realistically
 sized (~190 KB) galleries so the cost assertions mean something: a scan reaching every phone while
@@ -148,14 +147,6 @@ The other side of the same change. The lobby no longer waits for the embedder or
 
 Tests `scan-reid.js` against a fixture of five samples — both shapes `selectRotationSamples()` produces — with two frames deliberately shared between samples. The headline test embeds that fixture through both the real batched implementation and a naive serial reference and asserts the resulting vectors are identical, because the gallery not changing is the thing that matters. Also covers: a shared frame being embedded once; at least `REID_DISPATCH_BATCH` embeddings genuinely in flight at once (this fails if someone puts the per-frame `await` back); a cancel leaving every signature untouched and dispatching no further batch; a failed inference failing the whole scan rather than a gallery with holes; honest per-frame progress; and the averaging arithmetic.
 
-### `test/motion.test.js`: motion matching
-
-Tests `resample()`, `visualActivity()`, `motionCheck()` and `fuseMotion()` from `frontend/public/motion/matching.js` against a simulation: a seeded random walk/stand schedule, an accelerometer series at 10 Hz on the phone's own clock, and camera boxes at ~7 detections per second with detector jitter.
-
-Covers: interpolation and gap handling; the real player matching their own phone across five seeds; at most 2 of 30 bystanders matching by coincidence (and at least 12 of 30 clearly rejected); tolerance of a 300 ms clock offset; `unknown` when nobody moves; panning bins being masked out (the same corrupted series matches with the ego mask and fails without it); and every branch of the fusion table — confirm, veto, correct, classifier-only, motion-only, ambiguous, self and `requireMotion`.
-
-The thresholds in `motion/matching.js` were chosen against this simulation, so changing them will usually show up here first.
-
 ### `test/range-readout.test.js`: the `?debug` range readout
 
 Tests `frontend/public/range-readout.js`, the line that says whether distant players are failing to be *detected* or being detected and *refused* ([debug mode](debug-mode.md#the-range-readout)). The tests that matter are the ones that fail if the line stops distinguishing those two: the box count coming from the detections rather than from coasting tracks; the `*`/`-` marks for which side of the gate and floor a box height falls on, including the case where the printed ratio rounds to `.18` but the box is genuinely under it; a far floor that does not exist being left out rather than invented; and only the screens that actually detect getting a reading at all. Every expectation is a **literal** — never derived from the thresholds passed in, which would make the assertion `x >= x`.
@@ -174,15 +165,14 @@ A structural test over `screens/game.js`, because that module cannot be imported
 
 ## What isn't covered
 
-- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.
+- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally.** Gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send. Worth a dedicated unit test file if `sanitize.py` grows more rules.
 - **Detection, scanning, and most of signature extraction.** These need a real browser, camera and models. Test them by hand with `?debug`. The exception is the canvas-read half of `extractSignature()`, which `test/fixtures/synthetic-frame.mjs` now makes testable — the pattern is reusable for the other colour features if a reason comes up. What it cannot stand in for is real pixels: a synthetic flat-colour person says nothing about whether a histogram discriminates real clothing.
 - **The re-identification model itself.** `reid.js` needs ONNX Runtime Web, a canvas and the model file, so nothing exercises the loading, pre-processing or the request/collect queue. Only the matching rules built on its output are tested.
-- **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers come from simulation, not from real phones.
 - **CI.** The deploy workflow doesn't run either test suite. Run them before merging - see [Streamlining](../streamlining.md).
 
 ## Writing tests
 
-- Put browser-free client tests in `test/`. Keeping the pure logic in modules with no browser APIs (as `motion/matching.js` does) is what makes this possible — prefer that over mocking `window`.
+- Put browser-free client tests in `test/`. Keeping the pure logic in modules with no browser APIs (as `startup.js` and `target.js` do) is what makes this possible — prefer that over mocking `window`.
 - A new JS file under `test/` is picked up by the glob in the `test` script automatically. Anywhere else, add it to that script in `package.json`.
 - A new Python file under `backend/` matching `test_*.py` is picked up by `python -m unittest discover` automatically - no registration needed.
 - For backend protocol tests: use a **unique room code per test** (`unique_room()` in `test_protocol.py`), since the module-level registries in `backend.transport` are shared across the whole test process. For model tests: fake the clock with `room.now = lambda: t` rather than real `time.sleep()`.

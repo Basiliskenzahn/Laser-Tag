@@ -46,7 +46,6 @@ In `backend/transport.py`:
 | `POLL_WAIT_MS` | 20 000 | How long a poll is held open. Keep it below your proxy's timeout. |
 | `POLL_EXPIRY_MS` | 30 000 | A session with no activity for this long is dropped and its player leaves |
 | `MAX_BODY_BYTES` | 1 MB (`1024 * 1024`) | Request body limit. A 24-sample gallery with re-identification embeddings is ~210 KB; see [gallery size](../server/protocol.md#gallery-format). |
-| `MAX_MOTION_SAMPLES` | 32 | Motion samples accepted per relayed `motion` message (~3 s at 10 Hz) |
 | `GALLERY_FIELDS` | | Accepted signature fields and their maximum lengths |
 
 nginx has its own limit in `frontend/common-locations.conf`: `client_max_body_size 2m` on `/api/`. Raising `MAX_BODY_BYTES` above 2 MB means raising that too.
@@ -206,7 +205,6 @@ them.
 | --- | --- | --- |
 | re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.65 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In real tests 0.80 recognised nobody (phones score lower than the benchmark); with the median below, players scored 0.70–0.80+ and non-players 0.60–0.65, and 0.70 and 0.68 had no false positives. Go back to `?reid=0.68` if bystanders get named. |
 | `REID_HISTORY_MS` (identify.js) | 3000 | Decisions use the median of a track's re-identification scores for each player over this window, not the latest check: a brief spike doesn't name a bystander and a single dip doesn't cost a player their name. Revoking a name (`REID_REVOKE_*`) still uses the latest checks. |
-| `MOTION_SCORE_BONUS` / `MOTION_SCORE_PENALTY` (motion-identity.js) | +0.06 / −0.08 | Added to a track's typical score for a player when that player's phone motion is consistent / inconsistent with the person on screen. 0 unless `?motion=on`/`?motion=strict` installed the motion provider, and 0 while nobody moves. |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
 | `reidEvidenceMinScore()` | threshold | Below this a check contributes no evidence. Was fixed at 0.62, then threshold − 0.03, which at 0.65 let people who usually score 0.62–0.64 build up evidence and get named; the 3 s median bridges bad checks instead. |
 | `reidSoftLabelScore()` | threshold | A rejected match this good can still be the track's candidate |
@@ -283,42 +281,9 @@ Two more behaviours are set inline rather than as named constants:
 
 Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degrade accuracy rather than fail.
 
-## Motion
-
-`frontend/public/motion/sensor.js` (what this phone shares):
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `PANNING_DEG_PER_S` | 10 | Own rotation rate above which camera-image motion isn't trusted for that 100 ms bin |
-| `HISTORY_MS` | 12 000 | How much of this phone's own history is kept |
-
-`frontend/public/motion/matching.js` (the comparison). `SAMPLE_MS` is exported; the rest are the `DEFAULTS` object, overridable per call:
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `SAMPLE_MS` | 100 | Grid both series are resampled onto (10 Hz). Also the sensor's bin size. |
-| `windowMs` | 6000 | How much history is correlated. 4 s windows let 10–20% of bystanders match by coincidence. |
-| `maxLagMs` | 400 | Clock offset between phones that the search tolerates |
-| `minValidFraction` | 0.6 | Share of the window that must be usable (data present, shooter not panning) |
-| `minVisualSpread` | 0.08 | Box heights/s the person must actually vary by, or the answer is `unknown` |
-| `minRemoteSpread` | 0.25 | m/s² the player's phone must actually vary by, or the answer is `unknown` |
-| `consistentAt` | 0.75 | Correlation from which motion confirms the identity |
-| `inconsistentAt` | 0.30 | Correlation at or below which an active pair contradicts it |
-| `gapMs` (in `resample`) | 350 | How far a sample may be from a grid point and still be interpolated |
-
-`frontend/public/motion-identity.js`:
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `MOTION_SEND_INTERVAL_MS` | 500 | How often this phone's new samples are sent to the room |
-| `MOTION_CHECK_MS` | 300 | How often a track's motion checks are recomputed |
-| `MOTION_HISTORY_MS` | 12 000 | History kept per remote player and per track |
-
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or require motion confirmation with `?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
-- **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict` — with motion off the debug overlay has no `motion` line at all, because the provider isn't installed. Once it is there, `off` means permission was never granted, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.
-- **Suspect motion fusion itself is causing bad shots (vetoed or retargeted hits):** remove the motion parameter or use `?motion=off`, which installs the appearance-only provider instead, restoring the appearance-only targeting gate (`isStableTarget()` only, no motion veto/correction).
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.

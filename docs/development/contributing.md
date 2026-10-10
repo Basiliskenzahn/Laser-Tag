@@ -14,17 +14,12 @@ frontend/               nginx container AND the phone client it serves
     roster.js            Read-only lookups over the server's roster/game snapshot
     camera.js            Starting the camera and on-device models, once
     net.js                Long-polling/SSE connection and server-message handling
-    identity.js          The "who is that person?" seam: installs one identity provider
-    appearance-identity.js  The default provider: isStableTarget() + appearance-only resolve()
-    motion-identity.js   The ?motion=on/strict provider: motion plumbing, sealed behind it
+    target.js            When an identified person may be shot: isStableTarget(), TARGET_*
     screens/
       join.js, lobby.js, scan.js, game.js
     detector.js          MediaPipe models, person boxes, hitboxes
     identify.js          Signatures, matching, tracker
     reid.js              OSNet re-identification embeddings (ONNX Runtime Web)
-    motion/
-      sensor.js           This phone's accelerometer/gyroscope activity
-      matching.js         Correlating that with on-screen motion; fusing it with the classifier
     transport.js          Long-polling connection (wrapped by net.js)
     sound.js              Synthesised sound effects
     identify.test.js
@@ -38,7 +33,7 @@ backend/                Python game server (Docker, production, and local dev - 
   test_protocol.py       HTTP/SSE protocol tests (aiohttp.test_utils, polling clients)
   Dockerfile
   requirements.txt
-test/                   Browser-free client tests (motion, reid matching)
+test/                   Browser-free client tests (reid matching, scanning, transport, latency)
 scripts/                Windows PowerShell helpers
 docs/                   You are here
 deprecated/             Archived code, not built/run/tested - see deprecated/README.md
@@ -57,10 +52,10 @@ docker-compose.yml
 
 - **No build step and no framework.** The client is plain ES modules loaded straight by the browser. Keep it that way unless there's a strong reason.
 - **No runtime dependencies beyond what's there.** The client only uses MediaPipe and ONNX Runtime Web; the Python server only uses aiohttp. Versions are pinned exactly.
-- **Comments explain why**, not what. Modules start with a short header comment describing their role, and anything tuned against measurements records the numbers (see the threshold tables in `identify.js` and `motion/matching.js`).
+- **Comments explain why**, not what. Modules start with a short header comment describing their role, and anything tuned against measurements records the numbers (see the threshold tables in `identify.js`).
 - **Small, named constants** at the top of each module rather than magic numbers. Document new tunables in [Configuration](configuration.md).
-- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, motion, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
-- **Keep browser APIs out of pure logic.** `motion/matching.js` touches no DOM and is therefore unit-tested in Node. Prefer that split for new identification logic over mocking the browser.
+- **Graceful degradation.** Optional features (pose model, embedder, re-identification model, wake lock, vibration, `localStorage`) are wrapped so a failure never blocks the game. Each one removes a signal and the game falls back to a weaker one; see [the signal order](../client/identification.md#the-signals-in-order-of-strength).
+- **Keep browser APIs out of pure logic.** `startup.js` touches no DOM and is therefore unit-tested in Node. Prefer that split for new identification logic over mocking the browser.
 - **User-facing errors are plain sentences** that say what to do ("step a little closer"), not codes.
 
 ## Changing rules, messages, validation or limits
@@ -85,7 +80,7 @@ If you add, remove or resize a signature field in `identify.js`:
 - update the scan cache validator `validScanCache()` if the field is required;
 - round the values before they go on the wire, as `compactEmbedding` and `reid.js` do;
 - decide whether `averageSignatures()` should L2-normalise it. The default (`averageVectors`) does, and that is free for anything compared with `cosine()`. A field compared any other way may need the raw mean (`meanVector`) instead — `shape` is compared as a log ratio of aspects and does, which is [what went wrong](../shape-feature-bug.md) when it didn't. Changing a field's scale is itself a format change: bump the cache version for it.
-- decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `motion-identity.js` too.
+- decide how the field combines in `similarityParts()`. If its scores aren't on the same scale as the colour score it needs its own thresholds, which means touching `rejectionReason()`, `evidenceWeight()` and `softLabelMatch()` — all three branch on `hasReid` for exactly this reason — and probably a `TARGET_MIN_*` in `target.js` too.
 
 `reid` is the worked example of all of the above; see [Identification → Swapping in a better model](../client/identification.md#swapping-in-a-better-model).
 
@@ -104,7 +99,6 @@ Useful starting points if you're looking for something to work on:
 - **Similar outfits:** much better since the [re-identification model](../client/identification.md#the-re-identification-embedding-reidjs) landed, but a phone where it fails to load falls back to the colour signature, where players dressed alike are still often left unidentified.
 - **Re-identification latency:** the model is asynchronous and a track isn't identified at all until its first embedding arrives, which costs a moment on a newly visible player. A second in-flight inference, or a worker, would cut it.
 - **Warm-up doesn't cover every input variant:** `camera.js` warms each model on a 512px-wide canvas, matching the gameplay path. A camera that delivers ≤~517px feeds the `<video>` element directly instead (`gameplayInferenceSource`), and the scan screen uses full-resolution video and a 1024px canvas — if MediaPipe recompiles per input source type or size, those stay cold. Unverified without a browser profile.
-- **Motion is opt-in and needs movement:** use `?motion=on` or `?motion=strict`; iOS only prompts inside a tap, and two players standing still produce no usable correlation, so motion is a bonus signal rather than something that can be relied on.
 - **Rectangular hitboxes:** pose landmarks could give body-shaped hitboxes and a precise head position.
 - **Solo scanning:** a scan needs a second person holding the phone. A front-camera or mirror mode would remove that.
 - **iOS vibration:** Safari doesn't support `navigator.vibrate`.
