@@ -76,7 +76,7 @@ const EMBED_PRECISION = 10_000;
 // Enrolment ("scan") is a cooperative, posed shot, so it can afford slightly looser limits than
 // live matching, which has to cope with whatever the game gives it.
 const MIN_SCAN_HEIGHT_RATIO = 0.18;
-const MIN_MATCH_HEIGHT_RATIO = 0.18;
+export const MIN_MATCH_HEIGHT_RATIO = 0.18;
 const MIN_BOX_WIDTH_RATIO = 0.035;
 const MIN_SCAN_BOX_WIDTH_RATIO = 0.025;
 const MIN_ASPECT = 0.58;
@@ -86,6 +86,43 @@ const MAX_SCAN_ASPECT = 7.0;
 const BOX_EDGE_PAD_RATIO = 0.01; // how close to the frame edge counts as touching it
 const CLIPPED_OK_HEIGHT_RATIO = 0.55; // a box touching the edge is still usable once it's this tall
 const CLIPPED_OK_SCAN_HEIGHT_RATIO = 0.42;
+
+// -- the far band: how much below MIN_MATCH_HEIGHT_RATIO re-identification alone may still try --
+// MIN_MATCH_HEIGHT_RATIO refuses a signature outright, at any score, so a player past roughly
+// 10-12 m was never identified: 0.18 of a 720p frame is 130 px, which is a 1.7 m person at about
+// that distance through a ~45 degrees vertical field of view. The limit is only real for the
+// colour features, though - re-identification (signal 1) is the one signal trained across scales.
+//
+// Both floors are the point where the crop stops carrying detail for *that model*, read off its
+// own input size (reid.js: 128 x 256). The existing gate already says what an acceptable upscale
+// is: 0.18 x 720 = 130 px into a 256 px input is 1.97x, and the matching width floor,
+// MIN_BOX_WIDTH_RATIO x 1280 = 45 px into 128 px, is 2.8x. One more octave of upscale - 4x, so a
+// quarter of the linear detail and a sixteenth of the pixels the model expects - is where a
+// standing person's distinguishing bands (the shirt/trouser split, hair, a logo) drop under about
+// 8 px tall, which is also where a single pixel of detector box jitter moves them by more than one
+// band. So:
+//   height: 256 / 4 = 64 px, 64 / 720  = 0.089 -> 0.09, exactly half of MIN_MATCH_HEIGHT_RATIO
+//   width:  128 / 4 = 32 px, 32 / 1280 = 0.025 (which is MIN_SCAN_BOX_WIDTH_RATIO, independently)
+//
+// Which of the two binds depends on how slim the box is, and for a standing person it is the width
+// one: at an aspect of 2.5 in a 16:9 frame a box's width ratio is its height ratio / 4.44, so 32 px
+// wide is reached at 0.111 of frame height while 64 px tall is still 0.089 away. The band therefore
+// reaches about 0.111 for someone standing - 1.6x the current range, so 10-12 m becomes 16-19 m -
+// and all the way to 0.09 for the squatter boxes (crouching, half a body in frame) where height is
+// the axis that runs out first. That asymmetry is the detector's box shape, not a fudge: the 128 x
+// 256 input is 1:2, a person is nearer 1:2.5, so width is the axis the model upsamples hardest.
+// Below the band nothing is attempted and nothing is spent - see Tracker.update, which also stops
+// asking reid.js for an embedding there.
+export const FAR_REID_MIN_HEIGHT_RATIO = 0.09;
+export const FAR_REID_MIN_WIDTH_RATIO = 0.025;
+// A box in the band has to clear *more* than REID_DEFAULT_THRESHOLD, not less: the crop is mostly
+// interpolation, so its score is less trustworthy and the bar goes up. At the floor the penalty is
+// this, putting the requirement at 0.65 + 0.11 = 0.76 - the strictest row in the measured table
+// below (3.1% bystanders accepted), and still under reidInitialLock(), so a far track can never be
+// named on one check alone. The penalty is the normalised shortfall *squared*: it has zero slope at
+// 0.18, so a detector box jittering across the line behaves the same on both sides, and it grows
+// toward the floor roughly as the crop's pixel count falls away.
+export const FAR_REID_MAX_PENALTY = 0.11;
 
 // -- colour/grid similarity weights: the score when neither model is available (signal 3) --
 const HIST_WEIGHT = 0.42;
@@ -116,7 +153,10 @@ const MIN_GRID_SCORE = 0.4;
 // never actually gated anything. It is left as it was on purpose: the normalisation fix makes the
 // gate *reachable*, and picking a new number needs real colour-only score distributions from a
 // phone, not the synthetic ones in docs/shape-normalisation-evaluation.md.
-const MIN_SHAPE_SCORE = 0.36;
+// Exported only so tools/shape-evaluation.mjs can report against the live value instead of a
+// mirror of its own: a retune here has to reach the harness, or it measures a gate the game no
+// longer uses. Exporting is not permission to change it.
+export const MIN_SHAPE_SCORE = 0.36;
 
 // -- re-identification thresholds (cosine similarity of OSNet embeddings) --
 // Chosen on Market-1501 in simulated games of 2-4 players, in the game's closed-set mode, per
@@ -146,6 +186,11 @@ export function setReidThreshold(value) {
 export function getReidThreshold() {
   return reidMatchThreshold;
 }
+
+// The re-identification score one check has to clear. The plain threshold for a box that passed
+// MIN_MATCH_HEIGHT_RATIO - `rangePenalty` is absent, and absent is 0 - and the threshold plus the
+// far-band penalty for one that did not (see FAR_REID_MAX_PENALTY and matchRange).
+const reidScoreFloor = (match) => reidMatchThreshold + (match?.rangePenalty ?? 0);
 
 // A named track whose re-identification score for its own player drops below this on several
 // checks in a row is someone else now (people walking past each other, the player leaving and a
@@ -218,12 +263,13 @@ const HIGH_CONFIDENCE_INITIAL_LOCK = 0.66; // colour-only equivalent of reidInit
 const EVIDENCE_DECAY = 0.82; // per check, so old evidence fades within a second or so
 const EVIDENCE_ACCEPT = 0.58; // bucket level at which the leader can name the track
 const EVIDENCE_MARGIN = 0.12; // ...and by how much it must lead the runner-up
-const EVIDENCE_MIN_SCORE = 0.42; // colour-path floor for a check to count as evidence
+// Exported for the same reason as MIN_SHAPE_SCORE, and equally not up for retuning here.
+export const EVIDENCE_MIN_SCORE = 0.42; // colour-path floor for a check to count as evidence
 // ...and the floor for each individual colour part. `shape` used to be stuck at 0 here too, which
 // meant no check without a re-identification embedding counted as evidence at all; left unchanged
 // for the same reason as MIN_SHAPE_SCORE, so the fix restores the accumulator rather than retuning
 // it.
-const EVIDENCE_MIN_PART = 0.24;
+export const EVIDENCE_MIN_PART = 0.24;
 const EVIDENCE_WEIGHT_ACCEPTED = 1.25; // an accepted check is worth more than a near miss
 const EVIDENCE_WEIGHT_SOFT = 0.45; // a near miss still counts, scaled by how near it was
 const SOFT_LABEL_SCORE = 0.48; // colour-path equivalent of reidSoftLabelScore()
@@ -271,9 +317,9 @@ function boxMetrics(source, box) {
 
 // 'ok', or why this box is not worth a signature. The reason is shown to the player during
 // enrolment ("step a little closer"), so the order of these checks is the order of advice.
-function boxQuality(source, box, minHeightRatio, { scan = false } = {}) {
+function boxQuality(source, box, minHeightRatio, { scan = false, minWidthRatio } = {}) {
   const m = boxMetrics(source, box);
-  const minWidthRatio = scan ? MIN_SCAN_BOX_WIDTH_RATIO : MIN_BOX_WIDTH_RATIO;
+  minWidthRatio ??= scan ? MIN_SCAN_BOX_WIDTH_RATIO : MIN_BOX_WIDTH_RATIO;
   const minAspect = scan ? MIN_SCAN_ASPECT : MIN_ASPECT;
   const maxAspect = scan ? MAX_SCAN_ASPECT : MAX_ASPECT;
   const clippedHeight = scan ? CLIPPED_OK_SCAN_HEIGHT_RATIO : CLIPPED_OK_HEIGHT_RATIO;
@@ -295,8 +341,65 @@ export function scanBoxProblem(source, box) {
   return box ? boxQuality(source, box, MIN_SCAN_HEIGHT_RATIO, { scan: true }) : 'no-person';
 }
 
-function usableMatchBox(source, box) {
-  return usableBox(source, box, MIN_MATCH_HEIGHT_RATIO);
+// Where a live box sits relative to the match gates, and what that costs it:
+//
+//   'ok'            passed boxQuality outright. penalty 0, and everything downstream behaves
+//                   exactly as it did before the far band existed.
+//   'far-reid'      too small for the colour features but inside the band, so re-identification
+//                   may still try it against a stricter score (penalty > 0, see bestAngleScore).
+//   'below-floor'   under FAR_REID_MIN_HEIGHT_RATIO or FAR_REID_MIN_WIDTH_RATIO: no path can use
+//                   this box, so no path - and no OSNet inference - is spent on it.
+//   'partial-body'  }  boxQuality's two non-distance refusals, unchanged. They are reported
+//   'edge-clipped'  }  as-is rather than folded into the distance ones.
+//
+// Only the *height* gate relaxes. A box that is tall enough but failed on width is a sliver, not a
+// distant person, and a sliver is under the floor however far away it is.
+function matchRange(source, box) {
+  const quality = boxQuality(source, box, MIN_MATCH_HEIGHT_RATIO);
+  if (quality !== 'too-far') return { range: quality, penalty: 0 };
+  const { heightRatio } = boxMetrics(source, box);
+  if (heightRatio >= MIN_MATCH_HEIGHT_RATIO) return { range: 'below-floor', penalty: 0 };
+  const far = boxQuality(source, box, FAR_REID_MIN_HEIGHT_RATIO, { minWidthRatio: FAR_REID_MIN_WIDTH_RATIO });
+  if (far === 'too-far') return { range: 'below-floor', penalty: 0 };
+  if (far !== 'ok') return { range: far, penalty: 0 };
+  const shortfall = (MIN_MATCH_HEIGHT_RATIO - heightRatio) / (MIN_MATCH_HEIGHT_RATIO - FAR_REID_MIN_HEIGHT_RATIO);
+  return { range: 'far-reid', penalty: FAR_REID_MAX_PENALTY * shortfall * shortfall };
+}
+
+// Why live boxes were refused a signature, since the last reset. Plain integer increments on a
+// path that already runs once per check (Tracker.update), so it is cheap enough to leave on; the
+// ?debug range readout reads it. The shape is fixed even when a counter never moves.
+const rangeCounts = { ok: 0, tooFar: 0, farReid: 0, belowFloor: 0, partialBody: 0, edgeClipped: 0 };
+
+// `allowed` only means anything for the far band: whether re-identification got far enough to
+// produce a ranking at all, which is what separates a box the band rescued from one it refused.
+function countRange(signature, allowed) {
+  switch (signature?.range) {
+    case 'ok':
+      rangeCounts.ok++;
+      break;
+    case 'far-reid':
+      if (allowed) rangeCounts.farReid++;
+      else rangeCounts.tooFar++;
+      break;
+    case 'below-floor':
+      rangeCounts.belowFloor++;
+      break;
+    case 'partial-body':
+      rangeCounts.partialBody++;
+      break;
+    case 'edge-clipped':
+      rangeCounts.edgeClipped++;
+      break;
+  }
+}
+
+export function rangeDiagnostics() {
+  return { ...rangeCounts };
+}
+
+export function resetRangeDiagnostics() {
+  for (const key of Object.keys(rangeCounts)) rangeCounts[key] = 0;
 }
 
 function rgbToHueSat(r, g, b) {
@@ -424,14 +527,18 @@ function personEmbedding(source, box, embedder, timestamp) {
 // pixels back from the GPU, which is the costliest part of a check on a phone. Used when the
 // re-identification embedding decides the match anyway (see Tracker.update).
 export function extractSignature(source, box, embedder = null, timestamp = performance.now(), { appearance = true } = {}) {
-  if (!appearance) return { hist: [], lower: [], grid: [], shape: [], embed: [], usable: usableMatchBox(source, box) };
+  const { range, penalty } = matchRange(source, box);
+  // `usable` keeps exactly the meaning it always had - the box passed boxQuality - and `range`
+  // carries why it did not, so the far band can be let through without widening `usable` itself.
+  const gates = { usable: range === 'ok', range, rangePenalty: penalty };
+  if (!appearance) return { hist: [], lower: [], grid: [], shape: [], embed: [], ...gates };
   return {
     hist: appearanceHistogram(source, subBox(box, 0.16, 0.2, 0.68, 0.42)),
     lower: appearanceHistogram(source, subBox(box, 0.18, 0.58, 0.64, 0.34)),
     grid: bodyGrid(source, box),
     shape: shapeSignature(source, box),
     embed: personEmbedding(source, box, embedder, timestamp),
-    usable: usableMatchBox(source, box),
+    ...gates,
   };
 }
 
@@ -515,6 +622,10 @@ function similarityParts(a, b) {
   // in the colour features only made it worse (reid.js). The colour parts stay for debugging.
   const hasReid = Boolean(a.reid?.length && b.reid?.length);
   const reid = hasReid ? cosine(a.reid, b.reid) : 0;
+  // Carried through so the accept decision can still see it after smoothing replaced the score,
+  // and only when there is one: a match from a box that passed the normal gate has no such field
+  // at all, exactly as before.
+  const rangePenalty = a.rangePenalty ?? 0;
   return {
     upper,
     lower,
@@ -523,6 +634,7 @@ function similarityParts(a, b) {
     embed,
     reid,
     hasReid,
+    ...(rangePenalty > 0 ? { rangePenalty } : null),
     score: hasReid
       ? reid
       : hasEmbed
@@ -559,12 +671,20 @@ function averageMatches(matches) {
 // A single enrolled angle can be noisy, so matching blends the best angle with nearby
 // supporting angles. This keeps side/front tolerance while reducing wins from one bad sample.
 function bestAngleScore(signature, gallery) {
-  if (signature.usable === false) return null;
+  // A box in the far band is still refused by everything except re-identification, and there only
+  // against reidScoreFloor()'s stricter bar. Dropping the match outright, rather than marking it
+  // rejected, is what keeps the rest of the file out of this: a far box that cannot clear the bar
+  // produces no ranking at all, which is byte for byte what it produced before - so evidence, soft
+  // labels, the closed-set assignment and a latched name all carry on behaving as they did.
+  const farReid = signature.rangePenalty > 0;
+  if (signature.usable === false && !farReid) return null;
   const matches = [];
   for (let i = 0; i < gallery.length; i++) {
     const sample = gallery[i];
     if (!sample?.hist?.length || !sample?.grid?.length || !sample?.lower?.length || !sample?.shape?.length) continue;
-    matches.push({ ...similarityParts(signature, sample), angleIndex: i });
+    const parts = similarityParts(signature, sample);
+    if (farReid && !(parts.hasReid && parts.score >= reidScoreFloor(parts))) continue;
+    matches.push({ ...parts, angleIndex: i });
   }
   if (!matches.length) return null;
   matches.sort((a, b) => b.score - a.score);
@@ -589,7 +709,10 @@ function bestAngleScore(signature, gallery) {
 function rejectionReason(best, candidates, secondScore) {
   if (!best) return 'no-candidate';
   if (best.hasReid) {
-    if (best.score < reidMatchThreshold) return 'score';
+    // reidScoreFloor() is the plain threshold unless the box was in the far band; it is applied
+    // again here because smoothRankings replaces the score with a 3 s median, which can sit below
+    // the raw check that bestAngleScore let through.
+    if (best.score < reidScoreFloor(best)) return 'score';
     if (candidates > 1 && best.score - secondScore < REID_MATCH_MARGIN) return 'margin';
     return null;
   }
@@ -1078,10 +1201,17 @@ export class Tracker {
         // for a fresh one. Until its first embedding arrives, don't identify the track from
         // colours alone - that's how bystanders used to get labelled as players.
         signature.reid = reid.latest(track);
-        reid.request(track, video, track.box);
-        if (!signature.reid) continue;
+        // A box under the far floor can never be identified on any path, so a 128x256 OSNet
+        // inference on it would be computed and then thrown away at bestAngleScore. It used to be
+        // spent on every check of every too-small box in frame.
+        if (signature.range !== 'below-floor') reid.request(track, video, track.box);
+        if (!signature.reid) {
+          countRange(signature, false);
+          continue;
+        }
       }
       const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
+      countRange(signature, Boolean(latest));
       const smoothed = () =>
         latest?.hasReid && latest.rankings
           ? decideRankings(smoothRankings(track, latest.rankings, now, scoreAdjust), selfId, { includeRejected: true, closedSet })
