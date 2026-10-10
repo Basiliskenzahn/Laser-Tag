@@ -96,6 +96,29 @@ test('leaving the lobby inside the reconnect window does not rejoin the room', a
   assert.equal(state.mode, 'join', 'the phone is on the join screen, as the player left it');
 });
 
+test('leaving cancels the pending retry rather than leaning on the guard behind it', async () => {
+  // Two things stop a stale retry: leaveRoom cancels the timer, and the timer re-checks
+  // state.conn before reconnecting. Either alone is enough to keep the test above green, which is
+  // the point of having both - but it also means a regression that dropped the cancellation would
+  // go unnoticed there, leaving a timer to fire on every leave. So pin it directly.
+  await connected();
+  server.drop();
+  await settleClose();
+
+  const cleared = [];
+  const realClearTimeout = globalThis.clearTimeout;
+  globalThis.clearTimeout = (handle) => {
+    cleared.push(handle);
+    return realClearTimeout(handle);
+  };
+  try {
+    leaveLobby();
+    assert.equal(cleared.length, 1, 'the pending reconnect was cleared, not just ignored later');
+  } finally {
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
+
 test('a join the room rejected is not undone by a retry that was already pending', async () => {
   const { showJoinRejected } = await import('../frontend/public/screens/join.js');
   await connected();

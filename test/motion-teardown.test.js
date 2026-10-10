@@ -24,11 +24,12 @@ const { state } = await import('../frontend/public/state.js');
 
 const devicemotionListeners = () => (dom.windowListeners.get('devicemotion') ?? []).length;
 
-// setInterval is the leak itself, so the test has to watch the timer rather than its effects.
+// setInterval is the leak itself, so the test has to watch the timer rather than its effects: a
+// cleared interval and a live one whose sensor has been nulled both send nothing. These stand in
+// for the real timers rather than wrapping them, because an interval this file failed to clear
+// would otherwise keep the test process alive for ever instead of failing it.
 let intervalsStarted;
 let intervalsCleared;
-const realSetInterval = globalThis.setInterval;
-const realClearInterval = globalThis.clearInterval;
 
 beforeEach(() => {
   identity.stop();
@@ -37,14 +38,11 @@ beforeEach(() => {
   intervalsStarted = [];
   intervalsCleared = [];
   globalThis.setInterval = (fn, ms) => {
-    const handle = realSetInterval(fn, ms);
-    intervalsStarted.push({ handle, ms });
+    const handle = { id: intervalsStarted.length, fn };
+    intervalsStarted.push({ handle, ms, fn });
     return handle;
   };
-  globalThis.clearInterval = (handle) => {
-    intervalsCleared.push(handle);
-    return realClearInterval(handle);
-  };
+  globalThis.clearInterval = (handle) => intervalsCleared.push(handle);
   state.myId = 'me';
   state.game = null;
 });
@@ -132,11 +130,33 @@ test('stopping twice, or stopping a sensor that never started, is harmless', () 
   identity.stop();
 });
 
-test('a stopped sensor cannot flush a half-filled bin into its outgoing samples', () => {
-  const sensor = new MotionSensor();
-  sensor.start();
-  const listener = (dom.windowListeners.get('devicemotion') ?? [])[0];
-  listener({ acceleration: { x: 1, y: 0, z: 0 }, rotationRate: { alpha: 0, beta: 0, gamma: 0 } });
-  sensor.stop();
-  assert.deepEqual(sensor.takeOutgoing(), [], 'the bin went with the listener');
+test('a sensor stopped and started again does not flush the bin that was open when it stopped', () => {
+  // The 100 ms bin being filled when stop() lands has no business surviving into the next room:
+  // the first event after a restart crosses its boundary, so a kept bin would flush a sample
+  // stamped with the old room's time into the stream every other phone correlates against.
+  // motion-identity.js always builds a fresh MotionSensor, so this is the class holding its own
+  // line rather than a bug reachable through the provider.
+  const realNow = Date.now;
+  let clock = 1_000_000;
+  Date.now = () => clock;
+  try {
+    const sensor = new MotionSensor();
+    const shake = () => (dom.windowListeners.get('devicemotion') ?? [])[0]({
+      acceleration: { x: 1, y: 0, z: 0 },
+      rotationRate: {},
+    });
+
+    sensor.start();
+    shake();
+    sensor.stop();
+
+    clock += 60_000; // a long time later, in another room
+    sensor.start();
+    shake();
+
+    assert.deepEqual(sensor.takeOutgoing(), [], 'nothing from the bin that was open at the stop');
+    sensor.stop();
+  } finally {
+    Date.now = realNow;
+  }
 });
