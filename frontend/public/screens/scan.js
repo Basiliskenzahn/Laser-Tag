@@ -4,8 +4,8 @@
 // The player stands in full view and turns one slow circle while frames are recorded; afterwards
 // every frame is scored for framing, light, contrast and sharpness, and only the best and most
 // different-looking angles survive - near-duplicates and outliers are dropped, because a gallery
-// of one pose matches everybody. A finished scan is cached in localStorage so a reload does not
-// mean rotating again.
+// of one pose matches everybody. The phone owner's own finished scan is cached in localStorage
+// (scan-cache.js) so a reload does not mean rotating again.
 //
 // This is the heaviest path in the app, so processing is ordered cheapest-first and work that
 // only the surviving samples need is deferred until selection has picked them:
@@ -13,28 +13,35 @@
 //   per recorded frame  - the object detector (on a 512-wide copy), the quality gates, and the
 //                         colour signature plus MobileNet embedding at full resolution. The pose
 //                         landmarker only rescues frames the object detector found nobody in.
-//   per chosen sample   - the thumbnail, and the OSNet re-identification embedding of each frame
-//                         the sample was averaged from.
+//   per chosen sample   - the OSNet re-identification embedding of each frame the sample was
+//                         averaged from.
 //
 // Selection scores candidates on colour alone, so deferring re-identification does not change
 // which samples are chosen or what ends up in them - see attachRotationSampleReid.
+//
+// It is also the path that holds the most memory, and the one place in the app where running out
+// of it is *silent* rather than an error: a discarded canvas reads back as transparent black and
+// describes beautifully. See the frame-lifecycle block further down.
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { detectPeople, detectScanPeople } from '../detector.js';
-import { averageSignatures, extractSignature, scanBoxProblem, usableScanBox } from '../identify.js';
+import { extractSignature, scanBoxProblem } from '../identify.js';
 import { keepScreenOn, pendingScanModels, whenScanModelsReady } from '../camera.js';
+import {
+  cacheableScan,
+  degenerateSignature,
+  scanCacheKey,
+  staleScanCacheKeys,
+  validScanCache,
+  SCAN_CACHE_VERSION,
+} from '../scan-cache.js';
 import { attachSampleReid, reidSourceFrames } from '../scan-reid.js';
+import { selectRotationSamples } from '../scan-select.js';
 import { send } from '../net.js';
 import { localSelfId } from '../roster.js';
 import { state } from '../state.js';
 import { showLobby } from './lobby.js';
 
-const SCAN_SAMPLE_COUNT = 6;
-const SCAN_SAMPLE_INTERVAL_MS = 70;
-// 12: `shape` is stored raw instead of L2-normalised (identify.js averageSignatures). A version-11
-// cache's `shape` is a unit vector, which the fixed comparison reads as a wildly wrong aspect
-// ratio - exactly the silently-wrong case the version exists for.
-const SCAN_CACHE_VERSION = 12;
 const SCAN_MIN_SAMPLES = 12;
 const SCAN_TARGET_SAMPLES = 24;
 const SCAN_MIN_DETECTION_SCORE = 0.16;
@@ -59,6 +66,8 @@ const SCAN_DETECT_MAX_WIDTH = 512;
 // progress counter moves and the ✕ stays responsive, but a yield costs a whole renderer frame,
 // and the per-frame work is now small enough that yielding once per frame would dominate it.
 const ROTATION_PROCESS_BATCH = 3;
+// Side of the square a frame is scaled down to when checking it still has pixels (frameLost).
+const FRAME_PROBE_SIZE = 8;
 
 const ROTATION_SCAN_PROMPT = 'Stand where your whole body is visible and face the camera. When recording starts, slowly turn in one full circle.';
 
@@ -76,11 +85,10 @@ const scanCost = {
   poseInferences: 0,
   embedInferences: 0,
   reidInferences: 0,
-  thumbnails: 0,
+  framePeakMb: 0,
   recordMs: 0,
   processMs: 0,
   selectMs: 0,
-  thumbMs: 0,
   reidMs: 0,
 };
 
@@ -95,108 +103,70 @@ export function scanCostLine() {
   return (
     `Scan ${scanCost.usableFrames}/${scanCost.frames} usable · ` +
     `obj ${scanCost.objectInferences} pose ${scanCost.poseInferences} embed ${scanCost.embedInferences} ` +
-    `reid ${scanCost.reidInferences} jpeg ${scanCost.thumbnails}\n` +
+    `reid ${scanCost.reidInferences} · peak ${scanCost.framePeakMb.toFixed(0)} MB of frames\n` +
     `  rec ${ms(scanCost.recordMs)} · proc ${ms(scanCost.processMs)} · sel ${ms(scanCost.selectMs)} · ` +
-    `thumb ${ms(scanCost.thumbMs)} · reid ${ms(scanCost.reidMs)}`
+    `reid ${ms(scanCost.reidMs)}`
   );
 }
 
+// The scan screen has three states, all of them during a scan: waiting to start, rotating, and
+// processing. There is no fourth. The branches this used to have for a part-built gallery ("N/24
+// samples captured... keep rotating slowly") and a finished one ("returning to lobby") belonged to
+// the retired incremental-capture flow and could not be reached: `state.gallery` is empty until
+// runAutoScan sets it in one go at the very end, and every exit from a scan goes to the lobby -
+// showLobby sets `state.mode = 'lobby'`, which is what the one remaining caller checks first.
 function startScanStep() {
-  const count = state.gallery.length;
-  const ready = count >= SCAN_MIN_SAMPLES;
   const targetName = scanPersonName();
   if (state.postProcessingScan) {
     $('scan-instruction').textContent = `Processing ${targetName}'s rotation...`;
-  } else if (state.autoScanning) {
-    $('scan-instruction').textContent = `${targetName}: ${ROTATION_SCAN_PROMPT}`;
-  } else if (ready) {
-    $('scan-instruction').textContent = `${targetName}'s scan is ready. Returning to lobby...`;
-  } else if (count > 0) {
-    $('scan-instruction').textContent =
-      `${count}/${SCAN_TARGET_SAMPLES} samples captured for ${targetName}. Keep rotating slowly.`;
   } else {
-    $('scan-instruction').textContent =
-      state.savedScan ? `Use ${targetName}'s saved scan, or rescan with a slow rotation.` : `${targetName}: ${ROTATION_SCAN_PROMPT}`;
+    $('scan-instruction').textContent = `${targetName}: ${ROTATION_SCAN_PROMPT}`;
   }
-}
-
-function cropThumbnail(box, source = video) {
-  const c = document.createElement('canvas');
-  c.width = 48;
-  c.height = 64;
-  c.getContext('2d').drawImage(source, box.x, box.y, box.w, box.h, 0, 0, c.width, c.height);
-  return c.toDataURL('image/jpeg', 0.7);
 }
 
 function scanPersonName() {
   return state.scanTargetName || state.name;
 }
 
-function scanCacheKey() {
-  return `scan:${state.room}:${scanPersonName().toLowerCase()}`;
-}
-
-function validScanCache(cache) {
-  return (
-    cache?.version === SCAN_CACHE_VERSION &&
-    cache.name === scanPersonName() &&
-    cache.room === state.room &&
-    Array.isArray(cache.gallery) &&
-    cache.gallery.length >= SCAN_MIN_SAMPLES &&
-    cache.gallery.length <= SCAN_TARGET_SAMPLES &&
-    cache.gallery.every(
-      (s) => Array.isArray(s?.hist) && Array.isArray(s?.lower) && Array.isArray(s?.grid) && Array.isArray(s?.shape),
-    ) &&
-    Array.isArray(cache.thumbs)
-  );
-}
-
 export function loadScanCache() {
+  const key = scanCacheKey(state.room);
+  if (!key) return null;
   try {
-    const cache = JSON.parse(localStorage.getItem(`laser-tag:${scanCacheKey()}`));
-    return validScanCache(cache) ? cache : null;
+    const cache = JSON.parse(localStorage.getItem(key));
+    return validScanCache(cache, { room: state.room, minSamples: SCAN_MIN_SAMPLES, maxSamples: SCAN_TARGET_SAMPLES })
+      ? cache
+      : null;
   } catch {
     return null;
   }
 }
 
-function saveScanCache() {
+// Caches the scan that has just finished, if it is this phone owner's own - see scan-cache.js for
+// why a scan of anybody else is not cached at all, and why the slot is not addressed by name.
+function saveScanCache(targetId) {
+  const key = scanCacheKey(state.room);
+  if (!key || !cacheableScan({ targetId, selfId: localSelfId() })) return;
   if (state.gallery.length < SCAN_MIN_SAMPLES) return;
+  const cache = {
+    version: SCAN_CACHE_VERSION,
+    room: state.room,
+    name: scanPersonName(), // for the debug overlay only; never an identity check - see rule 1
+    savedAt: Date.now(),
+    gallery: state.gallery,
+  };
   try {
-    const cache = {
-      version: SCAN_CACHE_VERSION,
-      name: scanPersonName(),
-      room: state.room,
-      savedAt: Date.now(),
-      gallery: state.gallery,
-      thumbs: state.scanThumbs,
-    };
-    localStorage.setItem(`laser-tag:${scanCacheKey()}`, JSON.stringify(cache));
+    // Dropped before the write, not after it: a quota the stale entries are filling is exactly
+    // when the write would otherwise fail.
+    for (const stale of staleScanCacheKeys(Object.keys(localStorage), key)) localStorage.removeItem(stale);
+    localStorage.setItem(key, JSON.stringify(cache));
     state.savedScan = cache;
   } catch {
-    // The scan cache is only a debug convenience; the live scan still works.
+    // Remembering a scan across a reload is a convenience; the live scan still works without it.
   }
 }
 
-function appendScanThumb(src) {
-  const thumb = document.createElement('img');
-  thumb.src = src;
-  thumb.title = 'Tap to redo this and later angles';
-  thumb.addEventListener('click', () => {
-    const i = [...$('scan-thumbs').children].indexOf(thumb);
-    state.gallery.length = i;
-    state.scanThumbs.length = i;
-    [...$('scan-thumbs').children].slice(i).forEach((el) => el.remove());
-    startScanStep();
-  });
-  $('scan-thumbs').append(thumb);
-}
-
-function setScanGallery(gallery, thumbs) {
+function setScanGallery(gallery) {
   state.gallery = gallery;
-  state.scanThumbs = thumbs;
-  $('scan-thumbs').innerHTML = '';
-  for (const thumb of thumbs) appendScanThumb(thumb);
 }
 
 function afterNextPaint(callback) {
@@ -228,6 +198,8 @@ function scanProblemMessage(problem) {
   if (problem === 'overexposed') return 'avoid strong backlight';
   if (problem === 'low-contrast') return 'use a less flat background or better light';
   if (problem === 'motion-blur') return 'turn a little slower';
+  // 'no-person' is the only code that reaches here: a frame is only ever reported as a problem
+  // when its problem is not 'ok', and the rest of the codes are above.
   return 'no person detected';
 }
 
@@ -240,7 +212,8 @@ function sourceHeight(source) {
 }
 
 function boxScanQuality(box, source = video) {
-  if (!sourceWidth(source) || !sourceHeight(source) || !box) return 0;
+  // sourceWidth/sourceHeight both end in `|| 1`, so only the box can be missing.
+  if (!box) return 0;
   const sw = sourceWidth(source);
   const sh = sourceHeight(source);
   const area = (box.w * box.h) / (sw * sh);
@@ -252,6 +225,14 @@ function boxScanQuality(box, source = video) {
 }
 
 let scanStatsCanvas = null;
+// Brightness, contrast and sharpness over the middle of the box - the same window bodyGrid reads
+// (identify.js subBox(box, 0.08, 0.06, 0.84, 0.88)), measured in one read.
+//
+// The clipping below has to match readPixels in identify.js exactly, and did not: it subtracted
+// nothing from the width when the window started left of the frame, so for a box overhanging the
+// left or top edge the gate measured a window *shifted* inwards - wider, and over pixels the
+// signature was never extracted from. The two only disagree for a clipped box tall enough to pass
+// CLIPPED_OK_SCAN_HEIGHT_RATIO, which is a real scan: a player who fills the frame.
 function scanImageStats(source, box) {
   scanStatsCanvas ??= document.createElement('canvas');
   const w = 32;
@@ -259,10 +240,12 @@ function scanImageStats(source, box) {
   scanStatsCanvas.width = w;
   scanStatsCanvas.height = h;
   const sample = scanStatsCanvas.getContext('2d', { willReadFrequently: true });
-  const sx = Math.max(0, box.x + box.w * 0.08);
-  const sy = Math.max(0, box.y + box.h * 0.06);
-  const sw = Math.min(sourceWidth(source) - sx, box.w * 0.84);
-  const sh = Math.min(sourceHeight(source) - sy, box.h * 0.88);
+  const wx = box.x + box.w * 0.08;
+  const wy = box.y + box.h * 0.06;
+  const sx = Math.max(0, wx);
+  const sy = Math.max(0, wy);
+  const sw = Math.min(sourceWidth(source) - sx, box.w * 0.84 - (sx - wx));
+  const sh = Math.min(sourceHeight(source) - sy, box.h * 0.88 - (sy - wy));
   if (sw <= 1 || sh <= 1) return { brightness: 0, contrast: 0, sharpness: 0 };
 
   sample.drawImage(source, sx, sy, sw, sh, 0, 0, w, h);
@@ -334,99 +317,6 @@ function bestUsableScanCandidate(boxes, source = video) {
   return best ?? fallback ?? { problem: 'no-person', quality: 0, box: null };
 }
 
-function removeScanOutliers(candidates) {
-  if (candidates.length <= SCAN_MIN_SAMPLES) return candidates;
-  const scored = candidates.map((candidate) => {
-    const neighbors = candidates
-      .filter((other) => other !== candidate)
-      .map((other) => signatureSimilarity(candidate.signature, other.signature))
-      .sort((a, b) => b - a)
-      .slice(0, 4);
-    const neighborScore = neighbors.reduce((sum, value) => sum + value, 0) / Math.max(1, neighbors.length);
-    return { ...candidate, neighborScore };
-  });
-  const kept = scored.filter((candidate) => candidate.neighborScore >= SCAN_OUTLIER_SIMILARITY);
-  return kept.length >= SCAN_MIN_SAMPLES ? kept : scored.sort((a, b) => b.quality - a.quality).slice(0, SCAN_MIN_SAMPLES);
-}
-
-function removeScanDuplicates(candidates) {
-  const kept = [];
-  for (const candidate of [...candidates].sort((a, b) => b.quality - a.quality)) {
-    if (kept.every((sample) => signatureSimilarity(candidate.signature, sample.signature) < SCAN_DUPLICATE_SIMILARITY)) {
-      kept.push(candidate);
-    }
-  }
-  return kept.length >= SCAN_MIN_SAMPLES ? kept : candidates;
-}
-
-function averagedRotationSample(seed, candidates) {
-  const neighbors = candidates
-    .map((candidate) => ({ candidate, similarity: candidate === seed ? 1 : signatureSimilarity(seed.signature, candidate.signature) }))
-    .filter((entry) => entry.candidate === seed || entry.similarity >= SCAN_VIEW_AVERAGE_SIMILARITY)
-    .sort((a, b) => b.similarity + b.candidate.quality * 0.05 - (a.similarity + a.candidate.quality * 0.05))
-    .slice(0, ROTATION_SAMPLE_AVERAGE_COUNT)
-    .map((entry) => entry.candidate);
-  return {
-    ...seed,
-    signature: averageSignatures(neighbors.map((candidate) => candidate.signature)),
-    quality: neighbors.reduce((sum, candidate) => sum + candidate.quality, 0) / neighbors.length,
-    sourceCount: neighbors.length,
-    // The frames this sample was averaged from, so attachRotationSampleReid can embed exactly
-    // them and average the result the same way. Never leaves this module: only `signature` and
-    // `thumb` go into the gallery.
-    sources: neighbors,
-  };
-}
-
-function selectDiverseRotationSeeds(candidates, targetCount) {
-  const pool = [...candidates].sort((a, b) => b.quality - a.quality);
-  const selected = [];
-  while (pool.length && selected.length < targetCount) {
-    let bestIndex = 0;
-    let bestScore = -Infinity;
-    for (let i = 0; i < pool.length; i++) {
-      const candidate = pool[i];
-      const nearest = selected.length
-        ? Math.max(...selected.map((sample) => signatureSimilarity(candidate.signature, sample.signature)))
-        : 0;
-      const score = candidate.quality + (1 - nearest) * SCAN_DIVERSITY_WEIGHT;
-      if (score > bestScore) {
-        bestScore = score;
-        bestIndex = i;
-      }
-    }
-    selected.push(pool.splice(bestIndex, 1)[0]);
-  }
-  return selected;
-}
-
-function orderRotationSamplesByView(samples) {
-  if (samples.length < 3) return samples.sort((a, b) => a.time - b.time);
-  const remaining = [...samples];
-  const ordered = [remaining.splice(remaining.findIndex((sample) => sample.quality === Math.max(...remaining.map((s) => s.quality))), 1)[0]];
-  while (remaining.length) {
-    const last = ordered.at(-1);
-    let bestIndex = 0;
-    let bestSimilarity = -Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const similarity = signatureSimilarity(last.signature, remaining[i].signature);
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestIndex = i;
-      }
-    }
-    ordered.push(remaining.splice(bestIndex, 1)[0]);
-  }
-  return ordered;
-}
-
-function selectRotationSamples(candidates, targetCount) {
-  const clean = removeScanDuplicates(removeScanOutliers(candidates));
-  if (clean.length <= targetCount) return orderRotationSamplesByView(clean);
-  const seeds = selectDiverseRotationSeeds(clean, targetCount);
-  return orderRotationSamplesByView(seeds.map((seed) => averagedRotationSample(seed, clean))).slice(0, targetCount);
-}
-
 function mostCommonProblem(problemCounts, fallback) {
   let best = fallback;
   let bestCount = 0;
@@ -455,7 +345,80 @@ function captureRecordedFrame(time) {
   return { image, time };
 }
 
-async function recordRotationVideo() {
+// ---- The frames, and how much of them is alive at once ----
+//
+// A recorded frame is a canvas, and a canvas is a backing store: 1024x576x4 B is 2.4 MB, and a
+// 12 s rotation records about 60 of them. Holding all of them from the moment they are captured
+// until the end of the OSNet pass - which is what the code used to do - is ~140 MB of live image
+// data across the longest, busiest part of the scan. iOS Safari responds to that by discarding
+// canvas backing stores, silently: `drawImage` from a discarded canvas paints *nothing*, so a
+// frame that is still there as an object comes back as transparent black, and the scan carries on
+// describing a blank rectangle. See frameLost for how that is caught now.
+//
+// So a frame is released the moment it has been described. The one thing that must survive
+// selection is the pixels behind the chosen samples - that is the whole point of the
+// select-then-embed design (scan-reid.js) - so each usable frame is replaced by a crop of just
+// its person box before the full frame goes. The crop is what reid.js and nothing else reads, and
+// it is the same region reid.js would have cropped out of the full frame anyway; everything that
+// needs frame-relative geometry (shapeSignature, the quality gates) has already run by then.
+const frameBytes = (image) => (image ? image.width * image.height * 4 : 0);
+
+function releaseRecordedImage(image) {
+  if (!image) return;
+  // Not merely dropping the reference: resizing a canvas frees its backing store there and then,
+  // rather than at the next GC, which on the phone where this matters is the difference.
+  image.width = 1;
+  image.height = 1;
+}
+
+// The person box, cropped out of the frame at full resolution, with the box rewritten into the
+// crop's own coordinates. Clipped the way reid.js's snapshot clips, so the pixels it embeds are
+// the pixels it would have embedded from the whole frame (resampled by at most the one sub-pixel
+// the integer canvas size costs).
+function cropFrameToBox(source, box) {
+  const sx = Math.max(0, box.x);
+  const sy = Math.max(0, box.y);
+  const sw = Math.max(1, Math.min(box.w, sourceWidth(source) - sx));
+  const sh = Math.max(1, Math.min(box.h, sourceHeight(source) - sy));
+  const image = document.createElement('canvas');
+  image.width = Math.max(1, Math.ceil(sw));
+  image.height = Math.max(1, Math.ceil(sh));
+  image.getContext('2d').drawImage(source, sx, sy, sw, sh, 0, 0, image.width, image.height);
+  return { image, box: { ...box, x: 0, y: 0, w: image.width, h: image.height } };
+}
+
+let frameProbeCanvas = null;
+// Whether this frame's pixels have gone. A recorded frame is drawn from an opaque video frame, so
+// every pixel in a live one has alpha 255; a discarded backing store reads back as alpha 0
+// everywhere. That makes alpha an exact test for "the browser took this frame away", with no false
+// positive from a genuinely dark scan - which is why it is alpha and not brightness.
+function frameLost(image) {
+  if (!image || !image.width || !image.height) return true;
+  frameProbeCanvas ??= document.createElement('canvas');
+  frameProbeCanvas.width = FRAME_PROBE_SIZE;
+  frameProbeCanvas.height = FRAME_PROBE_SIZE;
+  const probe = frameProbeCanvas.getContext('2d', { willReadFrequently: true });
+  probe.clearRect(0, 0, FRAME_PROBE_SIZE, FRAME_PROBE_SIZE);
+  probe.drawImage(image, 0, 0, FRAME_PROBE_SIZE, FRAME_PROBE_SIZE);
+  const { data } = probe.getImageData(0, 0, FRAME_PROBE_SIZE, FRAME_PROBE_SIZE);
+  for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
+  return true;
+}
+
+// Every crop still needed after selection: the frames backing the chosen samples, which is
+// exactly what the embedding pass will read (reidSourceFrames), plus each sample's own seed frame.
+// Everything else is released here rather than at the end of the scan, so the OSNet pass - the
+// longest phase, and the one that runs under the most memory pressure - holds only what it uses.
+function releaseUnchosenCandidates(candidates, samples) {
+  const keep = new Set();
+  for (const source of reidSourceFrames(samples).values()) keep.add(source.image);
+  for (const sample of samples) keep.add(sample.image);
+  for (const candidate of candidates) {
+    if (!keep.has(candidate.image)) releaseRecordedImage(candidate.image);
+  }
+}
+
+async function recordRotationVideo(live) {
   const frames = [];
   const startedAt = performance.now();
   const endsAt = startedAt + ROTATION_SCAN_DURATION_MS;
@@ -467,7 +430,7 @@ async function recordRotationVideo() {
   state.recordingScan = true;
   state.boxes = [];
   try {
-    while (state.autoScanning && performance.now() < endsAt) {
+    while (live() && performance.now() < endsAt) {
       await nextFrame();
       const now = performance.now();
       const remaining = Math.max(0, Math.ceil((endsAt - now) / 1000));
@@ -479,7 +442,9 @@ async function recordRotationVideo() {
     state.recordingScan = false;
   }
 
-  return state.autoScanning ? frames : null;
+  if (live()) return frames;
+  for (const frame of frames) releaseRecordedImage(frame.image);
+  return null;
 }
 
 let scanDetectCanvas = null;
@@ -536,81 +501,126 @@ function rotationDetectTimestamp() {
 // enrolment, deferred until the cheap half has decided what it needs. scan-reid.js owns both the
 // deferral and the batching, and explains why each is shaped the way it is; this is only the
 // wiring to `state`, the progress line and the cancel flag.
-async function attachRotationSampleReid(samples) {
+async function attachRotationSampleReid(samples, live) {
   if (!state.reid) return true;
   scanCost.reidInferences = reidSourceFrames(samples).size;
   return attachSampleReid(samples, {
-    embed: (image, box) => state.reid.embed(image, box),
+    // The last window in which a frame can be taken away, and the longest: these crops have been
+    // alive since the processing loop and OSNet is the slowest thing in the app. A frame whose
+    // pixels have gone embeds as a black rectangle - OSNet answers with a perfectly ordinary
+    // unit vector for it, identical for every blank frame, which no later check could tell from a
+    // real appearance. attachSampleReid turns a throw here into a failed scan with nothing written,
+    // which is the only honest outcome.
+    embed: (image, box) => {
+      if (frameLost(image)) throw new Error('the browser discarded a recorded frame (out of memory)');
+      return state.reid.embed(image, box);
+    },
     yieldTo: nextFrame,
-    cancelled: () => !state.autoScanning,
+    cancelled: () => !live(),
     onProgress: (done, total) => {
       $('scan-instruction').textContent = `Recognising chosen angles... ${done}/${total} frames embedded`;
     },
   });
 }
 
-async function processRotationVideo(frames) {
+async function processRotationVideo(frames, live) {
   const candidates = [];
   const problemCounts = new Map();
   let lastProblem = 'no-person';
   state.postProcessingScan = true;
   scanCost.frames = frames.length;
+  scanCost.framePeakMb = frames.reduce((bytes, frame) => bytes + frameBytes(frame.image), 0) / 1e6;
   const processStartedAt = performance.now();
 
   try {
-    for (let i = 0; state.autoScanning && i < frames.length; i++) {
+    for (let i = 0; live() && i < frames.length; i++) {
       if (i % ROTATION_PROCESS_BATCH === 0) await nextFrame();
-      if (!state.autoScanning) break;
+      if (!live()) break;
       const frame = frames[i];
       const boxes = detectRotationFrameBoxes(frame.image);
+      // `problem === 'ok'` *is* usableScanBox: assessScanCandidate got it from scanBoxProblem,
+      // which is the same boxQuality(..., MIN_SCAN_HEIGHT_RATIO, {scan: true}) call. Re-asking
+      // used to repeat that per frame, and left the `?? scanBoxProblem(...)` fallback below dead.
       const candidate = bestUsableScanCandidate(boxes, frame.image);
       const box = candidate.box;
 
-      if (box && candidate.problem === 'ok' && usableScanBox(frame.image, box)) {
-        if (state.embedder) scanCost.embedInferences++;
+      if (box && candidate.problem === 'ok') {
+        const signature = extractSignature(frame.image, box, state.embedder, performance.now());
+        // Not `if (state.embedder)`: personEmbedding returns [] without inferring when there is
+        // no embedder, no usable region, or the inference threw.
+        if (signature.embed.length) scanCost.embedInferences++;
+        // The frame passed the brightness gate a moment ago, so it had pixels then. An all-zero
+        // vector now means they went away in between - the frame cannot be described, and a scan
+        // that enrols it is worse than one that fails, because an all-zero vector scores 0
+        // against everybody and the player simply stops matching.
+        const blank = degenerateSignature(signature);
+        if (blank) {
+          throw new Error(
+            `recorded frame ${i + 1}/${frames.length} came back blank (empty ${blank} vector) - the browser is out of memory`,
+          );
+        }
+        const crop = cropFrameToBox(frame.image, box);
         candidates.push({
-          signature: extractSignature(frame.image, box, state.embedder, performance.now()),
-          box: { ...box },
-          image: frame.image,
+          signature,
+          box: crop.box,
+          image: crop.image,
           frameIndex: i,
           quality: candidate.quality,
           stats: candidate.stats,
           time: frame.time,
         });
       } else {
-        lastProblem = candidate.problem ?? scanBoxProblem(frame.image, box);
+        lastProblem = candidate.problem;
         problemCounts.set(lastProblem, (problemCounts.get(lastProblem) ?? 0) + 1);
       }
+
+      // Described, and now the only thing kept from it is its crop (or nothing).
+      releaseRecordedImage(frame.image);
+      frames[i] = { ...frame, image: null };
 
       $('scan-instruction').textContent =
         `Processing recorded rotation... ${i + 1}/${frames.length}, ${candidates.length} usable frames`;
     }
 
-    if (!state.autoScanning) return null;
+    if (!live()) return null;
     scanCost.usableFrames = candidates.length;
     scanCost.processMs = performance.now() - processStartedAt;
 
     const selectStartedAt = performance.now();
-    const samples = selectRotationSamples(candidates, SCAN_TARGET_SAMPLES);
+    // Selection yields to the renderer, so this is wall clock including those yields - which is
+    // what the ✕ being responsive costs, and the number worth reading. Every threshold is passed
+    // in so that the scan's tuning stays here (scan-select.js explains why).
+    const samples = await selectRotationSamples(candidates, {
+      targetCount: SCAN_TARGET_SAMPLES,
+      minSamples: SCAN_MIN_SAMPLES,
+      outlierSimilarity: SCAN_OUTLIER_SIMILARITY,
+      duplicateSimilarity: SCAN_DUPLICATE_SIMILARITY,
+      viewAverageSimilarity: SCAN_VIEW_AVERAGE_SIMILARITY,
+      averageCount: ROTATION_SAMPLE_AVERAGE_COUNT,
+      diversityWeight: SCAN_DIVERSITY_WEIGHT,
+      yieldTo: nextFrame,
+      cancelled: () => !live(),
+    });
     scanCost.selectMs = performance.now() - selectStartedAt;
+    if (!samples || !live()) return null;
 
-    // Thumbnails are only ever shown for samples that survived selection, so they are cropped
-    // here too - including on the too-few-angles path, where the strip is the feedback.
-    const thumbStartedAt = performance.now();
-    for (const sample of samples) sample.thumb = cropThumbnail(sample.box, sample.image);
-    scanCost.thumbnails = samples.length;
-    scanCost.thumbMs = performance.now() - thumbStartedAt;
     if (samples.length < SCAN_MIN_SAMPLES) {
       // A scan this short is never sent or cached, so it is not worth any re-identification work.
       return { problem: mostCommonProblem(problemCounts, lastProblem), samples, usableFrames: candidates.length, totalFrames: frames.length };
     }
+    releaseUnchosenCandidates(candidates, samples);
     const reidStartedAt = performance.now();
-    const attached = await attachRotationSampleReid(samples);
+    const attached = await attachRotationSampleReid(samples, live);
     scanCost.reidMs = performance.now() - reidStartedAt;
     if (!attached) return null;
     return { samples, usableFrames: candidates.length, totalFrames: frames.length };
   } finally {
     state.postProcessingScan = false;
+    // Every path out of here is past the last thing that reads pixels: the embedding pass is
+    // awaited above, and only `signature` leaves this function. So nothing is left alive for the
+    // garbage collector to get round to in its own time - on a cancel or a throw either.
+    for (const frame of frames) releaseRecordedImage(frame.image);
+    for (const candidate of candidates) releaseRecordedImage(candidate.image);
   }
 }
 
@@ -634,8 +644,6 @@ async function runAutoScan() {
   let finalMessage = null;
   state.autoScanning = true;
   state.gallery = [];
-  state.scanThumbs = [];
-  $('scan-thumbs').innerHTML = '';
   resetScanCost();
 
   try {
@@ -664,17 +672,24 @@ async function runAutoScan() {
     hideScanCountdown();
 
     const recordStartedAt = performance.now();
-    const frames = await recordRotationVideo();
+    const frames = await recordRotationVideo(live);
     scanCost.recordMs = performance.now() - recordStartedAt;
     if (!live() || !frames) return;
 
     $('scan-instruction').textContent = `Recorded ${frames.length} frames. Processing usable angles...`;
-    const result = await processRotationVideo(frames);
+    const result = await processRotationVideo(frames, live);
     if (!live() || !result) return;
 
     const signatures = result.samples.map((sample) => sample.signature);
-    const thumbs = result.samples.map((sample) => sample.thumb);
-    setScanGallery(signatures, thumbs);
+    if (signatures.length >= SCAN_MIN_SAMPLES) {
+      // The last gate before a gallery becomes this player's appearance for the rest of the round,
+      // checked before `state.gallery` is touched. Nothing should be able to reach it - the
+      // processing loop refuses a blank frame, and no average of describable frames is blank -
+      // which is exactly why it throws rather than filters: if it ever fires, a scan that fails
+      // loudly is the outcome worth having.
+      assertEnrollableGallery(signatures);
+    }
+    setScanGallery(signatures);
 
     if (result.samples.length < SCAN_MIN_SAMPLES) {
       finalMessage =
@@ -682,7 +697,6 @@ async function runAutoScan() {
       return;
     }
 
-    saveScanCache();
     finalMessage = `Saved scan for ${scanPersonName()} with ${result.samples.length} angles.`;
     state.autoScanning = false;
     saveCurrentScan(targetId, finalMessage);
@@ -712,7 +726,10 @@ export function beginPlayerScan(player) {
   state.savedScan = null;
   state.autoScanning = false;
   state.postProcessingScan = false;
-  setScanGallery([], []);
+  setScanGallery([]);
+  // Before the screen appears, not when the next run starts: a scan cancelled during the countdown
+  // never reaches runAutoScan's reset, and the ?debug overlay would then describe the scan before.
+  resetScanCost();
   $('lobby-screen').hidden = true;
   $('game-screen').hidden = true;
   $('scan-screen').hidden = false;
@@ -726,11 +743,14 @@ export function beginPlayerScan(player) {
   });
 }
 
-// recordRotationVideo/processRotationVideo/attachRotationSampleReid all check state.autoScanning
-// on every loop iteration and bail cleanly when it goes false; their own `finally` blocks notice
-// state.mode is no longer 'scan' and skip touching the UI again. Every one of them returns null
-// rather than a partial result, and runAutoScan only touches the gallery once it has a non-null
-// result, so a cancel can never leave a half-built gallery behind.
+// recordRotationVideo/processRotationVideo/selectRotationSamples/attachRotationSampleReid are all
+// handed runAutoScan's own `live()` and check it on every loop iteration, so they stop for a
+// cancel *and* for being superseded - `state.autoScanning` alone cannot tell those apart (below),
+// and a stale run that kept selecting would be burning the phone's one thread on a gallery its
+// caller is going to discard. Their `finally` blocks notice state.mode is no longer 'scan' and
+// skip touching the UI again. Every one of them returns null rather than a partial result, and
+// runAutoScan only touches the gallery once it has a non-null result, so a cancel can never leave
+// a half-built gallery behind.
 //
 // Clearing the flag is necessary but NOT sufficient, which is why cancelScan also retires the run
 // token (see runAutoScan): the flag says "a scan is running", so the next scan setting it back to
@@ -744,32 +764,26 @@ export function cancelScan() {
   showLobby('Scan cancelled.');
 }
 
+// The first required vector that is blank in any sample, as an exception. An all-zero vector is
+// not a weak sample: cosine() scores it 0 against everything, so the player it was enrolled for
+// stops matching entirely - and every check downstream accepts it, from validScanCache to the
+// server's sanitiser. See scan-cache.js rule 2.
+function assertEnrollableGallery(gallery) {
+  for (const [i, signature] of gallery.entries()) {
+    const blank = degenerateSignature(signature);
+    if (blank) {
+      throw new Error(`sample ${i + 1}/${gallery.length} has an empty or all-zero ${blank} vector`);
+    }
+  }
+}
+
 function saveCurrentScan(targetId, message = `Saved scan for ${scanPersonName()}.`) {
   if (!targetId || state.gallery.length < SCAN_MIN_SAMPLES) return;
   const gallery = state.gallery;
   if (targetId === localSelfId()) state.localGallery = gallery;
   send({ type: 'scan', targetId, gallery });
-  saveScanCache();
+  saveScanCache(targetId);
   showLobby(message);
-}
-
-function cosine(a, b) {
-  let dot = 0;
-  let normA = 0;
-  let normB = 0;
-  const n = Math.min(a?.length ?? 0, b?.length ?? 0);
-  for (let i = 0; i < n; i++) {
-    const av = Number.isFinite(a[i]) ? a[i] : 0;
-    const bv = Number.isFinite(b[i]) ? b[i] : 0;
-    dot += av * bv;
-    normA += av * av;
-    normB += bv * bv;
-  }
-  return normA && normB ? dot / Math.sqrt(normA * normB) : 0;
-}
-
-function signatureSimilarity(a, b) {
-  return (cosine(a?.hist, b?.hist) + cosine(a?.lower, b?.lower) + cosine(a?.grid, b?.grid)) / 3;
 }
 
 // Scan screen: just highlight whoever would be captured if "Capture" were tapped now.
