@@ -250,10 +250,6 @@ the upscale factor you are willing to accept and say so — the arithmetic is in
 them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0
 removes the band's protection entirely and is how it would start naming bystanders.
 
-`rangeDiagnostics()` is how you tune them in the field: it counts, per live check, how many boxes
-passed, were rescued by the band (`farReid`), were refused inside it (`tooFar`), or were under the
-floor (`belowFloor`).
-
 **Signature resolution:** `HUE_BINS` (12), `SAT_BINS` (4), `LUMA_BINS` (8), `SAT_DETAIL_BINS` (8), `GRID_W` (6), `GRID_H` (8), `GRID_FEATURES` (4), `EMBED_DIMS` (256), `EMBED_PRECISION` (10 000, i.e. 4 decimals). Changing any of these changes vector lengths: bump `SCAN_CACHE_VERSION` and check `GALLERY_FIELDS` limits on both servers.
 
 ## Re-identification model

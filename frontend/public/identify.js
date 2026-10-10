@@ -366,42 +366,6 @@ function matchRange(source, box) {
   return { range: 'far-reid', penalty: FAR_REID_MAX_PENALTY * shortfall * shortfall };
 }
 
-// Why live boxes were refused a signature, since the last reset. Plain integer increments on a
-// path that already runs once per check (Tracker.update), so it is cheap enough to leave on; the
-// ?debug range readout reads it. The shape is fixed even when a counter never moves.
-const rangeCounts = { ok: 0, tooFar: 0, farReid: 0, belowFloor: 0, partialBody: 0, edgeClipped: 0 };
-
-// `allowed` only means anything for the far band: whether re-identification got far enough to
-// produce a ranking at all, which is what separates a box the band rescued from one it refused.
-function countRange(signature, allowed) {
-  switch (signature?.range) {
-    case 'ok':
-      rangeCounts.ok++;
-      break;
-    case 'far-reid':
-      if (allowed) rangeCounts.farReid++;
-      else rangeCounts.tooFar++;
-      break;
-    case 'below-floor':
-      rangeCounts.belowFloor++;
-      break;
-    case 'partial-body':
-      rangeCounts.partialBody++;
-      break;
-    case 'edge-clipped':
-      rangeCounts.edgeClipped++;
-      break;
-  }
-}
-
-export function rangeDiagnostics() {
-  return { ...rangeCounts };
-}
-
-export function resetRangeDiagnostics() {
-  for (const key of Object.keys(rangeCounts)) rangeCounts[key] = 0;
-}
-
 function rgbToHueSat(r, g, b) {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -1385,13 +1349,9 @@ export class Tracker {
         // inference on it would be computed and then thrown away at bestAngleScore. It used to be
         // spent on every check of every too-small box in frame.
         if (signature.range !== 'below-floor') reid.request(track, video, track.box);
-        if (!signature.reid) {
-          countRange(signature, false);
-          continue;
-        }
+        if (!signature.reid) continue;
       }
       const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet, reidScale: roomOnReid });
-      countRange(signature, Boolean(latest));
       // Keyed on there being rankings at all, not on the *best* candidate carrying re-id. The
       // best candidate's flag is the wrong key: whenever a non-reid candidate happened to top the
       // list, smoothRankings never ran, so the 3 s median was switched off for the whole track and
