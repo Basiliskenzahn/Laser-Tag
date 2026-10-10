@@ -45,6 +45,16 @@ docker compose run --rm tests
 
 It mounts the repo into a `node:20-bookworm-slim` container, keeps `node_modules` in its own `test-node-modules` volume (so it never touches your host folder), and runs `npm ci && npm test`. See [Testing](../development/testing.md).
 
+### `backend-tests`
+
+Also on the `test` profile:
+
+```bash
+docker compose run --rm backend-tests
+```
+
+It mounts the repo into a `python:3.12-slim` container (the same base as `backend/Dockerfile`), caches pip downloads in the `backend-pip-cache` volume, installs `backend/requirements.txt` and runs `python -m unittest discover -s backend -p 'test_*.py' -v`. See [Testing](../development/testing.md).
+
 ## nginx
 
 `frontend/nginx.conf` defines two identical server blocks, one on port 80 and one on 443 with TLS. Both include `frontend/common-locations.conf`:
@@ -91,7 +101,8 @@ docker compose up --build -d           # run in the background
 docker compose logs -f backend         # follow backend logs
 docker compose ps                      # what's running
 docker compose down                    # stop and remove containers (keeps the cert)
-docker compose run --rm tests          # run the test suite
+docker compose run --rm tests          # run the JS test suite
+docker compose run --rm backend-tests  # run the Python test suite
 ```
 
 On Windows, `scripts/docker.ps1` and `scripts/test.ps1` wrap these. See [Windows helper scripts](windows-scripts.md).

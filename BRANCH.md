@@ -12,8 +12,16 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 19 JS tests
-python -m unittest discover -s backend -p "test_*.py" # 28 backend tests
+docker compose run --rm tests                         # 19 JS tests
+docker compose run --rm backend-tests                 # 36 backend tests
+```
+
+Or locally (needs `pip install -r backend/requirements.txt` first, on Python 3.12/3.13; see
+[Testing](docs/development/testing.md)):
+
+```bash
+npm test
+python -m unittest discover -s backend -p "test_*.py"
 ```
 
 ## What merges here

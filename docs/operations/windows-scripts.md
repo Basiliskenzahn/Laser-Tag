@@ -12,7 +12,7 @@ powershell -ExecutionPolicy Bypass -File scripts\docker.ps1
 | --- | --- |
 | `docker.ps1` | `docker compose up --build --force-recreate` from the repo root |
 | `dev.ps1` | Identical to `docker.ps1` |
-| `test.ps1` | `docker compose run --rm tests` (see [Testing](../development/testing.md)) |
+| `test.ps1` | `docker compose run --rm tests` - the JS suite only; run `docker compose run --rm backend-tests` for the Python suite (see [Testing](../development/testing.md)) |
 | `open-chrome.ps1` | Opens `http://localhost:8080/?debug` in Chrome or Edge |
 
 All three Docker scripts load `Resolve-Docker.ps1` first and stop with the Docker exit code on failure.

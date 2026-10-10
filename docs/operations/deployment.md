@@ -47,7 +47,7 @@ Set them under *Settings → Secrets and variables → Actions*.
 
 - **Closing a PR without merging also triggers a deploy.** The workflow listens for `closed`, not specifically merged. It's harmless, since the VM always pulls `main`, but it does restart the containers. To deploy only on merge, add `if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'` to the job.
 - **Direct pushes to `main` don't deploy.** Run the workflow manually afterwards.
-- **No tests run in CI.** The job deploys whatever is on `main`. Run `docker compose run --rm tests` before merging. See [Testing](../development/testing.md).
+- **No tests run in CI.** The job deploys whatever is on `main`. Run `docker compose run --rm tests` and `docker compose run --rm backend-tests` before merging. See [Testing](../development/testing.md).
 - `ssh-keyscan` trusts whatever key the host presents at deploy time. Pinning the host key in a secret would be stricter.
 
 ## Deploying somewhere else
