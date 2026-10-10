@@ -18,10 +18,23 @@ python -m unittest discover -s backend -p "test_*.py" # 28 backend tests
 
 ## What merges here
 
-| Branch | What it does |
-| --- | --- |
-| `luxkaiwalker/tracking-smoothing` | Reduce overlay lag from box smoothing without making the velocity estimate noisier — which matters because association quality depends on it, and `detection-tuning`'s `liveBox()` extrapolates along it |
-| `luxkaiwalker/motion-isolation` | Close the leaks in the motion seam so the feature is a module you could delete or swap at one place, rather than one referenced from the game loop, the transport layer and the shared state object |
+| Branch | Status | What it does |
+| --- | --- | --- |
+| `luxkaiwalker/tracking-smoothing` | **merged** | Position and velocity now have separate exponential time constants instead of one shared per-detection blend factor. Trailing 22.6 px → 7.5 px *and* velocity noise 18 → 12 px/s; the old coupling meant you could only trade one for the other. Interval-independent, which matters because the detection interval isn't fixed |
+| `luxkaiwalker/motion-isolation` | **merged** | Motion is now behind one seam, `identity.js`, which installs a single provider at load. `screens/game.js`, `net.js`, `state.js` and `app.js` contain zero occurrences of the word "motion" |
+| `luxkaiwalker/scan-optimisation` | in progress | Scanning cost, and documenting the scan workflow and the on-device vision paths |
+
+### Breaking change to be aware of
+
+`motion-identity.js` now exports **only** `motionIdentity`. `startMotion`, `onRemoteMotion`,
+`recordTrackMotion`, `resolveIdentity` and `motionDebugLine` are no longer exported, and
+`state.motion` / `state.remoteMotion` / `state.trackMotion` are gone (the provider keeps its own
+module-private state and a `WeakMap` keyed on tracks).
+
+That is the point — it's what makes the feature removable — but it means any branch that imported
+those names needs rework before it can rebase onto this. `luxkaiwalker/motion-only-tracking` is
+the known case: it imports four of them and adds a `track.motionBreakdown` field, which now has
+to become another entry in the provider's `WeakMap` rather than a property on the track.
 
 ## What deliberately does *not* merge here
 
