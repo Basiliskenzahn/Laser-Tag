@@ -26,7 +26,7 @@ backend/test_*.py
 # `npm test`, never from the image.
 frontend/public/*.test.js
 
-# Deliberately NOT excluding test/, tools/, docs/, scripts/ or .github/ wholesale. They are
+# Deliberately NOT excluding test/, docs/, scripts/ or .github/ wholesale. They are
 # only a few MB next to the two entries above, and a blanket exclusion is the kind of thing
 # that makes a future `COPY test/ ...` copy nothing at all, with no error - which is the
 # failure shape this file is being fixed to avoid.

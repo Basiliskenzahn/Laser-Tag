@@ -222,10 +222,7 @@ both need a real distribution of colour-only `s` scores, and the only numbers th
 before moving it. The same applies to `EVIDENCE_MIN_PART` below.
 
 `MIN_SHAPE_SCORE`, `EVIDENCE_MIN_PART` and `EVIDENCE_MIN_SCORE` are **exported** from
-`identify.js`. `tools/shape-evaluation.mjs` used to re-declare all three by value, with a comment
-saying it had to, so retuning one here silently left the harness measuring a gate the game no
-longer used. They are exported so it can read the live value — which is not permission to change
-them.
+`identify.js`, so anything measuring against them reads the live value rather than a copy.
 
 **Acceptance, re-identification embedding.** These replace all of the above whenever both sides have a `reid` vector. The source comments record the measurement behind them:
 
@@ -279,7 +276,7 @@ try — see [Box range and the far band](../client/identification.md#box-range-a
 These are the only range numbers that are open to tuning. `MIN_MATCH_HEIGHT_RATIO` is not: the
 whole point of the band is that at or above 0.18 nothing changed, and that property is what makes
 it safe at the ranges that already worked (`test/range-reid-gate.test.js` asserts the match object
-is identical to a pre-band one, and `npm run eval:shape` is byte-identical). Both floors are
+is identical to a pre-band one). Both floors are
 derived from OSNet's 128 × 256 input rather than picked, so if you move them, move them by changing
 the upscale factor you are willing to accept and say so — the arithmetic is in the comment beside
 them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0

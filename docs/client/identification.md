@@ -93,7 +93,7 @@ at 0.18: a detector box jittering across the line behaves the same on both sides
 Two consequences are worth stating plainly, because they are what makes the band safe:
 
 - **At or above 0.18, behaviour is unchanged.** The penalty is 0 and `rangePenalty` is absent from
-  the match object entirely. `npm run eval:shape` is byte-identical over its 2880 sightings.
+  the match object entirely.
 - **A band box that can't clear its bar produces no ranking at all** — not a rejected one. That is
   byte for byte what it produced before, so evidence accumulation, soft labels, the closed-set
   assignment and a latched name all carry on behaving exactly as they did.
