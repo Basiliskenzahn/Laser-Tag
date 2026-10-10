@@ -51,14 +51,9 @@ export function scanCacheKey(room) {
   return room ? `${SCAN_CACHE_PREFIX}self:${room}` : null;
 }
 
-// Whether a finished scan belongs in the cache at all: only this phone owner's own scan does.
-export function cacheableScan({ targetId, selfId }) {
-  return Boolean(targetId) && targetId === selfId;
-}
-
 // The name of the first required vector that is missing, empty, non-finite or all zero, or null
-// when the signature is enrollable. Returning the field name rather than a boolean is what lets
-// the scan say *which* vector came back blank when it refuses to enrol one.
+// when the signature is enrollable. The field name rather than a boolean because it says which
+// vector is blank in a cache dump; every caller only tests it against null.
 export function degenerateSignature(signature) {
   for (const field of REQUIRED_SAMPLE_VECTORS) {
     const vector = signature?.[field];

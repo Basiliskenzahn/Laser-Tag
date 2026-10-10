@@ -19,7 +19,6 @@ import assert from 'node:assert/strict';
 import {
   SCAN_CACHE_PREFIX,
   SCAN_CACHE_VERSION,
-  cacheableScan,
   degenerateSignature,
   scanCacheKey,
   staleScanCacheKeys,
@@ -52,15 +51,6 @@ test('the cache key is the room and nothing else - no name in it anywhere', () =
   assert.ok(scanCacheKey('demo').startsWith(SCAN_CACHE_PREFIX));
   assert.equal(scanCacheKey(''), null, 'no room, nothing to address');
   assert.equal(scanCacheKey(undefined), null);
-});
-
-test('a scan of another player is never cached - not even one with your own name', () => {
-  // The trigger: you are Sam, and on your phone you scan the *other* Sam. Nothing about the two
-  // of them differs except their ids, which is exactly why the id is the only thing consulted.
-  assert.equal(cacheableScan({ targetId: 'sam-2', selfId: 'sam-1' }), false);
-  assert.equal(cacheableScan({ targetId: 'sam-1', selfId: 'sam-1' }), true, 'your own scan still caches');
-  assert.equal(cacheableScan({ targetId: '', selfId: '' }), false, 'no target is not a match');
-  assert.equal(cacheableScan({ targetId: null, selfId: null }), false);
 });
 
 test('a valid cache is accepted', () => {

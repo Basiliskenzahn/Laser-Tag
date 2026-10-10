@@ -47,7 +47,15 @@ function detectionFor(source) {
  * camera on every animation frame so the twelve seconds of recording produce frames that differ
  * from each other, as a real rotation does.
  */
-function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null, detector = detectionFor, paint = {} } = {}) {
+function arrangeScan({
+  myId = SELF_ID,
+  name = 'Sam',
+  room = 'demo',
+  reid = null,
+  detector = detectionFor,
+  paint = {},
+  delivered = true,
+} = {}) {
   const sent = [];
   dom.store.clear();
   dom.canvases.length = 0;
@@ -56,7 +64,11 @@ function arrangeScan({ myId = SELF_ID, name = 'Sam', room = 'demo', reid = null,
     name,
     room,
     myId,
-    conn: { send: (msg) => sent.push(msg) },
+    // transport.js's contract, which is what scan.js is written against: `send` resolves true
+    // once the server has the message and false if it could not be delivered, and never rejects.
+    // This used to be `(msg) => sent.push(msg)`, which resolves to an array length - so every
+    // test here passed without the delivery reporting ever being exercised.
+    conn: { send: (msg) => (sent.push(msg), Promise.resolve(delivered)) },
     roster: [
       { id: SELF_ID, name: 'Sam', gallery: [] },
       { id: OTHER_ID, name: 'Sam', gallery: [] },
@@ -207,18 +219,22 @@ test('a scan whose recorded frames the browser discarded enrols nothing', async 
   assert.match(dom.element('lobby-status').textContent, /usable angles|could not/i);
 });
 
-test('a frame lost between selection and the embedding pass fails the scan loudly', async () => {
-  // The window the audit missed, and the one that actually matters: the crops behind the chosen
-  // samples live from the processing loop until the end of the OSNet pass, which is the longest
-  // and most memory-pressured phase of the scan. OSNet answers a blank crop with a perfectly
-  // ordinary unit vector - identical for every blank crop, indistinguishable from a real
-  // appearance by any later check - so the gallery would have been cached and matched against for
-  // the rest of the round. Nothing but looking at the pixels catches it.
+test('a frame lost during the embedding pass is skipped, not turned into a failed scan', async () => {
+  // The crops behind the chosen samples live from the processing loop until the end of the OSNet
+  // pass, the longest and most memory-pressured phase of the scan. OSNet answers a blank crop with
+  // a perfectly ordinary unit vector - identical for every blank crop, indistinguishable from a
+  // real appearance by any later check - and `reid` overrides every other field at match time, so
+  // a blank one is worse than none.
+  //
+  // This used to throw, which failed the whole fifteen-second rotation on one bad probe. The
+  // bargain now is: the lost frame contributes no vector, the colour gallery - which is what the
+  // frames were already described into, before anything could be taken away - still enrols, and
+  // no sample carries a `reid` built from pixels that were gone.
   let embeds = 0;
   const reid = {
-    embed: async (image) => {
+    embed: async () => {
       embeds++;
-      // The second embedding arrives to find the rest of the frames gone.
+      // The first embedding arrives and takes the rest of the frames away with it.
       if (embeds === 1) for (const canvas of dom.canvases) canvas.discard();
       return Array.from({ length: 8 }, (_, i) => (i === 0 ? 1 : 0));
     },
@@ -226,11 +242,23 @@ test('a frame lost between selection and the embedding pass fails the scan loudl
   const { sent } = arrangeScan({ reid });
   await runScan(selfPlayer);
 
-  assert.ok(embeds > 0, 'the embedding pass never ran, so this test proved nothing');
-  assert.equal(sent.find((msg) => msg.type === 'scan'), undefined, 'a scan with a lost frame must not enrol');
-  assert.deepEqual([...dom.store.keys()].filter((key) => key.includes('scan')), [], 'and must not be cached');
-  assert.match(dom.element('lobby-status').textContent, /could not process the rotation video/i);
-  assert.match(dom.element('lobby-status').textContent, /discarded a recorded frame/i);
+  const scanMessage = sent.find((msg) => msg.type === 'scan');
+  assert.ok(
+    scanMessage,
+    `a lost frame must cost its own embedding, not the scan; lobby said "${dom.element('lobby-status').textContent}"`,
+  );
+  assert.ok(scanMessage.gallery.length >= 12, `expected a full colour gallery, got ${scanMessage.gallery.length}`);
+
+  // The quality bar, and the whole point of keeping the probe: OSNet is asked about the one frame
+  // that still had pixels and about no other. Without the check every remaining crop would be
+  // embedded as a black rectangle and the vectors would look perfectly ordinary.
+  assert.equal(embeds, 1, `OSNet was asked to embed ${embeds} frames, ${embeds - 1} of them discarded`);
+  const withReid = scanMessage.gallery.filter((sample) => sample.reid?.length);
+  assert.ok(withReid.length >= 1, 'the frame that was still intact should have produced a reid vector');
+  assert.ok(
+    withReid.length < scanMessage.gallery.length,
+    `${withReid.length}/${scanMessage.gallery.length} samples carry a reid, so no frame was actually lost`,
+  );
 });
 
 test('a frame with no red in it is not mistaken for a lost one', async () => {
@@ -239,6 +267,12 @@ test('a frame with no red in it is not mistaken for a lost one', async () => {
   // looks like; a discarded backing store is alpha 0. Anything that reads a colour channel
   // instead would call this cyan body - red 0 in every pixel, and a perfectly good scan - a frame
   // the browser had taken away, and fail the scan on a phone that is working fine.
+  //
+  // What this has to assert changed with the guard. While a lost frame *threw*, a red-reading
+  // probe failed the scan outright and "a gallery was sent" caught it. Now that a lost frame is
+  // merely skipped, a red-reading probe would enrol the full colour gallery with every `reid`
+  // quietly missing - which the old assertions would have called a pass. So the thing to pin is
+  // the re-identification vectors: every frame here is live, so every sample must carry one.
   const reid = { embed: async () => [1, 0, 0, 0, 0, 0, 0, 0] };
   const { sent } = arrangeScan({ reid, paint: { channelScale: [0, 1, 1] } });
   await runScan(selfPlayer);
@@ -249,6 +283,12 @@ test('a frame with no red in it is not mistaken for a lost one', async () => {
     `a red-free scan must still enrol; lobby said "${dom.element('lobby-status').textContent}"`,
   );
   assert.ok(scanMessage.gallery.length >= 12);
+  const withoutReid = scanMessage.gallery.filter((sample) => !sample.reid?.length).length;
+  assert.equal(
+    withoutReid,
+    0,
+    `${withoutReid}/${scanMessage.gallery.length} samples lost their reid vector, so a live frame was judged gone`,
+  );
 });
 
 test('only the frames behind the chosen samples are still alive during the embedding pass', async () => {
@@ -294,11 +334,12 @@ test('only the frames behind the chosen samples are still alive during the embed
 });
 
 test('starting a second scan mid-flight enrols exactly one gallery, under the right id', async () => {
-  // The run-token discipline, driven rather than asserted about. test/scan-run-token.test.js pins
-  // the shape of the fix in the source and says plainly that it cannot do this; now something
-  // can. A run superseded part-way through must send nothing - not its own gallery, and above all
-  // not its gallery under the id of the player who replaced it, which is what this cost before
-  // the token (a whole round of every phone labelling one player as another).
+  // The run-token discipline, driven rather than asserted about - this replaced a test that
+  // matched regexes against scan.js's source because scan.js could not then be imported. A run
+  // superseded part-way through must send nothing: not its own gallery, and above all not its
+  // gallery under the id of the player who replaced it, which is what this cost before the token
+  // (a whole round of every phone labelling one player as another). Dropping `run === scanRun`
+  // from runAutoScan's live() fails this test, which is what makes it the real guard.
   const { sent } = arrangeScan();
   scan.beginPlayerScan(selfPlayer);
   await dom.pump(30);
@@ -474,4 +515,39 @@ test('cancelling mid-scan sends nothing, caches nothing and says so', async () =
   assert.equal(dom.element('lobby-status').textContent, 'Scan cancelled.');
   assert.equal(state.autoScanning, false);
   assert.equal(state.recordingScan, false);
+});
+
+// ---- Does the upload call compose with send()? ----
+//
+// `send()` resolves true once the server has the message and false if it could not be delivered;
+// it retries a transient failure itself and never rejects (transport.js). `saveCurrentScan` was
+// written against an older `send()` that returned nothing, so it wrapped the result in
+// Promise.resolve() and attached a rejection handler - both dead against the real contract, and
+// both invisible here because the harness' stub used to resolve to an array length.
+//
+// These two tests are the contract, from the only side the player sees: the lobby line.
+
+test('a delivered scan is never reported as a failure', async () => {
+  const { sent } = arrangeScan({ delivered: true });
+  await runScan(selfPlayer);
+
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the gallery has to have been sent for this to mean anything');
+  assert.match(
+    dom.element('lobby-status').textContent,
+    /^Saved scan for Sam with \d+ angles\.$/,
+    'a scan the server acknowledged must keep the line that says so',
+  );
+});
+
+test('a scan the connection could not deliver corrects the line that claimed it', async () => {
+  // "Saved scan for <name>" used to be said whether or not the gallery ever left the phone: a
+  // twelve-second rotation the player was told had worked and that no other phone ever saw.
+  // Rescanning really is the only recovery - a reconnect adopts this phone's existing seat and the
+  // server ignores the gallery on that path (backend/transport.py's _join), so nothing re-sends it.
+  const { sent } = arrangeScan({ delivered: false });
+  await runScan(selfPlayer);
+
+  assert.ok(sent.find((msg) => msg.type === 'scan'), 'the gallery was still handed to the connection');
+  assert.match(dom.element('lobby-status').textContent, /scan could not be sent/i);
+  assert.match(dom.element('lobby-status').textContent, /rescan/i);
 });

@@ -3,12 +3,12 @@
 // survive and what each surviving sample is made of).
 //
 // It lives on its own because it is the one phase of a scan with no camera, no canvas and no
-// inference in it - pure arithmetic over signatures - which makes it the one phase that can be
-// driven directly from a test instead of only through a screen that needs a phone
-// (`test/scan-select.test.js`). `screens/scan.js` cannot be imported under Node at all: it reaches
-// `detector.js`, which imports an absolute `/vendor/...` URL. That was the whole reason selection
-// had never been tested, and selection is where a change quietly alters what a player's gallery
-// contains for the rest of the round.
+// inference in it - pure arithmetic over signatures - so a test can drive it with signatures it
+// chose and no DOM at all (`test/scan-select.test.js`). It was extracted when `screens/scan.js`
+// could not be imported under Node; test/helpers/fake-dom.js has since removed that excuse, so
+// the reason it is still here is the narrower one: selection is where a change quietly alters
+// what a player's gallery contains for the rest of the round, and this is the only way to pin it
+// against a reference implementation rather than against a whole scan.
 //
 // Every threshold is passed in rather than imported, so the scan's tuning stays in one place at
 // the top of `screens/scan.js` - and so a test can choose its own numbers instead of asserting a
@@ -124,7 +124,6 @@ export function averagedRotationSample(seed, candidates, { viewAverageSimilarity
     ...seed,
     signature: averageSignatures(neighbors.map((candidate) => candidate.signature)),
     quality: neighbors.reduce((sum, candidate) => sum + candidate.quality, 0) / neighbors.length,
-    sourceCount: neighbors.length,
     // The frames this sample was averaged from, so attachSampleReid can embed exactly them and
     // average the result the same way. Never reaches the gallery: only `signature` does.
     sources: neighbors,
@@ -165,29 +164,6 @@ export async function selectDiverseRotationSeeds(candidates, targetCount, { dive
   return selected;
 }
 
-// Start with the best-quality sample and repeatedly append the most similar remaining one, which
-// roughly reconstructs the order the player turned in.
-export async function orderRotationSamplesByView(samples, { tick }) {
-  if (samples.length < 3) return samples.sort((a, b) => a.time - b.time);
-  const remaining = [...samples];
-  const ordered = [remaining.splice(remaining.findIndex((sample) => sample.quality === Math.max(...remaining.map((s) => s.quality))), 1)[0]];
-  while (remaining.length) {
-    const last = ordered.at(-1);
-    let bestIndex = 0;
-    let bestSimilarity = -Infinity;
-    for (let i = 0; i < remaining.length; i++) {
-      const similarity = signatureSimilarity(last.signature, remaining[i].signature);
-      if (similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestIndex = i;
-      }
-    }
-    ordered.push(remaining.splice(bestIndex, 1)[0]);
-    await tick(remaining.length);
-  }
-  return ordered;
-}
-
 // The whole pass. Resolves null when the scan was cancelled part-way through - the same contract
 // the recording and processing loops have, so a cancel during selection can never leave a
 // half-selected gallery behind, and a superseded run stops burning the phone's one thread on a
@@ -196,16 +172,22 @@ export async function orderRotationSamplesByView(samples, { tick }) {
 // Note the asymmetry it can produce: with `targetCount` or fewer clean candidates every sample is
 // a single frame and `sources` is absent; with more, every sample is an average of up to
 // `averageCount`. Both are valid galleries, and scan-reid.js copes with both.
+//
+// There used to be a final ordering step here (`orderRotationSamplesByView`), which walked the
+// samples into the order the player had turned in. Nothing read that order: matching scores every
+// sample and sorts by score (`bestAngleScore` in identify.js), and the server stores the array as
+// it arrives. Its one consumer had been a thumbnail strip that no longer exists, so it was 20
+// lines of similarity arithmetic, a renderer yield per sample, and the only reader of each
+// candidate's `time` - all of it to permute an array nobody looks at.
 export async function selectRotationSamples(candidates, options) {
   const { targetCount, yieldTo, cancelled = () => false } = options;
   const tick = cooperativeTicker(yieldTo);
   const steps = { ...options, tick };
   const clean = await removeScanDuplicates(await removeScanOutliers(candidates, steps), steps);
   if (cancelled()) return null;
-  if (clean.length <= targetCount) {
-    const ordered = await orderRotationSamplesByView(clean, steps);
-    return cancelled() ? null : ordered;
-  }
+  if (clean.length <= targetCount) return clean;
+  // At most `targetCount` seeds, so at most `targetCount` samples: the pass used to re-slice to
+  // the target here, which could never remove anything.
   const seeds = await selectDiverseRotationSeeds(clean, targetCount, steps);
   if (cancelled()) return null;
   const samples = [];
@@ -213,6 +195,5 @@ export async function selectRotationSamples(candidates, options) {
     samples.push(averagedRotationSample(seed, clean, steps));
     await tick(clean.length);
   }
-  const ordered = await orderRotationSamplesByView(samples, steps);
-  return cancelled() ? null : ordered.slice(0, targetCount);
+  return cancelled() ? null : samples;
 }
