@@ -23,17 +23,32 @@ flowchart LR
 | Installs | `backend/requirements.txt` (`aiohttp==3.10.11`) |
 | Runs | `python -m backend.app` on port 4000 |
 | Exposed | Only inside the Compose network. Not published to the host. |
+| Restart | `unless-stopped` |
+| Healthcheck | `python -c` requesting `GET /` (the `health` route in `backend/app.py`), every 5 s |
 
 ### `frontend`
 
 | | |
 | --- | --- |
 | Dockerfile | `frontend/Dockerfile` (two stages) |
-| Stage 1 | `node:20-bookworm-slim`: `npm ci --omit=dev`, only to get the browser runtimes (`@mediapipe/tasks-vision`, `onnxruntime-web`) onto disk |
+| Stage 1 | `node:22-bookworm-slim`: `npm ci --omit=dev`, only to get the browser runtimes (`@mediapipe/tasks-vision`, `onnxruntime-web`) onto disk |
 | Stage 2 | `nginx:1.27-alpine` plus `openssl` |
 | Serves | `frontend/public/` at `/`, MediaPipe's files at `/vendor/tasks-vision/`, and ONNX Runtime Web at `/vendor/ort/` (needed by [`reid.js`](../client/identification.md#the-re-identification-embedding-reidjs)) |
 | Ports | `8080 → 80` (HTTP), `3443 → 443` (HTTPS) |
 | Volume | `certs` mounted at `/certs` |
+| Restart | `unless-stopped` |
+| Healthcheck | `openssl x509 -checkend 86400` on the cert, plus `wget` on `http://127.0.0.1/` |
+| Waits for | `backend` to be **healthy**, not merely started |
+
+### Restart policies and readiness
+
+Both runtime services are `restart: unless-stopped`. Nothing but a CI deploy ever starts this stack, and CI only runs on a push to `dev`, so before this a host reboot, a daemon restart or an OOM kill took the game down until a human noticed and redeployed.
+
+`frontend` waits on `depends_on: backend: {condition: service_healthy}`. The short list form (`depends_on: [backend]`) waits only for the container to be *created and started* — not for aiohttp to be listening — so every deploy had a window where nginx was up and `backend:4000` refused the connection and both `/api/` and `/events/` answered **502**. For a phone mid-game that is its poll loop and its SSE stream failing at the same moment.
+
+The backend probe uses `python -c` rather than `curl`: `python:3.12-slim` has neither `curl` nor `wget`, and adding one means a new apt layer to carry a request the interpreter can already make. It requests `GET /`, which `backend/app.py` routes to `health()`; nginx proxies only `/api/` and `/events/`, so that route stays unreachable from outside and needs no auth. `test/deploy-robustness.test.js` cross-checks the probe's URL path against the route in `app.py`, so moving the route fails the suite instead of the deploy.
+
+The frontend probe re-checks the certificate's expiry as well as nginx's liveness. The entrypoint renews on start, so this is what catches a container that has been up long enough to outlive its own certificate without ever re-running the entrypoint.
 
 ### `tests`
 
@@ -43,7 +58,11 @@ Uses the `test` profile, so `docker compose up` doesn't start it. Run it explici
 docker compose run --rm tests
 ```
 
-It mounts the repo into a `node:20-bookworm-slim` container, keeps `node_modules` in its own `test-node-modules` volume (so it never touches your host folder), and runs `npm ci && npm test`. See [Testing](../development/testing.md).
+It mounts the repo into a `node:22-bookworm-slim` container, masks `node_modules` with an empty `test-node-modules` volume (so it never touches your host folder), and runs `npm test`. See [Testing](../development/testing.md).
+
+There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. It also deletes `node_modules` before installing, so the volume cached nothing between runs either. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+
+`backend-tests` is the Python half, and `scripts/test.ps1` runs both and checks both exit codes.
 
 ## nginx
 
@@ -199,9 +218,35 @@ what `nginx -t` above is for; it pins the policy decisions so they are not quiet
 
 ## TLS certificate
 
-`frontend/entrypoint.sh` runs before nginx starts. If `/certs/cert.pem` or `/certs/key.pem` is missing, it generates a self-signed RSA-2048 certificate for `CN=laser-tag.local`, valid for **365 days**. Then it starts nginx in the foreground.
+`frontend/entrypoint.sh` runs before nginx starts. It generates a self-signed RSA-2048 certificate valid for 365 days, then starts nginx in the foreground.
 
-Because `/certs` is a named volume, the certificate survives `docker compose down` and rebuilds, and phones only need to accept it once. To force a new certificate (for example after it expires):
+It regenerates when **any** of these is true, which is the part that used to be wrong:
+
+| Condition | Why |
+| --- | --- |
+| either file is missing or empty | the original case |
+| the cert expires within 30 days | the old guard tested only *existence*. With `-days 365`, on day 366 nginx still started and still served 443 — with an expired certificate, which mobile browsers refuse far less forgivingly than an untrusted-but-valid one, and nothing reported it |
+| the cert does not parse | `openssl x509 -checkend` exits non-zero on an unparseable file as well as a near-expired one, so this comes free |
+| the key does not parse | a truncated *key* is invisible to a check on the cert, and nginx needs both |
+| `CERT_HOSTS` changed since the cert was written | otherwise editing it would silently do nothing for the life of the volume |
+
+Generation writes to `/certs/.cert.pem.new` and `/certs/.key.pem.new` and `mv`s both into place. `rename(2)` within the volume is atomic, so a container killed mid-`openssl` leaves the previous usable pair rather than a truncated file. (Before this, a kill mid-write left two files that satisfied the existence guard forever, after which nginx failed to start on *every* boot with no fix but `docker volume rm`.)
+
+### subjectAltName
+
+The certificate carries a `subjectAltName`, not just `CN=laser-tag.local`. Modern browsers ignore `commonName` entirely, so the old cert failed hostname validation from the day it was generated — and a browser exception only sticks for a name the certificate actually claims.
+
+The default is `DNS:laser-tag.local,DNS:localhost,IP:127.0.0.1`. **For LAN play, set `CERT_HOSTS` to include the host's LAN address**, because that is what a phone actually types and it is not knowable at build time:
+
+```yaml
+# docker-compose.yml, under the frontend service
+environment:
+  CERT_HOSTS: DNS:laser-tag.local,DNS:localhost,IP:127.0.0.1,IP:192.168.1.20
+```
+
+Changing it regenerates on the next start; no need to remove the volume.
+
+Because `/certs` is a named volume, the certificate survives `docker compose down` and rebuilds, and phones only need to accept it once. To force a new certificate by hand:
 
 ```bash
 docker compose down
@@ -214,11 +259,23 @@ docker compose up --build
 
 ## Line endings
 
-`.gitattributes` forces LF line endings for `*.sh`, `*.conf` and `Dockerfile`. A Windows checkout with CRLF endings would otherwise break `entrypoint.sh` inside the Linux container. The frontend Dockerfile also strips `\r` from `entrypoint.sh` as a second safeguard.
+`.gitattributes` forces LF line endings for `*.sh`, `*.conf`, `Dockerfile` and `*.yml`/`*.yaml`. A Windows checkout with CRLF endings would otherwise break `entrypoint.sh` inside the Linux container. The frontend Dockerfile also strips `\r` from `entrypoint.sh` as a second safeguard.
+
+`*.yml` matters for the same reason one step removed: the deploy workflow holds shell inside a `run: |` block, so CRLF would put a `\r` at the end of every line of it and the VM would be asked to run `git checkout dev\r` — which fails in a way that reads as a git problem, not a line-ending one.
+
+The model files (`*.tflite`, `*.task`, `*.onnx`, `*.wasm`) are pinned `binary`, so no future `text=auto` can rewrite bytes inside a FlatBuffer or protobuf container and corrupt a model with no visible diff.
 
 ## Build context
 
-Both images build from the repo root (`context: .`). `.dockerignore` excludes `node_modules`, `.git`, `.certs`, logs and editor folders.
+Both images build from the repo root (`context: .`).
+
+`.dockerignore` patterns are matched against each path in the context, and **a pattern with no separator matches only at the top level**. A bare `node_modules` therefore missed every nested copy — including `.claude/worktrees/*/node_modules`, and `.claude/` is ~1 GB on a machine with agent worktrees (15 × ~181 MB). The context went from ~45 MB to ~1 GB. That is local build speed only, since `.gitignore` keeps `.claude/` off the VM, but every local `docker compose build` paid it. Hence `**/node_modules`, `.claude/` and `**/.git`.
+
+`**/__pycache__`, `**/*.pyc` and `backend/test_*.py` are excluded for a different reason: `backend/Dockerfile` is `COPY backend/ ./backend/`, so the production image was shipping the test files plus 176 KB of **cpython-314** bytecode into a `python:3.12-slim` image, where it is not even loadable. `frontend/public/*.test.js` likewise — `COPY frontend/public/ /usr/share/nginx/html/` published it, and `GET /identify.test.js` answered **200** on the production origin (measured).
+
+None of that stops anyone running the tests: both test services bind-mount the repo (`.:/app`), and `.dockerignore` does not apply to bind mounts.
+
+What is deliberately *not* excluded is `test/`, `tools/`, `docs/`, `scripts/` and `.github/`. They are a few MB next to the entries above, and a blanket exclusion is exactly the kind of thing that makes a future `COPY test/ ...` copy nothing at all with no error.
 
 
 ## Cross-origin isolation
