@@ -128,3 +128,25 @@ test('shots and damage travel over polling', async () => {
   a.stop();
   b.stop();
 });
+
+test('debug sessions get a targetable clone instead of self hits', async () => {
+  const debug = await pollingClient();
+  await debug.send({ type: 'join', name: 'Debug', room: 'clone-hit', gallery, debug: true });
+  await waitFor(() => lastState(debug.messages)?.players.length === 2);
+  const debugId = debug.messages.find((m) => m.type === 'welcome').id;
+  const clone = lastState(debug.messages).players.find((p) => p.id !== debugId);
+  assert.equal(clone.name, 'Debug clone');
+  await waitFor(() => debug.messages.filter((m) => m.type === 'roster').at(-1)?.players.find((p) => p.id === clone.id)?.gallery.length === 1);
+
+  await debug.send({ type: 'start' });
+  await waitFor(() => lastState(debug.messages)?.status === 'playing', 5000);
+
+  await debug.send({ type: 'shoot', targetId: debugId, zone: 'body' });
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(lastState(debug.messages)?.players.find((p) => p.id === debugId).hp, 100);
+
+  await debug.send({ type: 'shoot', targetId: clone.id, zone: 'body' });
+  await waitFor(() => lastState(debug.messages)?.players.find((p) => p.id === clone.id).hp === 80);
+
+  debug.stop();
+});

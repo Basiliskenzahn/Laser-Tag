@@ -11,7 +11,7 @@
 
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
-import { Room } from './game.js';
+import { MAX_PLAYERS, Room } from './game.js';
 
 const rooms = new Map(); // code -> Room
 const connections = new Map(); // player id -> { send(msg) }, whichever transport they use
@@ -47,7 +47,7 @@ function cleanName(name) {
   return String(name || '').trim().slice(0, 20) || 'Player';
 }
 
-// Appearance gallery from enrolment: at most a handful of angle samples, each a couple of
+// Appearance gallery from enrolment: a capped set of angle samples, each a couple of
 // short numeric vectors. Capped defensively since it comes straight from the client.
 function cleanVector(v, maxLen) {
   return Array.isArray(v) ? v.slice(0, maxLen).map(Number).filter(Number.isFinite) : [];
@@ -55,15 +55,17 @@ function cleanVector(v, maxLen) {
 
 function cleanGallery(gallery) {
   if (!Array.isArray(gallery)) return [];
-  return gallery.slice(0, 16).map((sample) => {
+  return gallery.slice(0, 24).map((sample) => {
     const clean = {
       hist: cleanVector(sample?.hist, 64),
       grid: cleanVector(sample?.grid, 256),
     };
     const lower = cleanVector(sample?.lower, 64);
     const shape = cleanVector(sample?.shape, 8);
+    const embed = cleanVector(sample?.embed, 512);
     if (lower.length) clean.lower = lower;
     if (shape.length) clean.shape = shape;
+    if (embed.length) clean.embed = embed;
     return clean;
   });
 }
@@ -72,6 +74,7 @@ function cleanGallery(gallery) {
 // the transport calls receive() for each incoming message and close() when it goes away.
 function openSession(conn) {
   const id = crypto.randomUUID();
+  const cloneId = `${id}:debug-clone`;
   let room = null;
 
   function receive(msg) {
@@ -80,10 +83,24 @@ function openSession(conn) {
     if (msg.type === 'join' && !room) {
       const code = cleanRoomCode(msg.room);
       const target = rooms.get(code) ?? new Room(code);
-      const result = target.join(id, cleanName(msg.name), cleanGallery(msg.gallery));
+      const name = cleanName(msg.name);
+      const gallery = cleanGallery(msg.gallery);
+      if (msg.debug === true && target.players.size > MAX_PLAYERS - 2) {
+        conn.send({ type: 'error', message: 'Room is full' });
+        return;
+      }
+      const result = target.join(id, name, gallery);
       if (!result.ok) {
         conn.send({ type: 'error', message: result.error });
         return;
+      }
+      if (msg.debug === true) {
+        const clone = target.join(cloneId, `${name} clone`, gallery);
+        if (!clone.ok) {
+          target.leave(id);
+          conn.send({ type: 'error', message: clone.error });
+          return;
+        }
       }
       rooms.set(code, target);
       connections.set(id, conn);
@@ -116,6 +133,7 @@ function openSession(conn) {
     connections.delete(id);
     if (!room) return;
     room.leave(id);
+    room.leave(cloneId);
     if (room.isEmpty) {
       clearTimeout(startTimers.get(room.code));
       rooms.delete(room.code);
