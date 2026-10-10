@@ -99,7 +99,7 @@ Model options that aren't separate constants but are worth knowing about, inside
 | `TARGET_LOCK_MS` | 350 | How long an identity must be held before it's targetable |
 | `TARGET_MIN_SCORE` | 0.48 | Minimum overall match score (colour signature) |
 | `TARGET_MIN_PART` | 0.22 | Minimum upper, lower and grid similarity (colour signature) |
-| `REID_TARGET_MIN_SCORE` (identify.js) | `REID_MATCH_THRESHOLD` − 0.01 | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
+| `reidTargetMinScore()` (identify.js) | threshold − 0.01 | Minimum score when the re-identification embedding decided. Tied to the threshold so raising it tightens shots too. |
 
 All of these go into one flag, `isStableTarget()`, which is the classifier's "confident on its own". A track whose motion is confirmed by the target's own phone is targetable without it — only liveness (`LIVE_TRACK_MS`) still applies. See [Identification → Motion confirmation](../client/identification.md#motion-confirmation-motion).
 
@@ -165,12 +165,12 @@ Box-shape rules for scans (`MIN_SCAN_HEIGHT_RATIO` 0.18, `MIN_SCAN_ASPECT` 0.65,
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `REID_MATCH_THRESHOLD` | 0.80 | Cosine similarity needed to accept. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. Raised to 0.80 after real games showed too many false positives: on a look-alike scoring 0.77 against a player's scan, shootable frames dropped from 83 to 27 of ~100, while the real player (~0.86) stayed shootable. |
+| re-identification threshold (`REID_DEFAULT_THRESHOLD`, `?reid=`) | 0.72 | Cosine similarity needed to accept; override in the address, e.g. `?reid=0.68`, and read each person's best score off their box with `?debug`. On Market-1501, 0.70/0.72/0.74/0.76 recognised 87/83/77/71% of players and accepted 10.8/7.6/4.9/3.1% of bystanders per check. In a real test 0.80 recognised nobody (phones score lower than the benchmark). |
 | `REID_MATCH_MARGIN` | 0.03 | Lead over the runner-up. Halves wrong-player assignments. |
 | `REID_EVIDENCE_MIN_SCORE` | threshold − 0.03 | Below this a rejected match contributes no evidence. Fixed at 0.62 before, which let evidence name anyone above it regardless of the threshold. |
 | `REID_SOFT_LABEL_SCORE` | threshold − 0.015 | A rejected match this good can still be the track's candidate |
 | `REID_REVOKE_SCORE`, `REID_REVOKE_CHECKS` | 0.6, 3 | A named track whose score for its own player stays below 0.6 for 3 checks in a row loses the name (someone else stepped into its box) |
-| `REID_INITIAL_LOCK` | 0.80 | Score that names a brand-new track in one check |
+| `reidInitialLock()` | threshold + 0.08, at least 0.80 | Score that names a brand-new track in one check |
 
 **Tracker:**
 
@@ -253,7 +253,7 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 
 ## Tuning tips
 
-- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE`/`REID_MATCH_THRESHOLD`, `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
+- **Too many wrong-player hits:** raise `TARGET_MIN_SCORE` or the re-identification threshold (`?reid=`), `TARGET_MIN_PART` or `TARGET_LOCK_MS`, or try motion confirmation with `?motion=on`/`?motion=strict`.
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
 - **Motion never confirms anyone:** first make sure the URL has `?motion=on` or `?motion=strict`. In debug mode, `motion off` means tracking is disabled, `no data` means no `devicemotion` events are arriving after permission, and `from nobody` means no other phone is sending samples.

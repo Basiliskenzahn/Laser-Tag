@@ -92,3 +92,19 @@ test('a named track whose re-identification no longer fits its player loses the 
   track = step();
   assert.equal(track.playerId, null, 'three in a row drop the name');
 });
+
+test('the threshold can be tuned in the field (?reid=)', async () => {
+  const { setReidThreshold, getReidThreshold } = await import('../frontend/public/identify.js');
+  const before = getReidThreshold();
+  const probe = person(similarTo(rexReid, 0.8));
+  try {
+    setReidThreshold(0.85);
+    assert.equal(matchGallery(probe, players, null, { closedSet: true, includeRejected: true }).accepted, false);
+    setReidThreshold(0.7);
+    assert.equal(matchGallery(probe, players, null, { closedSet: true }).accepted, true);
+    setReidThreshold(5); // nonsense is ignored
+    assert.equal(getReidThreshold(), 0.7);
+  } finally {
+    setReidThreshold(before);
+  }
+});

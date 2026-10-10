@@ -93,7 +93,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.80 (`REID_MATCH_THRESHOLD`) | `score` |
+| Overall score | ≥ 0.72 by default (`?reid=` to tune) | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -184,7 +184,7 @@ The identity then changes only through hysteresis:
 
 | Situation | Needed to (re)assign |
 | --- | --- |
-| New track, very confident match (score ≥ 0.85 with `reid`, ≥ 0.66 without) | 1 check |
+| New track, very confident match (score ≥ threshold + 0.08, at least 0.80, with `reid`; ≥ 0.66 without) | 1 check |
 | New track, otherwise | 2 agreeing checks in a row |
 | Track already identified as someone else | 4 agreeing checks in a row |
 | Check finds no candidate | Identity is **kept**. A known track only loses its identity when it disappears, loses a conflict, or another player wins the switch. |

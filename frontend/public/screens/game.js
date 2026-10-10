@@ -9,6 +9,7 @@
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectScanPeople, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
 import { motionDebugLine, recordTrackMotion, resolveIdentity } from '../motion-identity.js';
+import { getReidThreshold } from '../identify.js';
 import { gamePlayer, isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { openGameEvents } from '../net.js';
 import { state } from '../state.js';
@@ -315,7 +316,7 @@ export function loop() {
     const ranked = visibleTracks.filter((t) => t.rankings?.length);
     const rankName = (rank) => (rank.id === localSelfId() ? 'self' : rank.name);
     $('debug').textContent =
-      `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms\n` +
+      `${state.delegate} · ${fps.toFixed(0)} fps · ${inferenceMs.toFixed(0)} ms · reid ≥ ${getReidThreshold().toFixed(2)}\n` +
       `${video.videoWidth}×${video.videoHeight} · ${state.boxes.length} people · ${visibleTracks.length}/${state.tracks.length} live tracks` +
       (state.mode === 'game'
         ? ` · ${identified.length} identified` +
@@ -418,13 +419,16 @@ function drawGame({ vw, vh, toScreen }) {
     const [x, y] = toScreen(box);
     ctx.fillStyle = color;
     ctx.setLineDash([]);
-    const label = known
+    // In debug mode every box also shows its best match and score, for tuning ?reid= in the field.
+    const best = DEBUG ? (track.rankings ?? []).find((r) => r.id !== localSelfId()) : null;
+    const scoreNote = best ? ` [${best.name} ${best.score.toFixed(2)}${best.hasReid ? '' : ' colour'}]` : '';
+    const label = (known
       ? `${id.name}${dead ? ' down' : id.source === 'both' ? ' (moves)' : ''}`
       : id.reason === 'vetoed' && DEBUG
         ? `not ${gamePlayer(id.vetoed)?.name ?? 'them'} (motion)`
         : debugMatch
           ? `${debugMatch.name}? ${debugMatch.score.toFixed(2)}`
-          : 'Person';
+          : 'Person') + scoreNote;
     ctx.fillText(label, x + 4, y + 16);
   }
 }

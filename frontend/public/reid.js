@@ -7,7 +7,7 @@
 // enrolled players with 20 bystanders each, it recognised 77% of players at a 5% bystander
 // acceptance rate, against 34% for the colour + MobileNet signature. This is a *game-level*
 // number (several checks, the tracker's hysteresis, 20 bystanders at once); identify.js's
-// REID_MATCH_THRESHOLD comment gives the *per-single-check* figures the 0.72 threshold was
+// REID_DEFAULT_THRESHOLD comment gives the *per-single-check* figures the 0.72 threshold was
 // picked from (83% recognised / 7.6% bystanders accepted at that threshold alone) - the two
 // aren't the same measurement, so don't expect them to match if you're comparing numbers.
 //

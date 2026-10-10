@@ -10,7 +10,7 @@
 import { fuseMotion, motionCheck, visualActivity } from './motion/matching.js';
 import { MotionSensor } from './motion/sensor.js';
 import { MOTION_ENABLED, MOTION_OFF, REQUIRE_MOTION } from './env.js';
-import { REID_TARGET_MIN_SCORE } from './identify.js';
+import { reidTargetMinScore } from './identify.js';
 import { send } from './net.js';
 import { gamePlayer, localSelfId } from './roster.js';
 import { state } from './state.js';
@@ -85,7 +85,7 @@ function isStableTarget(track, now = performance.now()) {
       track.playerId &&
         Number.isFinite(track.identifiedAt) &&
         now - track.identifiedAt >= TARGET_LOCK_MS &&
-        track.score >= REID_TARGET_MIN_SCORE,
+        track.score >= reidTargetMinScore(),
     );
   }
   return Boolean(
