@@ -611,7 +611,11 @@ function shapeSimilarity(a, b) {
 
 // One live signature against one enrolled sample. This is where the fallback chain described at
 // the top of the file actually happens: see `score`.
-function similarityParts(a, b) {
+//
+// `reidScale` is the room-level decision from roomScoresOnReid(), and it is a parameter rather
+// than something recomputed here because the choice is not per pair: see that function for why a
+// single reid-less gallery has to put *everyone* on the blended path.
+function similarityParts(a, b, reidScale = true) {
   const upper = cosine(a.hist, b.hist);
   const lower = cosine(a.lower, b.lower);
   const grid = cosine(a.grid, b.grid);
@@ -620,7 +624,7 @@ function similarityParts(a, b) {
   const hasEmbed = Boolean(a.embed?.length && b.embed?.length);
   // With a re-identification embedding on both sides, it alone decides: in evaluation, blending
   // in the colour features only made it worse (reid.js). The colour parts stay for debugging.
-  const hasReid = Boolean(a.reid?.length && b.reid?.length);
+  const hasReid = reidScale && Boolean(a.reid?.length && b.reid?.length);
   const reid = hasReid ? cosine(a.reid, b.reid) : 0;
   // Carried through so the accept decision can still see it after smoothing replaced the score,
   // and only when there is one: a match from a box that passed the normal gate has no such field
@@ -670,7 +674,7 @@ function averageMatches(matches) {
 
 // A single enrolled angle can be noisy, so matching blends the best angle with nearby
 // supporting angles. This keeps side/front tolerance while reducing wins from one bad sample.
-function bestAngleScore(signature, gallery) {
+function bestAngleScore(signature, gallery, reidScale = true) {
   // A box in the far band is still refused by everything except re-identification, and there only
   // against reidScoreFloor()'s stricter bar. Dropping the match outright, rather than marking it
   // rejected, is what keeps the rest of the file out of this: a far box that cannot clear the bar
@@ -682,7 +686,7 @@ function bestAngleScore(signature, gallery) {
   for (let i = 0; i < gallery.length; i++) {
     const sample = gallery[i];
     if (!sample?.hist?.length || !sample?.grid?.length || !sample?.lower?.length || !sample?.shape?.length) continue;
-    const parts = similarityParts(signature, sample);
+    const parts = similarityParts(signature, sample, reidScale);
     if (farReid && !(parts.hasReid && parts.score >= reidScoreFloor(parts))) continue;
     matches.push({ ...parts, angleIndex: i });
   }
@@ -725,13 +729,44 @@ function rejectionReason(best, candidates, secondScore) {
   return null;
 }
 
+// Whether this room can be scored on the re-identification scale at all: only when *every*
+// enrolled player's gallery carries a reid vector.
+//
+// This has to be a property of the room, not of each (live, gallery-sample) pair, because the two
+// scales are not comparable. A colour/embed cosine runs 0.95+ for the same person and 0.85-0.96
+// for a different person in similar clothes; OSNet runs 0.70-0.85 for the correct person. Deciding
+// per pair - which is what similarityParts used to do - means one player whose OSNet failed at
+// enrolment is scored on the higher scale while everyone else is scored on the lower one, and
+// decideRankings then sorts the two together as though they were the same quantity. The reid-less
+// player becomes an attractor that outscores every correct re-identification match in the room
+// (measured: a colour 0.963 beating the correct reid 0.800), and because `track.hasReid` is then
+// false the colour accept path, the colour shot floor and the colour-only initial lock all apply
+// to a name that is wrong.
+//
+// So a single reid-less gallery drops the whole room back to the blended path. That is strictly a
+// loss of accuracy for the players who do have embeddings, and it is still the right trade: the
+// blend is a weaker signal applied consistently, where the mix is a stronger signal applied
+// incomparably. A gallery is all-or-nothing for `reid` (screens/scan.js enrols one or none), so
+// the mix is always *across* players, never within one.
+export function roomScoresOnReid(players) {
+  return players.every((player) => !player.gallery?.length || player.gallery.some((s) => s.reid?.length));
+}
+
 // players: [{ id, name, gallery: [{hist, grid}, ...] }, ...]
 // excludeId: the local player - never matched against their own gallery.
-export function matchGallery(signature, players, excludeId, { includeRejected = false, closedSet = false } = {}) {
+// reidScale: see roomScoresOnReid. Tracker.update passes the value it already computed for
+// `reidDecides`, so the scale decision and the extraction skip cannot disagree; a caller that
+// omits it gets the condition read off the players it passed.
+export function matchGallery(
+  signature,
+  players,
+  excludeId,
+  { includeRejected = false, closedSet = false, reidScale = roomScoresOnReid(players) } = {},
+) {
   const rankings = [];
   for (const player of players) {
     if ((!closedSet && player.id === excludeId) || !player.gallery?.length) continue;
-    const match = bestAngleScore(signature, player.gallery);
+    const match = bestAngleScore(signature, player.gallery, reidScale);
     if (!match) continue;
     rankings.push({ id: player.id, name: player.name, ...match });
   }
@@ -879,13 +914,39 @@ function identityConfidence(track, now) {
 }
 
 // Counts consecutive checks on which the re-identification score for the track's current player
-// is clearly too low; true once it's been REID_REVOKE_CHECKS in a row.
+// is clearly too low, and revokes the name once the *smoothed* score agrees that the player is
+// gone.
+//
+// Two conditions, because the raw score and the median answer different questions and this used to
+// read only the raw one. Acceptance, shootability and `track.score` are all the median over
+// REID_HISTORY_MS (plus any motion adjustment) - the median exists precisely so that a side view
+// or a motion-blurred check cannot unseat a player - while revocation counted raw checks and so
+// overrode it. Three consecutive checks is 750-900 ms at RECHECK_MS, which is an ordinary side
+// view, not "a different person stepped in": a player at 0.84-0.87 with a three-check burst at
+// 0.55 was revoked outright, losing their name, their evidence and the whole reid history the
+// median was built from, and then spending ~600 ms unidentified while it rebuilt from one sample.
+// Under ?motion=on the two were further apart still, since acceptance saw median + motionAdjust
+// and revocation saw neither.
+//
+// So the raw score stays as the fast *trigger* - it is what notices promptly, and nothing is
+// revoked without it - and the median is the *authority*: the name goes only once the quantity
+// that granted it has stopped clearing the bar that granted it (reidScoreFloor, which is also
+// reidTargetMinScore, so the name and the shot are now lost on the same check rather than 1-2
+// checks apart). The counter is not reset while the median still holds the player, so a real
+// substitution is revoked on the first check the median concedes, not REID_REVOKE_CHECKS later.
+//
+// The cost is one check of latency on a genuine swap: a player at 0.95 replaced by someone at 0.30
+// loses the name on the fourth bad check rather than the third. That check is also the first one on
+// which the median drops under the shot floor, so the substitute was never shootable any earlier
+// either - the extra latency is in the displayed name only.
 function revokedByReid(track, match) {
   const current = (track.rankings?.length ? track.rankings : [match]).find((r) => r?.id === track.playerId);
   if (!current?.hasReid) return false;
-  // The latest check, not the median: a different person stepping in should show quickly.
-  track.reidMisses = (current.rawScore ?? current.score) < REID_REVOKE_SCORE ? (track.reidMisses ?? 0) + 1 : 0;
+  const raw = current.rawScore ?? current.score;
+  track.reidMisses = raw < REID_REVOKE_SCORE ? (track.reidMisses ?? 0) + 1 : 0;
   if (track.reidMisses < REID_REVOKE_CHECKS) return false;
+  // `current.score` is the median (smoothRankings) wherever there is a history to take one over.
+  if (current.score >= reidScoreFloor(current)) return false;
   track.reidMisses = 0;
   return true;
 }
@@ -916,6 +977,22 @@ function smoothRankings(track, rankings, now, scoreAdjust) {
   });
 }
 
+// Everything that made this track somebody, including the state that outlives a name: the
+// accumulated evidence, the re-identification history the median is taken over, and the two miss
+// counters. Those five used to be left behind, and two of the four callers compensated by clearing
+// some of them by hand - so the two that did not got a track that was no longer anybody but still
+// carried the baggage of who it had been:
+//
+//   - `reidMisses` survived, so a track cleared at 2 misses and later re-named was revoked again by
+//     the *first* slightly-low check it saw, instead of getting its own REID_REVOKE_CHECKS.
+//   - `evidence`/`evidenceDetails` survived, so a track cleared by duplicate resolution kept a full
+//     bucket for the player it had just lost; evidenceWinner re-proposed that player on the next
+//     check, duplicate resolution took it away again, and the track flip-flopped every two checks,
+//     resetting identifiedAt - and so the shot lock - each time round.
+//
+// Clearing them here rather than at the call sites is what makes "this track has no identity" one
+// statement instead of four, and `reidHistory` goes with them: a median carried over from the
+// previous identity is a median of somebody else's scores.
 function clearIdentity(track) {
   track.playerId = null;
   track.name = null;
@@ -934,6 +1011,13 @@ function clearIdentity(track) {
   track.identityHits = 0;
   track.lastEnrichedAt = 0;
   track.selfRejected = false;
+  track.misses = 0;
+  track.reidMisses = 0;
+  // Optional-chained because a track handed in from an older frame (or built by hand in a test)
+  // need not carry the maps yet.
+  track.evidence?.clear();
+  track.evidenceDetails?.clear();
+  track.reidHistory?.clear();
 }
 
 // One player can only be in one place: if two tracks ended up with the same name, the better
@@ -958,19 +1042,80 @@ function resolveDuplicateIdentities(tracks, now) {
   }
 }
 
+// Whether one ranking is good enough on its own merits to be worth assigning to anybody.
+//
+// These are the same floors softLabelMatch applies - the point below which the per-track path
+// will not even propose a candidate, let alone accept one - read per candidate rather than only
+// for the winner, because the resolver ranks over every candidate of every track. For the
+// re-identification path that is reidScoreFloor(), so a candidate scored through the far band
+// still has to clear the stricter bar the band charges it (FAR_REID_MAX_PENALTY) rather than the
+// plain threshold.
+function resolverCandidateUsable(candidate) {
+  if (candidate.hasReid) return candidate.score >= reidScoreFloor(candidate);
+  return (
+    candidate.score >= SOFT_LABEL_SCORE &&
+    candidate.upper >= EVIDENCE_MIN_PART &&
+    candidate.lower >= EVIDENCE_MIN_PART &&
+    candidate.grid >= EVIDENCE_MIN_PART &&
+    candidate.shape >= EVIDENCE_MIN_PART
+  );
+}
+
+// A track whose own top two candidates are inside the accept margin is a tie, and a tie is not
+// resolvable by picking one: which name lands on which person is decided by the sort, i.e.
+// arbitrarily. decideRankings rejects it with reason 'margin' and softLabelMatch refuses to label
+// it; the resolver has to refuse it too, or the documented guarantee holds only while one person
+// is on screen.
+function rankingsAreTied(rankings) {
+  const [best, second] = rankings;
+  if (!best || !second) return false;
+  return best.score - second.score < (best.hasReid ? REID_MATCH_MARGIN : MATCH_MARGIN);
+}
+
 // With several people on screen at once, deciding each track on its own throws away the
 // strongest hint available: the same player cannot be two of them. This assigns players to
-// tracks greedily over all (track, candidate) pairs instead, nudged by stickiness to the current
-// name, accumulated evidence, how clearly that candidate beat its rivals, and how many enrolled
-// angles agreed. Tracks left without a player become unidentified people.
+// tracks greedily over all (track, candidate) pairs, nudged by stickiness to the current name,
+// accumulated evidence, how clearly that candidate beat its rivals, and how many enrolled angles
+// agreed.
+//
+// What it may assign is the whole question. Its only filter used to be `candidate.id === selfId`:
+// it never consulted `accepted`, `reason`, reidMatchThreshold, REID_MATCH_MARGIN or any colour
+// floor, so whenever two or more tracks were visible it overrode decideRankings, softLabelMatch,
+// INITIAL_STREAK and SWITCH_STREAK wholesale and put a name on every visible track that had a pair
+// available. Measured: a bystander at a re-identification cosine of 0.07, which matchGallery had
+// refused with reason 'score', was named anyway; two people equidistant from two galleries were
+// both named on check 0 - the 'margin' tie - and both shootable 150 ms later; and a look-alike took
+// a dipping player's name, resetting identifiedAt and so the real player's shot lock.
+//
+// Three rules now bound it, and between them they leave the per-track path in charge of every
+// decision it already makes:
+//
+//   1. Only candidates that clear resolverCandidateUsable() are even considered. The resolver
+//      chooses *among* credible candidates; it does not manufacture one. A bystander whose best
+//      score is 0.07 contributes no pairs at all.
+//   2. A track holding a 'margin' tie contributes no pairs. Waiting is the documented behaviour.
+//   3. It will not move a track off a name it already holds onto a *different* player. Changing an
+//      identity is SWITCH_STREAK's job - four agreeing checks - and a greedy pass that reassigns on
+//      one check is how a look-alike stole a name. The resolver may confirm the name a track holds,
+//      or give a name to a track that has none.
+//
+// A track left unassigned keeps exactly what the per-track logic left it, latched name included.
+// It used to be cleared, which was a fourth override: a named track whose check happened to
+// produce no credible candidate - motion blur, a side view, half a body - lost its name outright,
+// when the per-track path had deliberately decided to keep it (see the latch comment in update).
+// The one case that still clears is the one the resolver exists for: this track holds a player that
+// this resolution has just given to a better-supported track.
 function resolveClosedSetIdentities(tracks, now, selfId) {
   const visible = tracks.filter((track) => track.lastSeen === now && !track.selfRejected && track.rankings?.length);
   if (visible.length < 2) return;
 
   const pairs = [];
   for (const track of visible) {
+    if (rankingsAreTied(track.rankings)) continue;
     for (const candidate of track.rankings) {
       if (candidate.id === selfId) continue;
+      if (track.playerId && candidate.id !== track.playerId) continue;
+      if (!resolverCandidateUsable(candidate)) continue;
       const sticky = candidate.id === track.playerId ? 0.035 : 0;
       const evidence = (track.evidence?.get(candidate.id) ?? 0) * 0.025;
       const margin = Number.isFinite(candidate.margin) ? Math.max(-0.12, Math.min(0.12, candidate.margin)) * 0.35 : 0;
@@ -990,7 +1135,8 @@ function resolveClosedSetIdentities(tracks, now, selfId) {
   }
 
   for (const track of visible) {
-    if (!usedTracks.has(track)) clearIdentity(track);
+    if (usedTracks.has(track)) continue;
+    if (track.playerId && usedPlayers.has(track.playerId)) clearIdentity(track);
   }
 }
 
@@ -1043,11 +1189,41 @@ function trackerCandidate(match, evidenceMatch) {
   return match?.accepted ? match : evidenceMatch ?? softLabelMatch(match);
 }
 
-function addEvidence(track, match) {
-  const weight = evidenceWeight(match);
-  if (!weight) return;
-  track.evidence.set(match.id, (track.evidence.get(match.id) ?? 0) + weight);
-  track.evidenceDetails.set(match.id, match);
+// Fold one check into the leaky buckets - every candidate it scored, not just the winner.
+//
+// Recording only the best candidate made EVIDENCE_MARGIN unenforceable in the one situation it
+// reads as guarding. With a *persistent* narrow leader the runner-up's bucket was never written
+// at all, so it stayed 0, so `best.value - second` was the leader's whole bucket and the 0.12
+// margin was passed trivially on every check: the guard only ever bit on rapid alternation
+// between two candidates, never on the stable near-tie it describes. Writing a bucket per
+// candidate is what makes the margin a margin.
+//
+// And a 'margin' rejection contributes nothing. softLabelMatch refuses to label a tie outright -
+// "two players scoring the same is a tie, and guessing is worse than waiting" - but evidence was
+// accumulated for the tied leader anyway, evidenceWinner handed the stored match back, and
+// trackerCandidate consults the evidence winner *before* softLabelMatch. So the tie was named
+// after all, two checks later, by the one route that had not been told about it: a permanent,
+// perfectly balanced tie was named on check 2. The buckets rising together is not enough on its
+// own to stop that - a near-tie inside REID_MATCH_MARGIN still diverges them slowly - so the
+// refusal has to be explicit.
+function addEvidence(track, match, selfId) {
+  if (!match || match.reason === 'margin') return;
+  const candidates = match.rankings?.length ? match.rankings : [match];
+  for (const candidate of candidates) {
+    // The local player is a candidate in closed-set mode - that is how the self-match guard sees
+    // them - but they must never become a track's identity, and the 'self' rejection upstream only
+    // fires when they are the *best* candidate. Banking evidence for them as a runner-up would let
+    // the evidence path name a track as its own camera's owner once the real leader faded.
+    if (candidate.id === selfId) continue;
+    // `accepted` belongs to the decision, which is about the winner; a runner-up is at best a
+    // soft near miss however good the winner was.
+    const accepted = Boolean(match.accepted) && candidate.id === match.id;
+    const scored = { ...candidate, accepted };
+    const weight = evidenceWeight(scored);
+    if (!weight) continue;
+    track.evidence.set(candidate.id, (track.evidence.get(candidate.id) ?? 0) + weight);
+    track.evidenceDetails.set(candidate.id, scored);
+  }
 }
 
 function evidenceWinner(track) {
@@ -1184,7 +1360,11 @@ export class Tracker {
     }
     this.tracks = this.tracks.filter((t) => now - t.lastSeen < TRACK_TIMEOUT_MS);
 
-    const reidDecides = Boolean(reid) && players.every((p) => !p.gallery?.length || p.gallery.some((s) => s.reid?.length));
+    // One condition, two consequences: it decides both whether the colour features are worth
+    // extracting and - threaded into matchGallery below - which scale the room is scored on. They
+    // used to be separate, and only the first was implemented: see roomScoresOnReid.
+    const roomOnReid = roomScoresOnReid(players);
+    const reidDecides = Boolean(reid) && roomOnReid;
     for (const track of this.tracks) {
       if (track.lastSeen !== now) continue; // not seen this frame, nothing to re-check
       const due =
@@ -1210,10 +1390,16 @@ export class Tracker {
           continue;
         }
       }
-      const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet });
+      const latest = matchGallery(signature, players, selfId, { includeRejected: true, closedSet, reidScale: roomOnReid });
       countRange(signature, Boolean(latest));
+      // Keyed on there being rankings at all, not on the *best* candidate carrying re-id. The
+      // best candidate's flag is the wrong key: whenever a non-reid candidate happened to top the
+      // list, smoothRankings never ran, so the 3 s median was switched off for the whole track and
+      // even its reid candidates were judged on a single raw check - which is precisely what
+      // REID_DEFAULT_THRESHOLD was lowered to 0.65 on the assumption of. smoothRankings returns
+      // non-reid rankings untouched, so running it unconditionally is safe on every path.
       const smoothed = () =>
-        latest?.hasReid && latest.rankings
+        latest?.rankings
           ? decideRankings(smoothRankings(track, latest.rankings, now, scoreAdjust), selfId, { includeRejected: true, closedSet })
           : latest;
       let match = smoothed();
@@ -1223,8 +1409,6 @@ export class Tracker {
         // the evidence for it, but keep the rankings so the debug overlay can show what happened.
         const rankings = track.rankings;
         clearIdentity(track);
-        track.evidence.clear();
-        track.evidenceDetails.clear();
         track.rankings = rankings;
         track.debugMatch = match;
         track.selfRejected = true;
@@ -1232,16 +1416,14 @@ export class Tracker {
       }
       track.selfRejected = false;
       if (track.playerId && track.hasReid && revokedByReid(track, match)) {
+        // clearIdentity drops the evidence and the reid history too: that history belongs to the
+        // person who left, so this track decides on this check alone.
         clearIdentity(track);
-        track.evidence.clear();
-        track.evidenceDetails.clear();
-        // That history belongs to the person who left: decide on this check alone.
-        track.reidHistory?.clear();
         match = smoothed();
         track.rankings = match?.rankings ?? (match ? [match] : []);
       }
       decayEvidence(track);
-      addEvidence(track, match);
+      addEvidence(track, match, selfId);
       const evidenceMatch = evidenceWinner(track);
       const candidateMatch = trackerCandidate(match, evidenceMatch);
       const candidateId = candidateMatch?.id ?? null;
