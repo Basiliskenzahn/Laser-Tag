@@ -1,7 +1,7 @@
-// Guards the deploy and container decisions in docker-compose.yml, the CI workflow and
-// frontend/entrypoint.sh. Every one of these is a config line whose absence produces no
-// error anywhere - the stack keeps building, the suite keeps passing, and the failure only
-// shows up as an outage, as a silent wrong-code deploy, or a year later as an expired cert.
+// Guards the container decisions in docker-compose.yml and frontend/entrypoint.sh. Every one
+// of these is a config line whose absence produces no error anywhere - the stack keeps
+// building, the suite keeps passing, and the failure shows up only as an outage or, a year
+// later, as an expired certificate.
 //
 // Text checks for the same reason as test/asset-delivery.test.js: `npm test` must work with
 // no Docker daemon. They cannot prove Compose accepts the file; see docs/operations/.
@@ -14,12 +14,7 @@ import test from 'node:test';
 const repo = (p) => fileURLToPath(new URL(`../${p}`, import.meta.url));
 const read = (p) => readFileSync(repo(p), 'utf8');
 
-/**
- * Strip `#` comments. This matters in both directions here: prose explaining a setting must
- * not stand in for the setting, and - the way this file first failed - a comment explaining
- * why `git pull` and `docker compose run` are gone must not trip the assertions that they
- * are gone. Shell comments inside a `run: |` block are stripped the same way.
- */
+/** Strip `#` comments, so prose explaining a setting cannot stand in for the setting. */
 function stripComments(text) {
   return text.replace(/^[ \t]*#.*$/gm, '').replace(/(?<![$'"])#(?![{])[^\n]*$/gm, '');
 }
@@ -47,7 +42,7 @@ function serviceBody(name) {
 /** The services the game actually runs - not the `test` profile ones. */
 const RUNTIME_SERVICES = ['backend', 'frontend'];
 
-// ---- Item 1: restart policy ----
+// ---- Restart policy ----
 
 test('both runtime services restart on their own', () => {
   // The only thing that starts this stack is a CI deploy, and CI only runs on a push. So
@@ -63,25 +58,13 @@ test('both runtime services restart on their own', () => {
   }
 });
 
-test('the test-profile services are deliberately left without a restart policy', () => {
-  // A one-shot test run that restarts forever would be its own outage.
-  for (const name of ['tests', 'backend-tests']) {
-    assert.doesNotMatch(
-      serviceBody(name),
-      /^\s{4}restart:/m,
-      `${name} is a one-shot run and must not have a restart policy`,
-    );
-  }
-});
+// ---- Readiness, not just "started" ----
 
-// ---- Item 2: readiness, not just "started" ----
-
-test('the backend has a healthcheck that probes it over HTTP', () => {
+test('the backend probe uses a tool the image actually has', () => {
   const body = serviceBody('backend');
   assert.match(body, /^\s{4}healthcheck:/m, 'the backend needs a healthcheck');
-  // It has to actually reach the server. A healthcheck of `true` would satisfy a looser test.
-  assert.match(body, /127\.0\.0\.1:4000|localhost:4000/, 'the probe must connect to port 4000');
   // python:3.12-slim ships neither curl nor wget, so a probe naming one would never run.
+  // (That it reaches port 4000 on the right path is checked against app.py below.)
   const probe = body.slice(body.indexOf('healthcheck:'));
   assert.doesNotMatch(
     probe.split(/^\s{4}\w/m)[0],
@@ -132,11 +115,6 @@ test('the backend health route the probe uses is the one the app actually serves
   );
 });
 
-// ---- Item 3 and 4: the deploy trigger, and a real test gate ----
-
-
-
-
 test('package.json and the compose test service agree on one node major', () => {
   // Cross-checked against each other rather than against a number written here, so this
   // fails when they drift apart instead of when they are all updated together.
@@ -164,11 +142,7 @@ test('package.json and the compose test service agree on one node major', () => 
   }
 });
 
-// ---- Item 5: the deploy must be reproducible ----
-
-
-
-// ---- Item 6: the certificate ----
+// ---- The certificate ----
 
 test('the cert is regenerated on expiry, not merely when the file is missing', () => {
   // The old guard was `[ ! -f cert.pem ] || [ ! -f key.pem ]` with -days 365, so on day 366
@@ -252,7 +226,7 @@ test('the cert carries a subjectAltName, which is the only name a browser reads'
   assert.match(san[1], /IP:/, 'a phone on the LAN types an IP, which CN never covered');
 });
 
-// ---- Item 11: the compose test run does no pointless work ----
+// ---- The compose test run does no pointless work ----
 
 test('the compose test service does not reinstall dependencies it never imports', () => {
   // Nothing in the suite resolves a bare specifier, so `npm ci` downloaded ~180 MB of

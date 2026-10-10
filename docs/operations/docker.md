@@ -58,9 +58,11 @@ Uses the `test` profile, so `docker compose up` doesn't start it. Run it explici
 docker compose run --rm tests
 ```
 
-It mounts the repo into a `node:22-bookworm-slim` container, masks `node_modules` with an empty `test-node-modules` volume (so it never touches your host folder), and runs `npm test`. See [Testing](../development/testing.md).
+It mounts the repo into a `node:22-bookworm-slim` container and runs `npm test`. See [Testing](../development/testing.md).
 
-There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. It also deletes `node_modules` before installing, so the volume cached nothing between runs either. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+There is deliberately **no `npm ci`**. No test in the suite resolves a bare specifier — the two dependencies exist only to be copied into the frontend image by its `deps` stage — so `npm ci` downloaded ~180 MB of MediaPipe and ONNX Runtime that nothing imported. Dropping it takes the network off the path to running the tests. `test/deploy-robustness.test.js` asserts both halves of that: no install in the command, and no bare import anywhere in the suite — so if a test ever does need a dependency, the suite says so instead of the run mysteriously failing.
+
+There used to be an empty `test-node-modules` volume mounted over `/app/node_modules` to mask the host's copy. It was deleted along with `npm ci`: it cached nothing (`npm ci` deletes `node_modules` first anyway), and since no test resolves a bare specifier there is nothing for the host's copy to shadow. One less named volume to clean up.
 
 `backend-tests` is the Python half, and `scripts/test.ps1` runs both and checks both exit codes.
 
@@ -265,7 +267,7 @@ docker volume rm laser-tag_certs
 docker compose up --build
 ```
 
-`docker compose down -v` also works, but it removes the test `node_modules` volume too.
+`docker compose down -v` also works, but it removes the `backend-pip-cache` volume too.
 
 ## Line endings
 
@@ -279,7 +281,18 @@ The model files (`*.tflite`, `*.task`, `*.onnx`, `*.wasm`) are pinned `binary`, 
 
 Both images build from the repo root (`context: .`).
 
-`.dockerignore` patterns are matched against each path in the context, and **a pattern with no separator matches only at the top level**. A bare `node_modules` therefore missed every nested copy — including `.claude/worktrees/*/node_modules`, and `.claude/` is ~1 GB on a machine with agent worktrees (15 × ~181 MB). The context went from ~45 MB to ~1 GB. That is local build speed only, since `.gitignore` keeps `.claude/` off the VM, but every local `docker compose build` paid it. Hence `**/node_modules`, `.claude/` and `**/.git`.
+`.dockerignore` patterns are matched against each path in the context, and **a pattern with no separator matches only at the top level** — so a bare `node_modules` missed every nested copy. `**/` matches *zero* or more directories, so `**/node_modules` covers the top-level copy as well as `.claude/worktrees/*/node_modules`. Hence `**/node_modules`, `.claude/` and `**/.git`.
+
+Measured on this machine (`tar -cf - .` over the context, with and without the exclusions):
+
+| | Bytes |
+| --- | --- |
+| whole tree, no exclusions | 383,109,120 (**365 MiB**) |
+| with `.dockerignore` applied | 19,445,760 (**18.5 MiB**) |
+
+A 20× reduction, and it is `node_modules` (181 MB), `.claude/` (152 MB) and `.git` (20 MB) that account for essentially all of it. Of the 18.5 MiB that remains, **~18 MB is the four committed model files** — the rest of the source tree is only about 1.4 MB. So there is nothing further worth excluding: any additional pattern would be shaving at 1.4 MB while risking a `COPY` that silently matches nothing.
+
+The `.claude/` figure moves around a lot (it was ~1 GB at 15 agent worktrees, 152 MB at 8). It is local build speed only — `.gitignore` keeps it off the VM — but every local `docker compose build` pays it.
 
 `**/__pycache__`, `**/*.pyc` and `backend/test_*.py` are excluded for a different reason: `backend/Dockerfile` is `COPY backend/ ./backend/`, so the production image was shipping the test files plus 176 KB of **cpython-314** bytecode into a `python:3.12-slim` image, where it is not even loadable. `frontend/public/*.test.js` likewise — `COPY frontend/public/ /usr/share/nginx/html/` published it, and `GET /identify.test.js` answered **200** on the production origin (measured).
 
