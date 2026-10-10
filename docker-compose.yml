@@ -1,0 +1,7 @@
+services:
+  backend_python:
+    build:
+      context: ./backend/
+      dockerfile: Dockerfile
+    ports:
+      - '8080:8000'
