@@ -83,14 +83,20 @@ function namedEntry(track, videoHeight) {
   return `${track.name ?? '?'} ${mark}${ratio(score)}@${ratio((track.box?.h ?? 0) / videoHeight)}`;
 }
 
+// The only screens that run detection (the scan preview and the live round). Anywhere else
+// `state.boxes` and `state.tracks` are whatever they were when the last one ended, and a stale
+// range reading is worse than no range reading - it looks exactly like a live one.
+export const DETECTING_MODES = ['game', 'scan'];
+
 // The readout: one line, plus a second only when somebody on screen has a name. '' when there is
-// nothing meaningful to say yet (no video dimensions, so no ratio to report).
+// nothing meaningful to say - no video dimensions yet, or a screen that is not detecting.
 //
 // `tracks` is the already-filtered list of live tracks. `boxes` is the raw detections from the
 // latest pass - the count comes from there rather than from the tracks, because "the detector
 // returned nothing" is the signal that distinguishes the two failure modes, and a track can coast
 // for half a second after its box is gone.
 export function rangeReadout({
+  mode = null,
   boxes = [],
   tracks = [],
   videoHeight = 0,
@@ -99,6 +105,7 @@ export function rangeReadout({
   gate = null,
   floor = null,
 } = {}) {
+  if (!DETECTING_MODES.includes(mode)) return '';
   if (!(videoHeight > 0)) return '';
 
   // Prefer the tracks' boxes, because those are the ones the matcher actually measured, and fall

@@ -13,32 +13,49 @@ const BOX = { x: 100, y: 100, w: 40, h: 120 };
 const PAINT = bands({ head: [200, 180, 160], shirt: [40, 90, 200], accent: [240, 200, 20], trousers: [30, 30, 40] });
 const PEOPLE = [{ box: BOX, paint: PAINT }];
 
+// A paint that varies with every fraction of a pixel, so "did this read move?" has an answer at
+// any precision. `bands` cannot be used for that: it is piecewise flat, so two reads inside the
+// same band agree whether or not they were quantised, and a test built on it would pass with the
+// quantisation removed entirely.
+const GRADIENT = [{ box: BOX, paint: (u, v) => [Math.round(u * 255), Math.round(v * 255), 0] }];
+const SUB_PIXEL = [BOX.x + 20.2, BOX.y + 30.2];
+const SAME_PIXEL = [BOX.x + 20.8, BOX.y + 30.8]; // floor()s to the same pixel as SUB_PIXEL
+
 test('by default a frame answers at the exact position asked, to any precision', () => {
-  // This is the behaviour every existing caller was written against: `paint` is an analytic
-  // function of position. Two reads a fifth of a pixel apart straddling a band edge differ.
-  const f = frame(PEOPLE);
-  const edge = BOX.y + BOX.h * 0.14; // the head/shirt boundary in bands()
-  assert.notDeepEqual(f.pixel(BOX.x + 20, edge - 0.2), f.pixel(BOX.x + 20, edge + 0.2));
+  // The behaviour every existing caller was written against: `paint` is an analytic function of
+  // position. Two reads inside ONE source pixel still differ - which is exactly the thing a real
+  // sensor cannot do, and the reason `sensorGrid` exists.
+  const f = frame(GRADIENT);
+  assert.notDeepEqual(f.pixel(...SUB_PIXEL), f.pixel(...SAME_PIXEL));
+  // And on the banded paint, either side of a band edge that falls mid-pixel.
+  const banded = frame(PEOPLE);
+  const edge = BOX.y + BOX.h * 0.14; // 116.8: the head/shirt boundary, inside pixel row 116
+  assert.notDeepEqual(banded.pixel(BOX.x + 20.5, edge - 0.3), banded.pixel(BOX.x + 20.5, edge + 0.2));
 });
 
 test('sensorGrid quantises reads to the pixel lattice', () => {
   // Every read inside one source pixel must come back identical, because a real sensor only
-  // sampled that pixel once. This is what stops a small box being invented detail it never had.
-  const f = frame(PEOPLE, { sensorGrid: true });
-  const base = f.pixel(BOX.x + 20.1, BOX.y + 30.1);
+  // sampled that pixel once. This is what stops a small box being given detail it never had.
+  const f = frame(GRADIENT, { sensorGrid: true });
+  const base = f.pixel(...SUB_PIXEL);
+  assert.deepEqual(f.pixel(...SAME_PIXEL), base, 'two reads in one sensor pixel disagreed');
   for (const [dx, dy] of [
     [0, 0],
     [0.4, 0],
     [0, 0.4],
-    [0.8, 0.8],
+    [0.7, 0.7],
   ]) {
-    assert.deepEqual(f.pixel(BOX.x + 20.1 + dx, BOX.y + 30.1 + dy), base);
+    assert.deepEqual(f.pixel(SUB_PIXEL[0] + dx, SUB_PIXEL[1] + dy), base);
   }
-  // And a read in the next pixel along is allowed to differ - if it were not, the fixture would
-  // be returning one colour for the whole box.
-  const across = [];
-  for (let x = BOX.x; x < BOX.x + BOX.w; x++) across.push(f.pixel(x + 0.5, BOX.y + 30.5).join(','));
-  assert.ok(new Set(across).size > 1, 'the whole row came back as one colour');
+  // The value is the pixel's centre, not the position asked for.
+  assert.deepEqual(base, f.pixel(Math.floor(SUB_PIXEL[0]) + 0.5, Math.floor(SUB_PIXEL[1]) + 0.5));
+  // And the next pixel along does differ - otherwise the fixture would be returning one colour
+  // for the whole box, which would "pass" quantisation by destroying everything.
+  assert.notDeepEqual(f.pixel(SUB_PIXEL[0] + 1, SUB_PIXEL[1]), base);
+  assert.notDeepEqual(f.pixel(SUB_PIXEL[0], SUB_PIXEL[1] + 1), base);
+  const across = new Set();
+  for (let x = BOX.x; x < BOX.x + BOX.w; x++) across.add(f.pixel(x + 0.5, BOX.y + 30.5).join(','));
+  assert.equal(across.size, BOX.w, 'a 40-px-wide box should have 40 distinct columns, not fewer');
 });
 
 test('sensorGrid freezes per-pixel noise instead of redrawing it on every read', () => {

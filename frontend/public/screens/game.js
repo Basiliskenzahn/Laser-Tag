@@ -354,11 +354,11 @@ function debugOverlay() {
   return el;
 }
 
-// Detection only runs on these two screens, so anywhere else `state.boxes` and `state.tracks` are
-// whatever they were when the last one ended. A stale range reading is worse than none.
+// Which screens are worth a reading is rangeReadout()'s own decision (DETECTING_MODES), so that
+// `state.mode` only has to be handed over rather than interpreted here, where nothing can test it.
 function rangeReadoutLine(visibleTracks) {
-  if (state.mode !== 'game' && state.mode !== 'scan') return '';
   return rangeReadout({
+    mode: state.mode,
     boxes: state.boxes,
     tracks: visibleTracks,
     videoHeight: video.videoHeight,
