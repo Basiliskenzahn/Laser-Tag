@@ -27,10 +27,32 @@ function tone({ type = 'square', from, to = from, duration, volume = 0.2, delay 
   osc.stop(t + duration);
 }
 
+// A burst of white noise through a band-pass filter, for percussive sounds.
+function noise({ freq, q = 1, duration, volume = 0.2, delay = 0 }) {
+  if (!ctx) return;
+  const t = ctx.currentTime + delay;
+  const buffer = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * duration), ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = freq;
+  filter.Q.value = q;
+  const gain = ctx.createGain();
+  gain.gain.setValueAtTime(volume, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + duration);
+  src.connect(filter).connect(gain).connect(ctx.destination);
+  src.start(t);
+}
+
 export const shoot = () => tone({ from: 1400, to: 180, duration: 0.15, volume: 0.12 });
 
+// A thwack: a sharp noise smack over a low thump that drops in pitch.
 export function hitConfirmed(headshot) {
-  tone({ type: 'sine', from: 1500, duration: 0.06 });
+  noise({ freq: 1800, q: 0.8, duration: 0.05, volume: 0.5 });
+  tone({ type: 'sine', from: 220, to: 55, duration: 0.12, volume: 0.45 });
   if (headshot) tone({ type: 'sine', from: 2200, duration: 0.08, delay: 0.07 });
 }
 
