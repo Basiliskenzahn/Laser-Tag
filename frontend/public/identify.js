@@ -1443,7 +1443,13 @@ export class Tracker {
         //
         // The interval is what keeps the main-thread readback inside request() off the
         // identification rate: checks run at RECHECK_MS, embeddings at REID_REQUEST_MS.
-        if (signature.range !== 'below-floor' && now - (track.lastReidRequestAt ?? 0) >= REID_REQUEST_MS) {
+        //
+        // A coasting track is skipped for the same reason. With no box this cycle, track.box is a
+        // velocity-projected guess that no longer contains the person, so embedding it buys a
+        // 128x256 readback of background and then feeds it to the 3 s median as if it were an
+        // observation. Strictly fewer readbacks, and no threshold moves.
+        if (signature.range !== 'below-floor' && (track.missedFrames ?? 0) === 0
+            && now - (track.lastReidRequestAt ?? 0) >= REID_REQUEST_MS) {
           track.lastReidRequestAt = now;
           reid.request(track, video, track.box);
         }

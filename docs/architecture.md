@@ -52,11 +52,7 @@ sequenceDiagram
   participant V as Victim's phone
   participant O as Other phones
 
-<<<<<<< HEAD
-  Note over S: Every 120–180 ms: detect people,<br/>update tracks, identify them
-=======
   Note over S: Every 50–100 ms: detect people,<br/>update tracks, identify them
->>>>>>> 6120b24 (Document the three rates, and state 20 fps as a target rather than a promise)
   S->>S: FIRE: refresh detection if stale,<br/>hit-test the crosshair
   S->>B: POST /api/hit {room, shooterId, targetId, zone}
   B->>B: Room.shoot(): checks, cooldown, damage
