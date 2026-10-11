@@ -12,6 +12,7 @@ The rules live in a `Room` class with no networking, in `backend/models.py` - th
 | `DAMAGE.body` | 20 | Body hit damage |
 | `DAMAGE.head` | 50 | Headshot damage |
 | `SHOT_COOLDOWN_MS` | 350 | Minimum time between a player's accepted shots |
+| `SHOT_COOLDOWN_SLACK_MS` | 60 | Shots may arrive this much sooner and still pass, since network jitter can bunch them up |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round starts |
 
 ## Room states
@@ -22,7 +23,7 @@ stateDiagram-v2
   waiting --> countdown: start() with ≥2 players, all scanned
   countdown --> playing: COUNTDOWN_MS elapsed
   countdown --> waiting: a player leaves and <2 remain
-  playing --> over: ≤1 player alive
+  playing --> over: ≤1 player alive (after a knockout, forfeit or leave)
   over --> countdown: start()
   over --> waiting: the winner leaves
 ```
@@ -48,28 +49,51 @@ That last one never happens in play: a reconnecting phone is routed to the seat-
 
 Stores a player's scan. Fails during a round, for an unknown player, or for an empty gallery. Also copies the gallery between a player and their [debug clone](#debug-clones).
 
+### `clearGallery(id)`
+
+Deletes a player's scan (and their debug clone's), so they count as unscanned again and block `start()` until rescanned. Fails during a round or for an unknown player. It's kept apart from `setGallery` so an empty scan is still refused rather than treated as a delete.
+
+Like every other gallery write it goes through `_store_gallery`, so it moves `gallery_rev` on. That is what makes the next roster carry an explicit empty `gallery` for that player instead of leaving the key out, which would tell every other phone to keep the scan that was just deleted — see [the roster delta](protocol.md#the-roster-delta).
+
 ### `start()`
 
-Any player can start. Fails if a round is already running, there are fewer than 2 players, or anyone (other than debug clones) has no scan. The error names up to three unscanned players: *"Scan everyone before launch: Alice, Bob +2"*. On success it resets everyone to full HP, clears the winner and begins the countdown.
+Any player can start. Fails if a round is already running, there are fewer than 2 players, or anyone (other than debug clones) has no scan. The error names up to three unscanned players: *"Scan everyone before launch: Alice, Bob +2"*. On success it resets everyone to full HP, clears the winner and everyone's [round stats](#round-stats), `forfeited` flag and time of going out, and begins the countdown.
+
+What it pointedly does **not** reset is anything that outlives a round: `wins` (the lobby's tally) and each player's `gallery` with its `gallery_rev`. Taking a revision back to `0` would tell every phone already holding that scan to keep holding it under a number the server had reused.
 
 ### `shoot(shooterId, targetId, zone)`
 
-Checks, in this order:
+`targetId` of `null` is a **miss**: the shooter fired at nobody. Checks, in this order:
 
-1. Both players exist: *"Unknown player"*.
+1. The shooter exists, and so does the target if one is given: *"Unknown player"*.
 2. Not shooting yourself: *"Can't target yourself"*.
 3. Round is playing: *"Round not running"*.
-4. Both alive: *"Target is down"*.
-5. `zone` is `body` or `head`: *"Unknown zone"*.
-6. Shooter's cooldown has passed: *"Cooldown"*.
+4. Shooter is alive: *"You are down"*.
+5. With a target, `zone` is `body` or `head`: *"Unknown zone"*.
+6. Shooter's cooldown (less the slack) has passed: *"Cooldown"*.
 
-Then it subtracts damage (never below 0). At 0 HP the target is knocked out, and if at most one player is still alive the round ends.
+A shot that passes counts as fired. A miss, or a shot at a player who is already down (the shooter's phone hadn't heard yet), returns `{ok: true, hit: false}` and changes nothing else. A hit subtracts damage (never below 0). At 0 HP the target is knocked out, and if at most one player is still alive the round ends.
 
 The server trusts the shooter's phone about *who* was hit and *where*. See [Architecture](../architecture.md#data-flow-for-one-shot).
 
 ### Winning
 
-`finishIfDecided()` runs after each knockout and departure. With one survivor, that player wins and their `wins` counter goes up. With none (only possible if players leave), the round ends with no winner. Wins persist across rounds for as long as the player stays in the room.
+`finishIfDecided()` runs after each knockout and departure. With one survivor, that player wins and their `wins` counter goes up. With none (only possible if players leave or forfeit), the round ends with no winner. Wins persist across rounds for as long as the player stays in the room.
+
+### Round stats
+
+Each player has a `RoundStats` for the current round, or the last one once it's over. `start()` resets it, so it survives into the `over` state and the [results screen](../client/app-flow.md#results-results), and a reconnect keeps it.
+
+| Stat | Counts |
+| --- | --- |
+| `kills` | Knockouts by your shots. A forfeit isn't anyone's kill. |
+| `damage` | HP you actually took off: a 50-point headshot on a player with 20 HP left counts as 20 |
+| `shots` | Every shot the server accepted, misses included. Shots refused by the checks above don't count. |
+| `hits` | Shots that took HP off someone. `hits / shots` is accuracy. |
+| `headshots` | Hits in the `head` zone |
+| `timeAliveMs` | From the moment the countdown ended until you were knocked out or forfeited, or until the round ended if you were still standing. Counts up live during the round. |
+
+They're sent in `snapshot()` as `players[].stats`. A miss doesn't broadcast a `state` of its own, but a player's round can't end without one (their knockout, or the end of the round), so the numbers are complete by the time their results show.
 
 ### `leave(id)`
 
@@ -81,11 +105,19 @@ Removes the player, then:
 
 The surrounding server deletes a room once it's empty.
 
+### `forfeit(id)`
+
+A deliberate leave (the player tapped *leave*). If the round is `playing` and the player is still alive, it counts as a knockout: HP drops to 0, `alive` becomes false and `forfeited` true, and the round is checked for a winner just as after a shot. The player stays on the scoreboard, shown as down, until the round ends; `finishIfDecided()` then removes every forfeited player. A forfeited seat can't be resumed with `playerId`.
+
+In any other situation (lobby, countdown, already knocked out) it's a plain `leave(id)`.
+
+A phone that just stops polling is **not** forfeited: it is removed with `leave()`, because it might be a dropped connection rather than a choice.
+
 ## Snapshot and roster
 
 The server sends two views of a room, so the big gallery data isn't resent on every shot:
 
-- `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive). Sent after every change.
+- `snapshot()`: the frequently-sent state (status, countdown, winner, limits, and each player's id, name, HP, wins, alive, forfeited and [round stats](#round-stats)). Sent after every change.
 - `roster()`: each player's id, name and gallery. Sent only when membership or scans change — and then only the galleries the receiving phone doesn't already hold. `roster()` itself is the complete picture, which is what a freshly connected phone gets; `roster_entry(player, gallery=False)` is the identity-only line the transport uses for the rest. See [the roster delta](protocol.md#the-roster-delta).
 - `mirrored_gallery_rev()`: a counter that moves whenever `mirrored_gallery()` would return something new. Not a game rule — it exists so the transport can tell "already has it" from "has a stale copy".
 

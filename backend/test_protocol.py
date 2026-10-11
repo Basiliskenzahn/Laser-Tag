@@ -181,8 +181,9 @@ class PollingClient:
     async def send(self, msg):
         return await self.client.post("/api/send", params={"token": self.token}, json=msg)
 
-    async def disconnect(self):
-        return await self.client.post("/api/disconnect", params={"token": self.token})
+    async def disconnect(self, forfeit=False):
+        params = {"token": self.token, **({"forfeit": "1"} if forfeit else {})}
+        return await self.client.post("/api/disconnect", params=params)
 
     def stop(self):
         if self._task:
@@ -376,6 +377,124 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 1)
         self.assertEqual(last_state(a.messages)["players"][0]["name"], "A")
 
+    async def test_forfeiting_mid_round_is_a_death_and_cannot_be_resumed(self):
+        # The room learns about the forfeit from the next scoreboard. There used to
+        # be a "death" event beside it, but it only ever went out over the SSE feed
+        # this branch removed - and on the client it only reached a console.debug.
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        c = self.track(await self.polling_client())
+        room = unique_room("forfeit")
+        for client, name in ((a, "A"), (b, "B"), (c, "C")):
+            await client.send({"type": "join", "name": name, "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 3)
+        b_id = b.welcome_id()
+
+        await a.send({"type": "start"})
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
+        await b.disconnect(forfeit=True)
+
+        await wait_for(lambda: next((p for p in last_state(a.messages)["players"] if p["id"] == b_id), {}).get("forfeited"))
+        down = next(p for p in last_state(a.messages)["players"] if p["id"] == b_id)
+        self.assertEqual((down["hp"], down["alive"]), (0, False))
+        self.assertEqual(last_state(a.messages)["status"], "playing")
+
+        rejoin = self.track(await self.polling_client())
+        await rejoin.send({"type": "join", "name": "B", "room": room, "playerId": b_id, "gallery": GALLERY})
+        await wait_for(lambda: any(m["type"] == "error" for m in rejoin.messages))
+        self.assertFalse(any(m["type"] == "welcome" for m in rejoin.messages))
+
+    async def test_clearing_a_scan_tells_everyone_and_unscans_the_player(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("clear-scan")
+        await a.send({"type": "join", "name": "A", "room": room})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        b_id = b.welcome_id()
+
+        await a.send({"type": "clearScan", "targetId": b_id})
+        await wait_for(lambda: any(m["type"] == "scanCleared" and m["targetId"] == b_id for m in b.messages))
+        await wait_for(lambda: last_roster(a.messages)
+                        and next((p for p in last_roster(a.messages) if p["id"] == b_id), {}).get("gallery") == [])
+
+        # The sharp end of it: A was sent B's gallery on the join, so the delta has
+        # to attach an explicit empty one now. Leaving the key out would mean "keep
+        # what you have", and the deleted scan would live on A's phone for the rest
+        # of the round. See clear_gallery going through _store_gallery.
+        entry = next(p for p in [m for m in a.messages if m["type"] == "roster"][-1]["players"] if p["id"] == b_id)
+        self.assertIn("gallery", entry, "a deleted scan must be sent, not withheld as unchanged")
+        self.assertEqual(entry["gallery"], [])
+
+    async def test_a_scan_deletion_for_a_junk_target_is_refused_and_echoed_to_nobody(self):
+        # clearScan's targetId is echoed to *every* phone in the room, not just back
+        # to the sender, so it goes through clean_player_id like scan's does.
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("clear-junk")
+        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        b_id = b.welcome_id()
+
+        for junk in ("<img src=x onerror=alert(1)>", {"$ne": None}, [], 7):
+            await a.send({"type": "clearScan", "targetId": junk})
+        await wait_for(lambda: sum(m["type"] == "error" for m in a.messages) == 4)
+        self.assertEqual([m["message"] for m in a.messages if m["type"] == "error"],
+                         ["Unknown player"] * 4)
+        self.assertFalse([m for m in b.messages if m["type"] == "scanCleared"])
+        self.assertTrue(last_roster(b.messages))
+        self.assertTrue(all(p["gallery"] for p in last_roster(b.messages)),
+                        "nobody's scan may be deleted by a junk id")
+        self.assertEqual(transport.rooms[clean_room_code(room)].players[b_id].gallery_rev, 0)
+
+        # An id that only needed cleaning does work - and what is echoed to the room
+        # is the cleaned one, since that is the key every phone has the scan under.
+        await a.send({"type": "clearScan", "targetId": f"  {b_id} "})
+        await wait_for(lambda: any(m["type"] == "scanCleared" for m in b.messages))
+        self.assertEqual([m["targetId"] for m in b.messages if m["type"] == "scanCleared"], [b_id])
+
+    async def test_a_displaced_tab_cannot_forfeit_the_seat_it_lost(self):
+        # forfeit() and displace() are the two ways a player stops playing, and they
+        # meet here: the goodbye beacon from the tab that lost the seat arrives after
+        # the new tab has taken it. Session.close's identity check is what stops it
+        # from knocking out the phone that is still playing.
+        a = self.track(await self.polling_client())
+        b1 = self.track(await self.polling_client())
+        c = self.track(await self.polling_client())
+        room = unique_room("forfeit-displace")
+        for client, name in ((a, "A"), (b1, "B"), (c, "C")):
+            await client.send({"type": "join", "name": name, "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 3)
+        b_id = b1.welcome_id()
+        await a.send({"type": "start"})
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
+
+        b2 = self.track(await self.polling_client())
+        await b2.send({"type": "join", "name": "B", "room": room, "playerId": b_id, "gallery": GALLERY})
+        await wait_for(lambda: b1.closed)
+        self.assertEqual((b1.closed_status, b1.closed_reason), (410, "replaced"))
+
+        await b1.disconnect(forfeit=True)
+
+        # Asked of the room rather than of A's message history: the claim is that
+        # *nothing* happened, and A's poll loop not having delivered a message yet
+        # would make that assertion pass on its own.
+        seated_room = transport.rooms[clean_room_code(room)]
+        seated = seated_room.players[b_id]
+        self.assertEqual((seated.alive, seated.forfeited, seated.hp), (True, False, 100),
+                         "the displaced tab's goodbye must not knock out its successor")
+        self.assertEqual(seated_room.status, "playing")
+        self.assertIs(transport.connections.get(b_id), transport.pollers[b2.token].session,
+                      "the seat must still be addressed through the tab that holds it")
+
+        # And the successor can still forfeit for itself, so the guard above is a
+        # guard and not a disabled feature.
+        await b2.disconnect(forfeit=True)
+        await wait_for(lambda: next((p for p in last_state(a.messages)["players"] if p["id"] == b_id), {}).get("forfeited"))
+        self.assertFalse(seated_room.players[b_id].alive)
+        self.assertEqual(seated_room.status, "playing", "two of three are still standing")
+
     async def test_unknown_polling_sessions_are_told_to_reconnect(self):
         poll = await self.client.get("/api/poll", params={"token": "nope"})
         self.assertEqual(poll.status, 410)
@@ -400,6 +519,8 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(hit_resp.status, 200)
 
         await wait_for(lambda: any(m["type"] == "hitConfirmed" for m in a.messages))
+        confirmed = next(m for m in a.messages if m["type"] == "hitConfirmed")
+        self.assertEqual((confirmed["targetId"], confirmed["hp"]), (b_id, 80))
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
 
@@ -428,6 +549,35 @@ class ProtocolTests(AioHTTPTestCase):
         # Leave no "demo" room behind for the rest of the process.
         await a.disconnect()
         await b.disconnect()
+
+    async def test_a_posted_miss_counts_as_a_shot_and_tells_nobody(self):
+        # Two shots back to back, so the cooldown is patched out rather than slept
+        # through - what it is worth is covered over the fake clock in
+        # test_models.test_misses_count_as_shots_but_need_a_live_round_shooter_and_cooldown.
+        no_cooldown = mock.patch.multiple(models, SHOT_COOLDOWN_MS=0, SHOT_COOLDOWN_SLACK_MS=0)
+        no_cooldown.start()
+        self.addCleanup(no_cooldown.stop)
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("miss")
+        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        a_id, b_id = a.welcome_id(), b.welcome_id()
+        await a.send({"type": "start"})
+        await wait_for(lambda: saw_status(a.messages, "playing"), 3)
+
+        miss = await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": None, "zone": None})
+        self.assertEqual(miss.status, 200)
+        self.assertEqual(await miss.json(), {"ok": True, "hit": False})
+        await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "head"})
+
+        await wait_for(lambda: next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]["shots"] == 2)
+        stats = next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]
+        self.assertEqual((stats["hits"], stats["headshots"], stats["damage"]), (1, 1, 50))
+        await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
+        self.assertEqual(sum(m["type"] == "hitConfirmed" for m in a.messages), 1)
+        self.assertEqual(sum(m["type"] == "gotHit" for m in b.messages), 1)
 
     async def test_three_players_can_play_a_free_for_all_to_one_winner(self):
         a = self.track(await self.polling_client())
@@ -538,6 +688,35 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertLess(spent, 6 * GALLERY_BYTES, f"a scan cost {spent / GALLERY_BYTES:.1f} galleries, expected ~4")
         scanner_spent = clients[0].poll_bytes - before[0]
         self.assertLess(scanner_spent, 2 * GALLERY_BYTES, "the scanning phone waits on its own scan only")
+
+    async def test_two_revisions_in_a_row_land_the_second_one_everywhere(self):
+        # One player's gallery can now change twice in quick succession from two
+        # different phones: a scan import publishes a gallery the sending phone
+        # never captured, so an import can follow a scan of the same player with no
+        # poll round trip in between. Neither write may pass for the other.
+        room, clients = await self.roster_room("rapid-rescan", 3)
+        ids = [c.welcome_id() for c in clients]
+        imported = full_gallery(3)
+
+        # One phone stops draining, so both rosters are still sitting in its mailbox
+        # and can be read as the server left them.
+        stalled = clients[2]
+        stalled.stop()
+        await asyncio.sleep(0.1)
+        poller = transport.pollers[stalled.token]
+        poller.queue.clear()
+
+        await clients[0].send({"type": "scan", "targetId": ids[1], "gallery": RESCAN_GALLERY})
+        await clients[1].send({"type": "scan", "targetId": ids[1], "gallery": imported})
+        await wait_for(lambda: self.held_gallery(clients[0], ids[1]) == imported, 5)
+        self.assertEqual(self.held_gallery(clients[1], ids[1]), imported,
+                         "the phone that published the second gallery holds it too")
+
+        rosters = [msg for msg in poller.queue if msg["type"] == "roster"]
+        self.assertEqual(len(rosters), 2, "a roster is never shed, so both revisions are queued")
+        self.assertEqual([next(p["gallery"] for p in r["players"] if p["id"] == ids[1]) for r in rosters],
+                         [RESCAN_GALLERY, imported], "in order, so draining ends on the newer one")
+        self.assertFalse(poller.evicted)
 
     async def test_an_unchanged_gallery_is_not_re_sent_when_the_room_changes(self):
         # Joins and leaves broadcast the roster too. They must update membership without
@@ -747,6 +926,66 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertTrue(all(p["gallery"] for p in last_roster(resumed.messages)),
                         "a phone that missed messages must not land on a partial roster")
         self.assertEqual(gallery_copies(resumed.messages), 3)
+
+
+class SnapshotCostTests(unittest.IsolatedAsyncioTestCase):
+    """What a ``state`` costs a stalled mailbox, now that it carries round stats.
+
+    No HTTP: this drives ``broadcast_state`` straight at a mailbox nobody drains,
+    which is the case the mailbox caps exist for and the only one where more than
+    one snapshot is ever in flight at a time.
+    """
+
+    def full_room(self):
+        room = models.Room("snapshot-cost")
+        ids = [str(uuid.uuid4()) for _ in range(models.MAX_PLAYERS)]
+        for player_id in ids:
+            room.join(player_id, "W" * 20, GALLERY)  # the longest name clean_name allows
+        self.assertTrue(room.start()["ok"])
+        room.now = lambda: 10 ** 13  # straight past the countdown
+        room.update()
+        self.assertEqual(room.status, "playing")
+        for player in room.players.values():
+            player.stats.kills, player.stats.damage = 7, 1234
+            player.stats.shots, player.stats.hits, player.stats.headshots = 456, 321, 99
+        return room, ids
+
+    async def test_a_stalled_mailbox_keeps_one_snapshot_and_it_is_the_newest(self):
+        room, ids = self.full_room()
+        poller = transport.Poller(token=f"cost-{uuid.uuid4().hex}")
+        poller.session = transport.Session(poller.push)
+        transport.pollers[poller.token] = poller
+        transport.connections[ids[0]] = poller.session
+        self.addCleanup(transport.pollers.pop, poller.token, None)
+        self.addCleanup(transport.connections.pop, ids[0], None)
+
+        await transport.broadcast_state(room)
+        await transport.broadcast_roster(room)
+        room.players[ids[1]].stats.kills = 8
+        await transport.broadcast_state(room)
+        room.players[ids[1]].stats.kills = 9
+        await transport.broadcast_state(room)
+
+        states = [msg for msg in poller.queue if msg["type"] == "state"]
+        self.assertEqual(len(states), 1, "the shed has to still recognise a state message")
+        self.assertEqual(
+            next(p["stats"]["kills"] for p in states[0]["state"]["players"] if p["id"] == ids[1]), 9,
+            "and keep the newest one, not the first")
+        self.assertEqual(sum(1 for msg in poller.queue if msg["type"] == "roster"), 1,
+                         "a roster is never what gets shed")
+        self.assertFalse(poller.evicted)
+
+    def test_the_grown_snapshot_is_still_cheap_next_to_a_gallery(self):
+        # Sent to every phone on every change, so its size is the one number that
+        # scales with how busy a round is. forfeited and the six stats roughly
+        # doubled it, to about 1.9 KB for a full room - still two orders of
+        # magnitude under the ~190 KB gallery the roster delta exists to avoid
+        # resending. The budget is a ceiling to notice a payload growing into the
+        # mailbox caps, not a measurement of today's bytes.
+        room, _ = self.full_room()
+        snapshot = json.dumps({"type": "state", "state": room.snapshot()}, separators=(",", ":"))
+        self.assertEqual(len(room.snapshot()["players"]), models.MAX_PLAYERS)
+        self.assertLess(len(snapshot), 4096)
 
 
 if __name__ == "__main__":

@@ -64,7 +64,6 @@ rooms = {}
 connections = {}
 #: poll token -> Poller
 pollers = {}
-#: room code -> set of asyncio.Queue, one per open SSE listener (see app.events)
 
 
 def now_ms():
@@ -375,16 +374,21 @@ async def process_hit(room, shooter_id, target_id, zone):
     the result, and there is no ``shoot`` message in :meth:`Session.receive` for it
     to arrive by. Kept out of the handler so the notifications it implies are
     described in one place: a private confirmation to the shooter, a private "you
-    were hit" to the victim, a ``health`` (and on a KO, ``death``) event to SSE
-    listeners, and a fresh scoreboard to the room.
+    were hit" to the victim, and a fresh scoreboard to the room.
+
+    A miss only counts toward the shooter's stats, so nobody is told. The next
+    ``state`` carries it, and one always follows before a player's round is
+    over: their own knockout, or the end of the round.
     """
     result = room.shoot(shooter_id, target_id, zone)
-    if not result.get("ok"):
+    if not result.get("ok") or not result["hit"]:
         return result
     await send_to(shooter_id, {
         "type": "hitConfirmed",
+        "targetId": result["victimId"],
         "zone": result["zone"],
         "damage": result["damage"],
+        "hp": result["hp"],
         "ko": result["ko"],
     })
     await send_to(result["victimId"], {
@@ -482,6 +486,21 @@ class Session:
             await self.send({"type": "scanSaved", "targetId": target_id})
             await broadcast_roster(self.room)
             await broadcast_state(self.room)
+        elif msg.get("type") == "clearScan":
+            # Cleaned for the same reason the ``scan`` id above is: it is echoed
+            # back, and this one is echoed to *everyone* in the room rather than
+            # just to the sender.
+            target_id = clean_player_id(msg.get("targetId"))
+            result = self.room.clear_gallery(target_id)
+            if not result["ok"]:
+                await self.send({"type": "error", "message": result["error"]})
+                return
+            # Everyone, not just the sender: each phone drops its own cached copy of that scan,
+            # or the scanned player's phone would send it straight back on its next join.
+            for player_id in list(self.room.players.keys()):
+                await send_to(player_id, {"type": "scanCleared", "targetId": target_id})
+            await broadcast_roster(self.room)
+            await broadcast_state(self.room)
         elif msg.get("type") == "motion":
             # This phone's motion activity, relayed to the others for motion matching
             # (public/motion/). Every phone checks whose phone moves with whom it sees.
@@ -518,7 +537,7 @@ class Session:
         name = clean_name(msg.get("name"))
         gallery = clean_gallery(msg.get("gallery"))
         requested_id = clean_player_id(msg.get("playerId"))
-        if requested_id and requested_id in room.players:
+        if requested_id and requested_id in room.players and not room.players[requested_id].forfeited:
             self.id = requested_id
             self.clone_id = f"{self.id}{CLONE_SUFFIX}"
             displace(requested_id)
@@ -548,8 +567,12 @@ class Session:
         await broadcast_state(room)
         await broadcast_roster(room)
 
-    async def close(self):
+    async def close(self, forfeit=False):
         """Remove this phone's player (and clone) and drop the room if it empties.
+
+        ``forfeit`` is a deliberate leave (the player tapped "leave"), which
+        mid-round counts as a knockout - see :meth:`Room.forfeit`. A phone that
+        merely went quiet is not forfeited, since it may still come back.
 
         The identity check keeps a stale session from evicting the live one: on a
         reconnect the new session takes over the id in ``connections``, and the
@@ -563,8 +586,16 @@ class Session:
         if not self.room:
             return
         room = self.room
-        room.leave(self.id)
-        room.leave(self.clone_id)
+        for player_id in (self.id, self.clone_id):
+            if forfeit:
+                room.forfeit(player_id)
+            else:
+                room.leave(player_id)
+        # A forfeit mid-round leaves the player seated and knocked out, so the
+        # ``state`` broadcast below is what tells the room about it - there is no
+        # separate death event any more, and the one there used to be only ever
+        # reached a debug console (it went out over the SSE feed this branch
+        # removed).
         if room.is_empty:
             if room.start_timer:
                 room.start_timer.cancel()
