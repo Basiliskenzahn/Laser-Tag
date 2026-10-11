@@ -755,11 +755,15 @@ test('a movement hint names nobody, draws nobody and cannot be shot', () => {
   assert.deepEqual(state.tracks, [], 'movement is not a track');
   assert.equal(dom.element('crosshair').classes.has('on-target'), false);
 
-  let posted = 0;
-  globalThis.fetch = async () => {
-    posted++;
+  const posted = [];
+  globalThis.fetch = async (_url, options) => {
+    posted.push(JSON.parse(options.body));
     return { ok: true, text: async () => '' };
   };
   game.fire();
-  assert.equal(posted, 0, 'there is nothing to shoot');
+  // Every shot is posted so the server can count accuracy, hit or miss, so what proves nothing is
+  // shootable is the *target* on the shot and not whether a request went out at all.
+  assert.equal(posted.length, 1, 'the shot was not posted at all');
+  assert.equal(posted[0].targetId, null, 'a movement hint put something under the crosshair');
+  assert.equal(posted[0].zone, null);
 });

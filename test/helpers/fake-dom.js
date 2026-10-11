@@ -156,6 +156,14 @@ class FakeElement {
     this.innerHTMLValue = '';
     this.hidden = false;
     this.children = [];
+    // fire() sets the cooldown bar's duration as a CSS variable, and the HUD keeps each player's
+    // HP on their row, so both have to exist for the shot path to run at all.
+    this.style = {
+      setProperty(name, value) {
+        this[name] = value;
+      },
+    };
+    this.dataset = {};
     this.classes = new Set();
     this.classList = {
       add: (name) => this.classes.add(name),
@@ -174,6 +182,17 @@ class FakeElement {
     if (!value) this.children = [];
   }
 
+  // showHitBar styles the health bar it just appended via el.firstChild, so the child list has
+  // to be addressable and not just countable.
+  get firstChild() {
+    return this.children[0] ?? null;
+  }
+
+  // clearHitBars empties the container in one call between rounds.
+  replaceChildren(...nodes) {
+    this.children = [...nodes];
+  }
+
   append(...nodes) {
     this.children.push(...nodes);
   }
@@ -189,12 +208,27 @@ class FakeElement {
 
   removeEventListener() {}
 
-  querySelector() {
-    return null;
+  // The game screen builds a health bar by assigning innerHTML and then reaching back in for
+  // `.hp-fill` / `.hp-chip` to set widths. Returning null there threw inside setHealth, so
+  // querySelector resolves a class selector against whatever innerHTML declared, lazily - enough
+  // for code that writes a fragment and then styles its parts, which is the only pattern here.
+  querySelector(selector) {
+    const cls = typeof selector === 'string' && selector.startsWith('.') ? selector.slice(1) : null;
+    if (!cls || !this.innerHTMLValue.includes(cls)) return null;
+    this.fragmentParts ??= {};
+    this.fragmentParts[cls] ??= new FakeElement('');
+    return this.fragmentParts[cls];
   }
 
-  querySelectorAll() {
-    return [];
+  querySelectorAll(selector) {
+    const one = this.querySelector(selector);
+    return one ? [one] : [];
+  }
+
+  // An <a download> export calls click() to start the save. Nothing observes a navigation here;
+  // the test asserts the payload, so this only has to exist and dispatch to any listener.
+  click() {
+    this.dispatchEvent?.({ type: 'click', target: this });
   }
 }
 

@@ -211,6 +211,7 @@ test('the shot follows a moving target along its velocity, not its last detected
   game.fire(dom.now);
 
   assert.equal(hits.length, 1, 'the projected box was not under the crosshair');
+  assert.equal(hits[0].targetId, TARGET_ID);
   assert.equal(hits[0].zone, 'body');
 });
 
@@ -222,7 +223,12 @@ test('a target whose projection has carried it off the crosshair is a miss', () 
 
   game.fire(dom.now);
 
-  assert.equal(hits.length, 0, 'the shot resolved against the raw box');
+  // Every shot is posted, hit or miss, so the server can count accuracy: a miss is one with no
+  // target. Asserting the *target* rather than the number of requests is the whole point - the
+  // count would be 1 either way.
+  assert.equal(hits.length, 1, 'the shot was not posted at all');
+  assert.equal(hits[0].targetId, null, 'the shot resolved against the raw box');
+  assert.equal(hits[0].zone, null);
 });
 
 test('the shot agrees with the crosshair the player aimed with', () => {
@@ -237,7 +243,8 @@ test('the shot agrees with the crosshair the player aimed with', () => {
   game.fire(dom.now);
 
   assert.equal(lockedOn, true, 'the crosshair never locked on, so this proves nothing');
-  assert.equal(hits.length, 1, 'the crosshair said on-target and the shot missed');
+  assert.equal(hits.length, 1, 'the shot was not posted at all');
+  assert.equal(hits[0].targetId, TARGET_ID, 'the crosshair said on-target and the shot missed');
 });
 
 test('a dead player under the crosshair is still not shootable', () => {
@@ -247,7 +254,7 @@ test('a dead player under the crosshair is still not shootable', () => {
 
   game.fire(dom.now);
 
-  assert.equal(hits.length, 0);
+  assert.equal(hits[0].targetId, null, 'a dead player was shot');
 });
 
 test('a track the detector stopped seeing long ago is not shootable', () => {
@@ -257,7 +264,7 @@ test('a track the detector stopped seeing long ago is not shootable', () => {
 
   game.fire(dom.now);
 
-  assert.equal(hits.length, 0);
+  assert.equal(hits[0].targetId, null, 'a track past the liveness window was shot');
 });
 
 // ---- the ?debug instrumentation costs nothing when ?debug is absent ----
@@ -283,4 +290,169 @@ test('no overlay is written and no shot is measured without ?debug', () => {
   // proof it was never called - not merely that the text happened to come out blank.
   assert.equal(document.body.children.length, 0, 'the debug overlay was relocated without ?debug');
   assert.equal(hits.length, 5, 'the shots did not actually fire, so this proves nothing');
+});
+
+// ---- who gets shot when two valid targets overlap ----
+//
+// `targetUnderCrosshair` used to `return` on the first track whose *head* box contained the
+// crosshair while letting each later *body* match overwrite the one before it - so a head hit was
+// decided by the front of `state.tracks` and a body hit by the back, and with two overlapping
+// targets who got shot depended on array order rather than on anything the player can see.
+// Tap-anywhere firing (ui-redesign) and the relaxed range gate (identify.js) both make overlapping
+// candidates ordinary rather than rare.
+
+const SECOND_ID = 'second-uuid-0003';
+
+// Two players, so a second track can be named someone else.
+function arrangeTwoTargets(tracks) {
+  const arranged = arrangeRound({ tracks });
+  state.game.players.push({ id: SECOND_ID, name: 'Second', hp: 100, alive: true, wins: 0 });
+  state.roster.push({ id: SECOND_ID, name: 'Second', gallery: [] });
+  return arranged;
+}
+
+// The same track shape the rest of this file uses, named as a chosen player.
+function trackFor(playerId, box, { id = 1 } = {}) {
+  return { ...shootableTrack({ ...box, seenAt: dom.now }), id, playerId, name: playerId };
+}
+
+test('with two targets under the crosshair, the nearer one is shot whatever order they are in', () => {
+  // Same centre, two very different distances: a 260 px box is a person a few metres away, a 90 px
+  // box is someone much further off behind them. Box height is the only distance cue there is, and
+  // "you shoot the person in front" is what aiming at a pair means.
+  const near = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 78, h: 260 });
+  const far = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 27, h: 90 });
+
+  for (const [label, tracks] of [
+    ['near first', [trackFor(TARGET_ID, near, { id: 1 }), trackFor(SECOND_ID, far, { id: 2 })]],
+    ['far first', [trackFor(SECOND_ID, far, { id: 1 }), trackFor(TARGET_ID, near, { id: 2 })]],
+  ]) {
+    arrangeTwoTargets(tracks);
+    game.fire(dom.now);
+    assert.equal(hits.length, 1, `${label}: the shot was not posted`);
+    assert.equal(hits[0].targetId, TARGET_ID, `${label}: the shot went to the wrong player`);
+  }
+});
+
+test('a head on one target beats a body on a nearer one', () => {
+  // Head before body is the rule that was always intended, and it used to hold only when the head
+  // happened to come first in the array. The nearer box here is deliberately the *body* one, so
+  // the two rules disagree and the head has to win.
+  //
+  // A box 300 px tall centred on the crosshair is hit on the body (detector.js's head box is the
+  // top slice, nowhere near the centre). A short box placed so its head slice sits on the
+  // crosshair is a head hit.
+  const bodyBox = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 90, h: 300 });
+  const headShot = { x: FRAME_W / 2 - 20, y: FRAME_H / 2 - 14, w: 40, h: 132 };
+
+  for (const [label, tracks] of [
+    ['body first', [trackFor(TARGET_ID, bodyBox, { id: 1 }), trackFor(SECOND_ID, headShot, { id: 2 })]],
+    ['head first', [trackFor(SECOND_ID, headShot, { id: 1 }), trackFor(TARGET_ID, bodyBox, { id: 2 })]],
+  ]) {
+    arrangeTwoTargets(tracks);
+    game.fire(dom.now);
+    assert.equal(hits.length, 1, `${label}: the shot was not posted`);
+    assert.equal(hits[0].zone, 'head', `${label}: a head hit was available and the body was taken`);
+    assert.equal(hits[0].targetId, SECOND_ID, `${label}: the head belongs to the other player`);
+  }
+});
+
+test('the crosshair and the shot pick the same one of two overlapping targets', () => {
+  // The guarantee the whole shot path rests on, now that there can be a choice to get wrong:
+  // drawGame() highlights `hit?.track` from its own call to targetUnderCrosshair, and fire()
+  // resolves the shot from another. Two calls, one rule - so the red box and the hit are the same
+  // person, whichever order the tracks are in.
+  const near = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 78, h: 260 });
+  const far = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 27, h: 90 });
+  arrangeTwoTargets([trackFor(SECOND_ID, far, { id: 1 }), trackFor(TARGET_ID, near, { id: 2 })]);
+
+  frame();
+  assert.equal(dom.element('crosshair').classList.contains('on-target'), true, 'the crosshair never locked on');
+  game.fire(dom.now);
+  assert.equal(hits[0].targetId, TARGET_ID);
+});
+
+test('an exact tie keeps the earlier track, so the choice does not flicker', () => {
+  // Two identically sized boxes on the same spot is a tie, and a tie has to resolve the same way
+  // every frame: `betterTarget` is strictly-greater, so neither displaces the other and the answer
+  // is stable. A >= there would swap the winner on every call.
+  const box = centredAt(FRAME_W / 2, FRAME_H / 2, { w: 60, h: 200 });
+  arrangeTwoTargets([trackFor(TARGET_ID, box, { id: 1 }), trackFor(SECOND_ID, box, { id: 2 })]);
+
+  for (let i = 0; i < 4; i++) {
+    state.lastShotAt = 0;
+    game.fire(dom.now);
+  }
+  assert.equal(hits.length, 4, 'all four shots should have fired');
+  assert.deepEqual(
+    hits.map((hit) => hit.targetId),
+    Array(4).fill(TARGET_ID),
+    'the same tie must resolve the same way every time',
+  );
+});
+
+// ---- the overlay does not keep stale boxes on a screen nothing draws ----
+
+test('a mode with no painter leaves the overlay blank rather than frozen', () => {
+  // `state.mode` goes to 'results' at the end of a round and detection stops, but the camera and
+  // the frame loop keep running behind the results panel. Nothing paints the overlay in that mode,
+  // so the question is whether the last frame's boxes and names stay on top of the live video.
+  // They do not: draw() clears through fitCanvas() before it dispatches, every frame, so "no
+  // painter" already means "blank". Pinned here because that clear is load-bearing and nothing
+  // about its position in fitCanvas() says so.
+  arrangeRound({ tracks: [shootableTrack({ ...centredAt(FRAME_W / 2, FRAME_H / 2), seenAt: dom.now })] });
+  const ctx = dom.overlay.getContext('2d');
+  let cleared = 0;
+  let painted = 0;
+  const realClear = ctx.clearRect;
+  const realStroke = ctx.strokeRect;
+  const realText = ctx.fillText;
+  ctx.clearRect = (...args) => (cleared++, realClear?.call(ctx, ...args));
+  ctx.strokeRect = (...args) => (painted++, realStroke?.call(ctx, ...args));
+  ctx.fillText = (...args) => (painted++, realText?.call(ctx, ...args));
+  try {
+    frame();
+    assert.ok(painted > 0, 'precondition: the game screen really does paint boxes');
+
+    state.mode = 'results';
+    cleared = 0;
+    painted = 0;
+    frame();
+    assert.ok(cleared > 0, 'the overlay must be cleared on a frame nothing paints');
+    assert.equal(painted, 0, 'and nothing may repaint the old boxes');
+  } finally {
+    ctx.clearRect = realClear;
+    ctx.strokeRect = realStroke;
+    ctx.fillText = realText;
+    state.mode = 'game';
+  }
+});
+
+test('the hit bar rides the projected box, not the last detected one', () => {
+  // ui-redesign positions a hit bar over the target's head from `track.box`; ours draws every box
+  // from `liveBox()`, which projects along the smoothed velocity. The whole shot path is built on
+  // "what you see is what you hit", and a bar pinned to the stale box drifts off the person while
+  // the box it is supposed to label sits somewhere else.
+  //
+  // Asserted as movement over time rather than against a computed pixel: the raw box never
+  // changes here, so a bar that followed `track.box` could not move at all.
+  const box = centredAt(FRAME_W / 2 - 60, FRAME_H / 2);
+  arrangeRound({ tracks: [shootableTrack({ ...box, vx: 300, vy: 0, seenAt: dom.now })] });
+  game.showHitBar(TARGET_ID, 60, 40);
+
+  frame();
+  const first = dom.element('hit-bars').children[0];
+  assert.ok(first, 'precondition: a hit bar was created');
+  const startedAt = first.style.left;
+  assert.ok(startedAt, 'precondition: the bar was positioned at all');
+
+  // Inside the detection interval on purpose: a detection would hand `state.tracks` back to the
+  // tracker, which has never seen this hand-made track. So the raw box is untouched and the only
+  // thing that has changed between the two frames is how far the projection has carried it.
+  dom.advance(40);
+  frame();
+  assert.notEqual(first.style.left, startedAt, 'the bar did not follow the projection');
+
+  game.clearHitBars();
+  assert.deepEqual(dom.element('hit-bars').children, [], 'and the round ending clears them');
 });

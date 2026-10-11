@@ -59,7 +59,11 @@ export async function prepareCameraAndDetector() {
   const hadReid = Boolean(state.reid);
 
   startup = beginStartup({
-    startCamera: () => (video.srcObject ? undefined : startCamera()),
+    // cameraIsLive(), not `video.srcObject`: when the OS revokes the camera - another app claims
+    // it - the tracks end but srcObject stays set, so a non-null srcObject is not a working
+    // stream. A second trip through the lobby used to skip startCamera() on that and run the
+    // round on a dead stream.
+    startCamera: () => (cameraIsLive() ? undefined : startCamera()),
     createFileset: () => (hadVision ? null : createVisionFileset()),
     createObjectDetector: hadVision
       ? () => ({ detector: state.detector, delegate: state.objectDelegate })
@@ -232,21 +236,109 @@ export function startupErrorMessage(err) {
   return `Could not start: ${err.message || err}`;
 }
 
-async function startCamera() {
+// In flight while the very first stream is being acquired, so a resume arriving in that window
+// can wait for it instead of fighting it - see resumeCameraOnce.
+let starting = null;
+
+function startCamera() {
+  starting = (async () => {
+    video.srcObject = await requestCameraStream();
+    await video.play();
+  })();
+  return starting.finally(() => {
+    starting = null;
+  });
+}
+
+function requestCameraStream() {
   if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera API not available');
-  video.srcObject = await navigator.mediaDevices.getUserMedia({
+  return navigator.mediaDevices.getUserMedia({
     audio: false,
     // frameRate is `ideal`, never `min`: an unmeetable `min` makes getUserMedia throw
     // OverconstrainedError, i.e. no camera at all. The detection loop only runs on a new
     // video.currentTime, so whatever the camera delivers is a hard ceiling on the cadence.
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
   });
-  await video.play();
 }
 
 export function stopCamera() {
   for (const track of video.srcObject?.getTracks?.() ?? []) track.stop();
   video.srcObject = null;
+}
+
+function cameraIsLive() {
+  return Boolean(video.srcObject?.getVideoTracks().some((track) => track.readyState === 'live'));
+}
+
+// ---- Coming back from the background ----
+//
+// Hiding the browser pauses the <video>, and phones often end the camera track outright (iOS
+// sometimes leaves it "live" but never sends another frame). Nothing restarts either by itself,
+// so the picture froze on the last frame until the page was reloaded. On the way back: play
+// again, and if the frames still do not move, ask for a fresh stream.
+
+// How long a resumed stream gets to produce a new frame before it is written off as stuck.
+const RESUME_FRAME_TIMEOUT_MS = 1200;
+
+let resuming = null;
+
+export function resumeCamera() {
+  resuming ??= resumeCameraOnce().finally(() => {
+    resuming = null;
+  });
+  return resuming;
+}
+
+async function resumeCameraOnce() {
+  // A resume landing during the very first start must not fight it. startup.js's lobby gate
+  // (beginStartup's `ready`) rejects if the camera fails, and swapping the stream out from under
+  // startCamera()'s `video.play()` makes it fail - the join screen would show a camera error for a
+  // camera that is in fact about to work. So let the start settle first, then resume whatever it
+  // left behind. A rejected start leaves no stream, and the `!stream` check below returns.
+  //
+  // This is also the only interaction with startup.js: a resume replaces the *stream*, never the
+  // models, so it cannot re-enter prepareCameraAndDetector() or re-run the warm-up. Warm-up
+  // compiles per model instance (MediaPipe shaders, ONNX kernels), not per stream, so models
+  // warmed against the old stream stay warm against the new one and must not be warmed again.
+  if (starting) await starting.catch(() => {});
+  const stream = video.srcObject;
+  // No stream means the camera was never started or was stopped on purpose (left the lobby).
+  if (!stream || document.visibilityState !== 'visible') return;
+  if (cameraIsLive()) {
+    try {
+      await video.play();
+    } catch (err) {
+      console.warn('Camera playback did not resume', err);
+    }
+    // Two consecutive windows, not one. A long synchronous compile - the warm-up here, or the
+    // optional models still loading behind the lobby (startup.js) - can starve the decoder for
+    // longer than a single deadline, and tearing down a working stream on that is a camera
+    // restart the player did not need. Two windows is 2.4 s, still well inside a resume, and a
+    // genuinely dead stream fails both.
+    if (await videoAdvances()) return;
+    if (await videoAdvances()) return;
+  }
+  if (video.srcObject !== stream) return; // stopped or replaced while we waited
+  for (const track of stream.getTracks()) track.stop();
+  try {
+    const fresh = await requestCameraStream();
+    // Left the lobby while the new stream was being granted: do not bring the camera back.
+    if (video.srcObject !== stream) {
+      for (const track of fresh.getTracks()) track.stop();
+      return;
+    }
+    video.srcObject = fresh;
+    await video.play();
+  } catch (err) {
+    console.warn('Could not restart the camera', err);
+  }
+}
+
+function videoAdvances() {
+  const startTime = video.currentTime;
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(video.currentTime !== startTime), RESUME_FRAME_TIMEOUT_MS);
+  });
 }
 
 export async function keepScreenOn() {

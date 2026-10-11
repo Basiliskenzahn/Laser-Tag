@@ -4,19 +4,19 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 
 ## The short version
 
-1. Everyone opens the game and enters the **same room code**.
+1. One player taps **Create Room** and shares the 6-character code shown in the lobby. Everyone else taps **Join Room** and enters it.
 2. In the lobby, **scan** every player: someone holds a phone on them while they turn slowly in a circle.
 3. Anyone taps **Launch**. After a short countdown, the round starts.
-4. Point the crosshair at another player and tap **FIRE**.
-5. Last player standing wins. Everyone returns to the lobby, and anyone can launch the next round.
+4. Point the crosshair at another player and tap anywhere on the screen to fire.
+5. Last player standing wins. Your placing and stats show up when you're knocked out or win; tap **Rematch** for the next round or **Done** to go back to the lobby.
 
 ## Joining
 
-Enter a name (up to 20 characters) and a room code (up to 16 letters, digits or `-`; it's case-insensitive). Tap **Continue** and allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
+Enter a name (up to 20 characters). Then either tap **Create Room**, which makes a new room with a random 6-character code, or tap **Join Room** and type or paste the code someone else shared (letters and digits; case doesn't matter). Allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
 
 - A room holds **2 to 8 players**.
 - You can't join a room while a round is running. You'll see *"Lobby is already running."* Wait for the round to finish and try again.
-- Your phone remembers your name and room. If you reload the page or briefly lose connection, it rejoins you automatically as the same player.
+- If you briefly lose connection, your phone reconnects you as the same player. Reloading the page takes you out of the game: you can join again once the round is over.
 
 ## The lobby
 
@@ -29,7 +29,7 @@ The lobby lists everyone in the room with their scan status:
 
 Each player has a **Scan** (or **Rescan**) button. **Any phone can scan any player**, which is usually easiest: you hold your phone on a friend, then they scan you.
 
-**Launch** starts the round once there are at least 2 players and everyone is scanned. If someone isn't, the lobby tells you who: *"Scan everyone before launch: Alice, Bob"*.
+**Launch** starts the round once there are at least 2 players and everyone is scanned. If someone isn't, the lobby tells you who: *"Scan everyone before launch: Alice, Bob"*. On your own, Launch stays greyed out until someone else joins.
 
 **Leave** removes you from the room immediately.
 
@@ -65,7 +65,8 @@ Your phone also remembers your own scan for that room and name. If you leave and
 The round starts after a 3-second countdown with beeps and a **GO!**.
 
 - The **crosshair** is the centre of the screen. It lights up when it's on a player you can hit.
-- Tap **FIRE** (or press **Space** on a laptop). You can fire roughly three times a second.
+- Tap anywhere on the screen to fire (or press **Space** on a laptop). You can fire roughly three times a second; a small bar under the crosshair drains while you're reloading.
+- **Leave** in the corner asks before it lets you go. Leaving mid-round counts as being knocked out: you stay on the scoreboard as down until the round ends.
 - Each person the camera sees gets an outline:
 
 | Outline | Meaning |
@@ -89,9 +90,9 @@ Everyone starts with **100 HP**. At 0 HP you're down for the rest of the round. 
 
 ### Feedback
 
-- **You hit someone:** a short "ping" (a double ping for a headshot), and a popup like `−20` or `HEADSHOT −50`.
+- **You hit someone:** a short "ping" (a double ping for a headshot), a popup like `−20` or `HEADSHOT −50`, and their health bar appears over their head for a moment.
 - **You got hit:** a buzz sound, a red flash, and a vibration on Android. iPhones don't support vibration in the browser.
-- **Round over:** a jingle for the winner, a sadder one for everyone else, and everyone returns to the lobby.
+- **Round over for you:** the moment you're knocked out (or win), the screen flashes and dims over the camera, then shows your placing — gold **#1**, silver **#2**, bronze **#3** — and your stats line by line, with a jingle. **Rematch** starts the next round once everyone's round has ended; **Done** takes you back to the lobby.
 
 ## Tips for a good game
 

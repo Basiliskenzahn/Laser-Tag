@@ -1,4 +1,4 @@
-// ?motion=on must be ADDITIVE ONLY: it may confirm who a track is, and it may not change it.
+// Motion must be ADDITIVE ONLY: it may confirm who a track is, and it may not change it.
 //
 // This is the defect that got the whole subsystem deleted. The project's audit recorded that it
 // "can veto or silently retarget a correct identification": a correct, confident appearance match
@@ -10,8 +10,9 @@
 // ?motion=on the id targetPlayerId() returns is IDENTICAL to the id it returns with motion off,
 // whatever the correlation says - driven through the real target.js, the real motion/index.js and
 // the real correlation maths, with real consistent, inconsistent and unknown correlations built up
-// a sample at a time. ?motion=strict is the one mode allowed to withhold, and it gets its own file
-// (the query string is read once per process at import, so it cannot share this one).
+// a sample at a time. ?motion=strict used to be a mode that was allowed to withhold; it is now an
+// alias for this one, and target-motion-strict.test.js holds that (the query string is read once
+// per process at import, so the two spellings cannot share a file).
 //
 // What this does NOT establish: that the correlations are correct about anything. The series here
 // are generated, exactly as in motion.test.js. See the header of motion/matching.js.
@@ -23,7 +24,7 @@ import { OPPONENT, alternating, makeDriver, namedTrack, still } from './helpers/
 
 installBrowserStubs({ search: '?motion=on' }); // before any import that reaches env.js
 
-const { MOTION_ENABLED, REQUIRE_MOTION } = await import('../frontend/public/env.js');
+const { MOTION_ENABLED } = await import('../frontend/public/env.js');
 const { targetConfirmedBy, targetPlayerId } = await import('../frontend/public/target.js');
 const { motionConfirmation, onMotionMessage, stopMotion } = await import('../frontend/public/motion/index.js');
 const { state } = await import('../frontend/public/state.js');
@@ -36,9 +37,10 @@ beforeEach(() => {
   state.game = { players: [{ id: OPPONENT, name: 'Rex', alive: true }] };
 });
 
-test('precondition: this file really is running with motion on and not strict', () => {
+test('precondition: this file really is running with motion on', () => {
+  // Vacuous if motion never turned on: every assertion below would be comparing motion-off
+  // behaviour with itself.
   assert.equal(MOTION_ENABLED, true);
-  assert.equal(REQUIRE_MOTION, false);
 });
 
 test('a phone moving with the person on screen confirms the identity it already had', () => {

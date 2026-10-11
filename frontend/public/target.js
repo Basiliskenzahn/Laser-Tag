@@ -10,7 +10,7 @@
 // appearance alone and appearance plus a phone-motion cross-check. Phone motion is back (motion/)
 // and the seam is still gone, deliberately - see WHY THERE IS NO SEAM below.
 
-import { MOTION_ENABLED, REQUIRE_MOTION } from './env.js';
+import { MOTION_ENABLED } from './env.js';
 import { reidTargetMinScore } from './identify.js';
 import { motionConfirmation, noteTrackBox } from './motion/index.js';
 import { localSelfId } from './roster.js';
@@ -68,41 +68,46 @@ export function isStableTarget(track, now = performance.now()) {
 // The provider seam existed so the game loop could not tell which signals had answered, which
 // mattered precisely because motion could answer *differently*: it could veto a correct
 // appearance match or silently retarget the shot to another candidate. Both are gone (see
-// below), and once motion may only agree with appearance, `?motion=on` returns exactly what
+// below), and once motion may only agree with appearance, every motion mode returns exactly what
 // appearance returned. There is no second answer for a second provider to give, no identity
 // shape for two providers to agree on, and nothing for the indirection to hide. A seam between
 // one implementation and the same implementation is not abstraction.
 //
 // ---- WHAT MOTION MAY AND MAY NOT DO ----
 //
-// `?motion=on` is ADDITIVE ONLY. It may confirm (targetConfirmedBy, for the overlay's label and
-// the debug line) and it may not do anything else: the id returned below under ?motion=on is
-// identical to the id returned with motion off, for every possible correlation. The project's
-// own audit recorded that the old subsystem "can veto or silently retarget a correct
-// identification", and that is the worst thing a confirming signal can do, because it is
-// invisible - a correct, confident appearance match simply stopped registering shots.
+// Motion is ADDITIVE ONLY, in every mode. It may confirm (targetConfirmedBy, for the overlay's
+// label and the debug line) and it may not do anything else: the id returned below is identical
+// to the id returned with motion off, for every possible correlation. The project's own audit
+// recorded that the old subsystem "can veto or silently retarget a correct identification", and
+// that is the worst thing a confirming signal can do, because it is invisible - a correct,
+// confident appearance match simply stopped registering shots.
 //
-// Retargeting is gone outright, in both modes. It took a shot that appearance had aimed at one
-// player and pointed it at a different one on correlation alone, which is the only failure here
-// that can hurt a third party who did nothing. Nothing in motion/ can now name a player:
-// motionConfirmation() answers only about the id it is handed.
+// Retargeting is gone outright. It took a shot that appearance had aimed at one player and
+// pointed it at a different one on correlation alone, which is the only failure here that can
+// hurt a third party who did nothing. Nothing in motion/ can name a player: motionConfirmation()
+// answers only about the id it is handed.
 //
-// `?motion=strict` keeps a veto, and keeping it is a deliberate choice rather than a leftover.
-// Withholding is the entire content of strict mode - without it the flag means nothing - and it
-// is the only way anyone can find out in the field whether the correlation is trustworthy
-// enough to ever be promoted. It is bounded to the safe direction: strict may WITHHOLD a target
-// (you cannot shoot someone motion has not confirmed), never move one. It is off unless typed
-// into the URL, and it should stay an experiment until the figures in motion/matching.js's
-// header come from a real accelerometer instead of a simulation.
+// The veto is gone too, and that is the newer half. `?motion=strict` used to withhold a target
+// motion had not confirmed, bounded to that one safe direction, and the argument for keeping it
+// was that withholding is the entire content of the flag. The rule it broke is simpler than the
+// argument: motion contributes to the decision, it does not replace it, and withholding an
+// identity appearance has accepted *is* replacing it. It was also unplayable - correlation needs
+// variance, so two people standing still reads `unknown` (motion/matching.js's own comment calls
+// that by far the most common answer), and strict then made everybody in a stand-off unshootable.
+// `?motion=strict` is now an alias for `?motion=on` (env.js).
+//
+// What motion does contribute to is *detection*: see motion/index.js and screens/game.js, where
+// an enrolled player whose phone is moving with no track named as them is a reason to look
+// harder. That path produces no box, reaches no threshold and names nobody.
 export function targetPlayerId(track, now = performance.now()) {
   if (track.selfRejected || track.playerId === localSelfId()) return null;
   const named = isStableTarget(track, now) ? track.playerId : null;
   if (!MOTION_ENABLED) return named;
   // Record the box for every non-self track, named or not: a track that gets named thirty frames
-  // from now needs the history its first check will look back over to already exist.
+  // from now needs the history its first check will look back over to already exist. This is the
+  // only thing motion does on this path, and `named` is returned untouched.
   noteTrackBox(track);
-  if (!REQUIRE_MOTION) return named; // additive only - motion cannot reach this value
-  return motionConfirmation(track, named, now).confirmed ? named : null;
+  return named;
 }
 
 // Which signal confirmed this target, for the overlay's label ("Name (moves)") - null when

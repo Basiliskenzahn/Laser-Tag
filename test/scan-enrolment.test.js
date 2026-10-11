@@ -551,3 +551,156 @@ test('a scan the connection could not deliver corrects the line that claimed it'
   assert.match(dom.element('lobby-status').textContent, /scan could not be sent/i);
   assert.match(dom.element('lobby-status').textContent, /rescan/i);
 });
+
+// ---- Exporting and importing a scan (?export) ----
+//
+// The feature comes from ui-redesign; what is rewritten here is where an import *goes*. The cache
+// holds exactly one gallery - this phone owner's own, in this room (scan-cache.js rule 1) - so
+// there is no correct slot for another player's, and writing one is the name-keyed bug by a
+// shorter route: an import is the easiest possible way to end up holding a gallery you never
+// captured and publishing it as your own appearance on the next join. So an import for somebody
+// else is published and not cached, and the server's copy is what every phone matches against
+// anyway.
+
+// Stands in for a picked file. `text()` is the only thing importPlayerScan reads.
+const exportFile = (data, name = 'scan.json') => ({ name, text: async () => JSON.stringify(data) });
+
+// Runs a real scan of `player` and hands back the gallery that went to the server, so the imports
+// below carry a gallery the quality gates actually produced.
+async function galleryFor(player) {
+  const { sent } = arrangeScan();
+  await runScan(player);
+  const message = sent.find((msg) => msg.type === 'scan');
+  assert.ok(message, `no scan was produced; lobby said "${dom.element('lobby-status').textContent}"`);
+  return message.gallery;
+}
+
+// `version` is written out rather than read from SCAN_CACHE_VERSION: a file whose version comes
+// from the constant the import checks it against can never be the wrong version.
+const exportedScan = (gallery, overrides = {}) => ({
+  format: 'laser-tag-scan',
+  version: 13,
+  exportedAt: '2026-01-01T00:00:00.000Z',
+  room: 'demo',
+  player: { id: OTHER_ID, name: 'Sam' },
+  sampleCount: gallery.length,
+  gallery,
+  ...overrides,
+});
+
+const scanKeys = () => [...dom.store.keys()].filter((key) => key.startsWith('laser-tag:scan:')).sort();
+
+test("importing another player's scan publishes it and caches nothing", async () => {
+  const gallery = await galleryFor(selfPlayer);
+  // A fresh lobby with nothing cached, so "the cache is untouched" is a real claim.
+  const { sent } = arrangeScan();
+  assert.deepEqual(scanKeys(), [], 'precondition: nothing is cached yet');
+
+  const message = await scan.importPlayerScan(otherSam, exportFile(exportedScan(gallery)));
+
+  assert.match(message, /Imported \d+-angle scan for Sam/);
+  const published = sent.find((msg) => msg.type === 'scan');
+  assert.ok(published, 'an import has to reach the server, or no other phone can match the player');
+  assert.equal(published.targetId, OTHER_ID);
+  assert.deepEqual(published.gallery, gallery);
+
+  assert.deepEqual(scanKeys(), [], "another player's gallery must never be written to this phone's cache");
+  assert.equal(scan.loadScanCache(), null);
+  assert.equal(state.localGallery.length, 0, "and it is not this phone's self-match guard either");
+});
+
+test('importing your OWN scan is published and cached, exactly like a finished rotation', async () => {
+  const gallery = await galleryFor(selfPlayer);
+  const { sent } = arrangeScan();
+
+  const message = await scan.importPlayerScan(selfPlayer, exportFile(exportedScan(gallery)));
+
+  assert.match(message, /Imported/, `import refused: ${message}`);
+  assert.equal(sent.find((msg) => msg.type === 'scan')?.targetId, SELF_ID);
+  // deepEqual, not reference: the gallery came back out of JSON, so it is a copy by construction.
+  assert.deepEqual(state.localGallery, gallery, 'your own gallery is kept as the self-match guard');
+  assert.deepEqual(scanKeys(), ['laser-tag:scan:self:demo'], 'and cached under the owner key, not a name');
+  state.scanTargetName = '';
+  assert.deepEqual(scan.loadScanCache()?.gallery, gallery, 'so a reload finds it');
+});
+
+test('an import is held to the same per-sample bar as a cached scan', async () => {
+  // scan-cache.js rule 2: a sample whose vectors are all zero is not a weak sample, it is one
+  // whose pixels were never read, and it scores 0 against everybody for the rest of the round.
+  // The validator a *file* goes through has to be the one storage goes through, or an import is a
+  // way in for samples a rotation would have thrown out.
+  const gallery = await galleryFor(selfPlayer);
+  const { sent } = arrangeScan();
+  const blanked = gallery.map((sample, i) => (i === 3 ? { ...sample, hist: sample.hist.map(() => 0) } : sample));
+
+  const message = await scan.importPlayerScan(selfPlayer, exportFile(exportedScan(blanked), 'blank.json'));
+
+  assert.match(message, /does not contain a usable scan/);
+  assert.equal(sent.find((msg) => msg.type === 'scan'), undefined, 'nothing may be published');
+  assert.deepEqual(scanKeys(), []);
+});
+
+test('an import from an older build of the app is refused rather than matched against', async () => {
+  const gallery = await galleryFor(selfPlayer);
+  const { sent } = arrangeScan();
+
+  const message = await scan.importPlayerScan(selfPlayer, exportFile(exportedScan(gallery, { version: 12 })));
+
+  assert.match(message, /older version of the app/);
+  assert.equal(sent.find((msg) => msg.type === 'scan'), undefined);
+});
+
+test('a file that is not a scan export says so instead of throwing', async () => {
+  arrangeScan();
+  assert.match(await scan.importPlayerScan(selfPlayer, { name: 'cat.jpg', text: async () => 'not json' }), /not a scan export/);
+  assert.match(await scan.importPlayerScan(selfPlayer, exportFile({ format: 'something-else' }, 'other.json')), /not a scan export/);
+});
+
+test('an export carries the roster gallery, and the scan time only for your own scan', async () => {
+  const gallery = await galleryFor(selfPlayer);
+  // galleryFor left this phone's own scan in the cache, which is the only cache there is.
+  const written = [];
+  const realCreate = URL.createObjectURL;
+  const realRevoke = URL.revokeObjectURL;
+  URL.createObjectURL = (blob) => {
+    written.push(blob);
+    return 'blob:scan';
+  };
+  URL.revokeObjectURL = () => {};
+  try {
+    assert.equal(scan.exportPlayerScan({ id: SELF_ID, name: 'Sam', gallery }), true);
+    const own = JSON.parse(await written[0].text());
+    assert.equal(own.format, 'laser-tag-scan');
+    assert.deepEqual(own.gallery, gallery, 'the gallery is the roster copy every phone matches against');
+    assert.ok(own.scannedAt, 'this phone took this scan, so it knows when');
+
+    // Somebody else's row: same phone, same cache, a gallery that is not the cached one. There is
+    // no slot to look their scan time up in, and no name is consulted to go looking for one.
+    const theirs = gallery.map((sample) => ({ ...sample, hist: sample.hist.map((v) => v * 0.5 + 1) }));
+    assert.equal(scan.exportPlayerScan({ id: OTHER_ID, name: 'Sam', gallery: theirs }), true);
+    const other = JSON.parse(await written[1].text());
+    assert.deepEqual(other.gallery, theirs);
+    assert.equal(other.scannedAt, null, "this phone must not claim it took another player's scan");
+
+    assert.equal(scan.exportPlayerScan({ id: OTHER_ID, name: 'Nobody', gallery: [] }), false, 'nothing to export');
+    assert.equal(written.length, 2);
+  } finally {
+    URL.createObjectURL = realCreate;
+    URL.revokeObjectURL = realRevoke;
+  }
+});
+
+test('forgetting your own scan takes the one entry there is, with no name involved', async () => {
+  // net.js's `scanCleared` handler. The lobby line still names the player, because that is a
+  // message to a human; the cache call takes no name, because the cache has one entry and it is
+  // yours. A name-keyed forget is rule 1 again: two players called Sam, and deleting one clears
+  // the other's.
+  await galleryFor(selfPlayer);
+  assert.deepEqual(scanKeys(), ['laser-tag:scan:self:demo'], 'precondition: your scan is cached');
+
+  scan.forgetOwnScanCache();
+
+  assert.deepEqual(scanKeys(), [], 'the cached scan is gone, so the next join does not resend it');
+  assert.equal(state.savedScan, null);
+  assert.equal(scan.loadScanCache(), null);
+});

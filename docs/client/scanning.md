@@ -340,6 +340,54 @@ Version 12 stored `shape` raw instead of L2-normalised: a version-11 `shape` is 
 
 Note that the required-field check does *not* include `reid`. A cache saved on a phone where OSNet failed to load is still valid — it just produces weaker matching for that player, which is the same graceful degradation the live path has.
 
+## Exporting and importing a scan
+
+With `?export` in the URL (`SCAN_EXPORT` in `env.js`), every scanned player's lobby row gets an
+**Export** button and a **✕** that deletes their scan for everyone, and every row gets **Import**.
+Without the flag, none of them are shown.
+
+`exportPlayerScan()` downloads `scan-<room>-<name>-<timestamp>.json`:
+
+| Field | From |
+| --- | --- |
+| `format` | `'laser-tag-scan'` — the only accepted value |
+| `version` | the current `SCAN_CACHE_VERSION` |
+| `exportedAt`, `room`, `player` (`id`, `name`), `sampleCount` | the live room |
+| `gallery` | **the roster**, i.e. the copy the server shares and every phone matches against |
+| `scannedAt` | the local cache, when this phone is the one that took the scan |
+
+The gallery always comes from the roster, never from local storage. `scannedAt` is the one field
+that can only come from the phone that did the scanning, and the test for whether this is that
+phone is a comparison of the **cached gallery against the one being exported** — the cache holds
+exactly one gallery, this phone owner's own (see [Why the name is not in the
+key](#why-the-name-is-not-in-the-key)), so no name is consulted to go looking for a scan time.
+Exporting someone else's row gives `scannedAt: null` rather than a wrong timestamp.
+
+`importPlayerScan()` loads such a file into the row the button was on. The `id` and `room` in the
+file are only a record of where it came from: ids are per session, so the scan goes to whichever
+row you tapped. It is refused unless `format` is `'laser-tag-scan'`, `version` equals the current
+`SCAN_CACHE_VERSION` (see [Why the version exists](#why-the-version-exists)), and the gallery
+passes the **same per-sample check as storage** — `degenerateSignature()`, so an import cannot
+admit a sample a rotation would have thrown out.
+
+**An accepted import is published, and cached only when it is this phone's own player.**
+
+That asymmetry is the point, not an omission. The cache is owner-only by design, and there is no
+correct slot for another player's gallery — writing one is the name-keyed bug by a shorter route:
+an import is the easiest possible way to end up holding a gallery you never captured and then
+publishing it as your own appearance on the next join. Nothing is lost by not caching it. The
+server has it from the `scan` message, and the roster is where every phone reads galleries from
+anyway. A self-import goes through `saveScanCache()`, the one writer, which checks the id itself
+rather than trusting the caller.
+
+Deleting a scan (the **✕**, or `scanCleared` arriving from any other phone) calls
+`forgetOwnScanCache()`, which takes **no argument**: the cache has one entry, so "forget the cached
+scan" has one possible meaning. The player's name still appears in the lobby's status line,
+because that is a sentence for a human rather than a lookup key.
+
+An imported scan matches only as well as the person still looks like it. Recognition leans on
+clothing colour, so a change of outfit, or very different lighting, means a rescan.
+
 ## Testing
 
 Enrolment had no behavioural test for a long time, for a concrete reason: `screens/scan.js` could not be imported under Node at all. It reaches `detector.js`, which imports `/vendor/tasks-vision/vision_bundle.mjs` — an absolute URL the dev server serves and Node refuses — and `env.js` touches `document.getElementById` and `canvas.getContext('2d')` at module scope, so there is nothing to mock *after* the import. The heaviest and most consequential path in the app was therefore reasoned about rather than exercised, which is how a cache keyed by a non-unique name survived.
@@ -353,7 +401,7 @@ On top of them:
 
 | File | What it covers |
 | --- | --- |
-| [`test/scan-enrolment.test.js`](../../test/scan-enrolment.test.js) | Whole scans. Who the gallery is sent and cached under, what a shared name does and does not do, a rotation whose frames were discarded, a frame lost during the embedding pass being *skipped*, a red-free frame not being mistaken for a lost one, how much canvas is still resident during the embedding pass, a superseded run, a cancel, and whether a delivered scan is reported as delivered. |
+| [`test/scan-enrolment.test.js`](../../test/scan-enrolment.test.js) | Whole scans. Who the gallery is sent and cached under, what a shared name does and does not do, a rotation whose frames were discarded, a frame lost during the embedding pass being *skipped*, a red-free frame not being mistaken for a lost one, how much canvas is still resident during the embedding pass, a superseded run, a cancel, whether a delivered scan is reported as delivered, and [export/import](#exporting-and-importing-a-scan): where an import goes, the bar it is held to, and what an export may claim to know. |
 | [`test/scan-cache.test.js`](../../test/scan-cache.test.js) | `scan-cache.js` directly: the key, what may be cached, and every way a sample can be blank. Its bounds are the test's own numbers, not the screen's constants. |
 | [`test/scan-select.test.js`](../../test/scan-select.test.js) | `scan-select.js` directly: that the pass yields and yields more as the pool grows, that a cancel produces nothing, that carrying `nearest` forward picks the same seeds a recomputing reference picks, and that a seed is in its own sample. |
 | [`test/scan-reid.test.js`](../../test/scan-reid.test.js) | `scan-reid.js`: that the batched pass produces byte-for-byte the gallery the serial one did, and what a cancel or a failed inference does. |

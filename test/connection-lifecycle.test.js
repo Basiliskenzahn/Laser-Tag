@@ -77,8 +77,8 @@ const joins = () => server.sends.filter((msg) => msg.type === 'join').length;
 test('leaving the lobby inside the reconnect window does not rejoin the room', async () => {
   // The ghost player: the connection drops, the player taps Leave within the retry delay, and the
   // retry rejoins - leaveLobby keeps name/room/resumePlayerId on purpose, so sendJoin has
-  // everything it needs. Nobody could scan or shoot that player, and the `welcome` saved the room
-  // as the one to resume into on the next page load.
+  // everything it needs. Nobody could scan or shoot that player, and they sat in everyone else's
+  // roster out of a room of eight while this phone showed the title screen.
   await connected();
   server.drop();
   await settleClose();
@@ -102,8 +102,24 @@ test('leaving cancels the pending retry rather than leaning on the guard behind 
   // the point of having both - but it also means a regression that dropped the cancellation would
   // go unnoticed there, leaving a timer to fire on every leave. So pin it directly.
   await connected();
-  server.drop();
-  await settleClose();
+
+  // Which handle the reconnect got, so this watches for that one being cleared rather than
+  // counting clearTimeout calls - leaveLobby has other timers to call off now (a results screen
+  // waiting on the final hit), and a count would have gone red for the wrong reason.
+  const created = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms) => {
+    const handle = realSetTimeout(fn, ms);
+    created.push(handle);
+    return handle;
+  };
+  try {
+    server.drop();
+    await settleClose();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.equal(created.length, 1, 'precondition: the drop left exactly one timer, the reconnect');
 
   const cleared = [];
   const realClearTimeout = globalThis.clearTimeout;
@@ -113,7 +129,7 @@ test('leaving cancels the pending retry rather than leaning on the guard behind 
   };
   try {
     leaveLobby();
-    assert.equal(cleared.length, 1, 'the pending reconnect was cleared, not just ignored later');
+    assert.ok(cleared.includes(created[0]), 'the pending reconnect was cleared, not just ignored later');
   } finally {
     globalThis.clearTimeout = realClearTimeout;
   }
@@ -287,46 +303,73 @@ test('closing the tab tells the server once, and leaves no retry behind', async 
   assert.equal(server.connects, 1, 'and nothing dialled back in from the closed page');
 });
 
-test('a throw while starting the lobby does not latch the join button', async () => {
-  // `startingLobby` gates the join button for the whole camera/model wait, so a throw inside that
-  // window used to leave the button permanently inert with nothing on screen to say why. Nothing
-  // in there is known to throw - the camera step has its own catch - so this is the hardening the
-  // audit asked for rather than a reproduction of a real crash; the throw is injected.
-  const { enterLobbyFromForm } = await import('../frontend/public/screens/join.js');
+test('a throw while starting the lobby does not latch the title screen', async () => {
+  // `startingLobby` gates the title screen's buttons for the whole camera/model wait, so a throw
+  // inside that window used to leave them permanently inert with nothing on screen to say why.
+  // Nothing in there is known to throw - the camera step has its own catch - so this is the
+  // hardening the audit asked for rather than a reproduction of a real crash; the throw is
+  // injected.
+  //
+  // It goes into the *last* write setTitleBusy() makes, so that by the time it lands the screen is
+  // genuinely in the half-disabled state a crash would leave behind. Injected into the first write
+  // instead, the buttons this then checks would never have been disabled at all and the assertions
+  // below would hold whatever the recovery did.
+  const { enterLobby } = await import('../frontend/public/screens/join.js');
   dom.$('name').value = 'Ann';
-  dom.$('room').value = 'demo';
 
-  const btn = dom.$('join-btn');
+  const btn = dom.$('join-room-btn');
   let thrown = false;
-  const descriptor = Object.getOwnPropertyDescriptor(btn, 'hidden');
-  Object.defineProperty(btn, 'hidden', {
+  const descriptor = Object.getOwnPropertyDescriptor(btn, 'disabled');
+  Object.defineProperty(btn, 'disabled', {
     configurable: true,
     get() {
-      return this.hiddenValue;
+      return this.disabledValue ?? false;
     },
     set(value) {
-      // Once, at the first write after state.startingLobby = true.
+      // Once, inside the window state.startingLobby = true opened.
       if (!thrown) {
         thrown = true;
         throw new Error('injected: something in the join path threw');
       }
-      this.hiddenValue = value;
+      this.disabledValue = value;
     },
   });
   const errors = [];
   const realError = console.error;
   console.error = (...args) => errors.push(args);
   try {
-    await enterLobbyFromForm(); // must not reject: app.js's three callers have no .catch
+    await enterLobby({ room: 'demo' }); // must not reject: app.js's two callers have no .catch
     assert.ok(thrown, 'precondition: the injected throw happened inside the guarded window');
-    assert.equal(state.startingLobby, false, 'the flag that gates the join button was released');
-    assert.equal(btn.disabled, false, 'and the button is usable again');
+    assert.equal(state.startingLobby, false, 'the flag that gates the title screen was released');
+    assert.equal(dom.$('create-room-btn').disabled, false, 'and Create Room is usable again');
+    assert.equal(dom.$('name').disabled, false, 'as is the name field');
     assert.match(dom.$('join-status').textContent, /Try again/, 'with something on screen to say so');
     assert.equal(errors.length, 1, 'the throw was logged rather than hidden');
   } finally {
     console.error = realError;
-    Object.defineProperty(btn, 'hidden', descriptor ?? { value: false, writable: true, configurable: true });
+    Object.defineProperty(btn, 'disabled', descriptor ?? { value: false, writable: true, configurable: true });
   }
+});
+
+test('entering a room starts from a clean scan slate', async () => {
+  // Left over from the last room, a scan target is a phone that walks into the lobby already
+  // half-way through scanning somebody who is not there - and a stale gallery is a signature set
+  // that would be offered to the new room as this player's own. An audit found that deleting the
+  // scanTargetId line survives this whole file, so here it is pinned.
+  //
+  // An empty room code stops enterLobby at its own guard, which is after the slate is cleared and
+  // before it touches the camera or the connection - so this needs neither.
+  const { enterLobby } = await import('../frontend/public/screens/join.js');
+  dom.$('name').value = 'Ann';
+  Object.assign(state, { scanTargetId: 'p9', scanTargetName: 'Bo', gallery: [{ hist: [] }], localGallery: [{ hist: [] }] });
+
+  await enterLobby({ room: '' });
+
+  assert.equal(state.scanTargetId, null, 'no half-finished scan comes along');
+  assert.equal(state.scanTargetName, '');
+  assert.deepEqual(state.gallery, [], 'nor the samples it had collected');
+  assert.deepEqual(state.localGallery, [], 'nor a gallery from the last room, to be offered as ours');
+  assert.equal(state.startingLobby, false, 'and an empty room code starts nothing');
 });
 
 test('a connection that never opens counts up to the unreachable message', async () => {

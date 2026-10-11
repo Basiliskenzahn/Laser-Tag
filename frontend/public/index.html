@@ -12,6 +12,21 @@
     <script type="module" src="app.js"></script>
   </head>
   <body>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <symbol id="icon-leave" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+        <path d="M10 8l-4 4 4 4" />
+        <path d="M6 12h10" />
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12.5l4.5 4.5L19 7.5" />
+      </symbol>
+    </svg>
+
     <!-- One camera stream, shared by the scan screen and the game screen so it's only requested once. -->
     <video id="video" playsinline muted autoplay hidden></video>
     <canvas id="overlay" hidden></canvas>
@@ -19,19 +34,49 @@
     <main id="join-screen">
       <h1>Laser Tag</h1>
       <p class="tagline">Point. Shoot. Phones only.</p>
-      <form id="join-form">
-        <label>
-          Your name
-          <input id="name" maxlength="20" autocomplete="nickname" required />
-        </label>
-        <label>
-          Room code
-          <input id="room" maxlength="16" autocapitalize="off" autocomplete="off" spellcheck="false" required />
-        </label>
-        <button type="submit" id="join-btn">Continue</button>
-      </form>
+      <label>
+        Your name
+        <input id="name" maxlength="20" autocomplete="nickname" required />
+      </label>
+      <div id="title-actions">
+        <button id="create-room-btn" type="button">Create Room</button>
+        <button id="join-room-btn" type="button">Join Room</button>
+        <button id="how-to-play-btn" type="button">How to Play</button>
+      </div>
       <p id="join-status" class="status" role="status"></p>
-      <p class="hint">Everyone enters the same room code. The lobby shows who still needs to be scanned before launch.</p>
+
+      <dialog id="join-dialog" class="modal" aria-labelledby="join-title">
+        <form id="join-form" class="dialog-body">
+          <h2 id="join-title">Join room</h2>
+          <input
+            id="room-code"
+            aria-label="Room code"
+            placeholder="ABC123"
+            autocapitalize="characters"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            enterkeyhint="go"
+          />
+          <div class="dialog-actions">
+            <button id="join-cancel-btn" type="button">Cancel</button>
+            <button id="join-btn" type="submit" disabled>Join</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="rules-dialog" class="modal" aria-labelledby="rules-title">
+        <div class="dialog-body">
+          <h2 id="rules-title">How to play</h2>
+          <ol id="rules-list">
+            <li>One player taps <b>Create Room</b> and shares the code. Everyone else taps <b>Join Room</b> and enters it. 2 to 8 players.</li>
+            <li>In the lobby, <b>scan</b> every player: hold a phone on them while they turn slowly in one full circle.</li>
+            <li>Tap <b>Launch</b>. After the countdown, aim the crosshair at a player and tap anywhere to fire.</li>
+            <li>Everyone has 100 HP. A body shot does 20, a headshot 50. Last player standing wins.</li>
+          </ol>
+          <button id="rules-close-btn" type="button">Got it</button>
+        </div>
+      </dialog>
     </main>
 
     <main id="lobby-screen" hidden>
@@ -40,7 +85,15 @@
         <div id="lobby-heading">
           <div>
             <h1>Lobby</h1>
-            <p id="lobby-room" class="tagline"></p>
+            <p class="tagline">
+              Room code
+              <span id="lobby-room-row">
+                <span id="lobby-room"></span>
+                <button id="copy-room-btn" type="button" title="Copy room code" aria-label="Copy room code">
+                  <svg aria-hidden="true"><use href="#icon-copy" /></svg>
+                </button>
+              </span>
+            </p>
           </div>
           <div id="lobby-actions">
             <button id="leave-lobby-btn" type="button">Leave</button>
@@ -48,6 +101,7 @@
           </div>
         </div>
         <div id="lobby-list"></div>
+        <p id="lobby-waiting" class="hint" hidden>Waiting for more players…</p>
         <p id="lobby-status" class="status" role="status"></p>
       </section>
     </main>
@@ -65,6 +119,8 @@
     <main id="game-screen" hidden>
       <div id="damage"></div>
       <div id="crosshair"></div>
+      <div id="cooldown"><div></div></div>
+      <div id="hit-bars"></div>
 
       <header id="hud"></header>
 
@@ -75,7 +131,33 @@
       </div>
       <div id="popups"></div>
 
-      <button id="fire-btn" aria-label="Fire">FIRE</button>
+      <button id="leave-game-btn" type="button">
+        <svg aria-hidden="true"><use href="#icon-leave" /></svg>
+        <span>Leave</span>
+      </button>
+
+      <!-- The end of your round: a flash, then your placing and stats over the still-running camera. -->
+      <section id="results" aria-labelledby="results-rank" hidden>
+        <div id="results-rank"></div>
+        <p id="results-title"></p>
+        <dl id="results-stats"></dl>
+        <p id="results-status" role="status"></p>
+        <div id="results-actions" class="dialog-actions">
+          <button id="results-done-btn" type="button">Done</button>
+          <button id="results-rematch-btn" type="button">Rematch</button>
+        </div>
+      </section>
+
+      <dialog id="leave-dialog" class="modal" aria-labelledby="leave-title">
+        <div class="dialog-body">
+          <div class="dialog-icon"><svg aria-hidden="true"><use href="#icon-leave" /></svg></div>
+          <h2 id="leave-title">Leave game?</h2>
+          <div class="dialog-actions">
+            <button id="leave-cancel-btn" type="button" autofocus>Stay</button>
+            <button id="leave-confirm-btn" type="button">Leave</button>
+          </div>
+        </div>
+      </dialog>
     </main>
 
     <!-- Last child of <body>, not inside #game-screen: every screen is `hidden` until it is the

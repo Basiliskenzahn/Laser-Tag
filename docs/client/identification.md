@@ -34,9 +34,7 @@ Being optional is why neither is on the critical path into the lobby. It is also
 | `grid` | 192 | 6×8 grid of brightness, saturation and hue (as sin/cos weighted by saturation). A rough colour+shape fingerprint that *does* change with viewing angle. | x 8–92%, y 6–94% |
 | `shape` | 2 | Box aspect ratio, and the ratio of its height to its width as fractions of the frame. The only field kept on its **raw** scale rather than L2-normalised — see below | whole box |
 | `embed` | 256 | Optional MobileNetV3 embedding, compacted from the model's output and rounded to 4 decimals so galleries stay small | box with a little padding |
-| `usable` | bool | Whether the box passed `boxQuality()` outright — big and whole enough to trust (not sent to the server) | |
-| `range` | string | If it didn't, why: `far-reid`, `below-floor`, `partial-body` or `edge-clipped`. See [Box range](#box-range-and-the-far-band) | |
-| `rangePenalty` | number | How much extra a re-identification score must clear for this box. `0` for anything `usable` | |
+| `usable` | bool | Whether the box passed `boxQuality()` — big and whole enough to trust at all. `false` means no path will score it. See [Box range](#box-range) (not sent to the server) | |
 
 A sixth field, `reid` (512 floats), is **not** produced by `extractSignature`. Because inference is asynchronous it is attached by the caller afterwards — and the two callers do it very differently:
 
@@ -49,56 +47,53 @@ Colour features are computed by drawing the region onto a tiny canvas (18×24 fo
 
 `averageSignatures()` averages a list of signatures field by field (including `reid`, re-normalised); scanning uses it to smooth samples. Because scanning attaches `reid` *after* averaging, `scan-reid.js` re-does that one field with the same arithmetic (`averageReidVectors`), so an averaged sample still ends up with the mean of its frames' embeddings.
 
-## Box range and the far band
+## Box range
 
 `boxQuality()` decides whether a detector box is worth a signature at all, and the answer is the
 advice shown during enrolment ("step a little closer"), checked in that order: too small
 (`too-far`), a bad aspect ratio (`partial-body`), then touching the frame edge while still small
-(`edge-clipped`).
+(`edge-clipped`). `extractSignature()` publishes the verdict as `usable`, and an unusable box
+produces **no ranking on any path** — `bestAngleScore()` returns `null`, so it is never identified
+at any score, by any signal.
 
-For live matching the size limit is `MIN_MATCH_HEIGHT_RATIO`, **0.18 of frame height**. At 720p
-that is 130 px, which is a 1.7 m person at roughly 10–12 m through a ~45° vertical field of view.
-It used to be an outright refusal: `usable: false`, and `bestAngleScore()` returned `null`, so a
-player past that distance was never identified **at any score**.
+For live matching the limits are `MIN_MATCH_HEIGHT_RATIO`, **0.065 of frame height**, and
+`MIN_BOX_WIDTH_RATIO`, **0.018 of frame width**. They are the range limit, and they come from
+camera geometry: a typical phone sees about 65° across the long side, so a 1.75 m person at 20 m is
+roughly 7% of frame height and about 0.02 of the width when the phone is held sideways.
 
-That limit is real for the colour features and for the MobileNet blend, which read a crop that at
-this size is mostly interpolation. It is *not* real for re-identification, the one signal trained
-across scales and viewpoints. So below 0.18 a box falls into a **far band** where
-re-identification alone may still try it:
+**Which of the two actually binds depends on the box's shape, and for anyone standing up it is the
+width.** At an aspect of 2.5 in a 16:9 frame a box's width ratio is its height ratio ÷ 4.44, so
+0.018 of a 1280-wide frame — 23 px — is reached at **0.080** of frame height, while the 0.065
+height floor is still below it. The usable reach for a standing person is therefore the width
+floor's 0.080, not 0.065: 2.25× the old gate's linear range rather than 2.8×. The height floor
+binds only for squatter boxes — crouching, or half a body in frame — where height runs out first.
 
-| `range` | When | What may score it |
+These were **0.18 and 0.035** until the range change, which at 720p is a 130 px box: a 1.7 m person
+at roughly 10–12 m. A player past that was never identified at all.
+
+| `usable` | When | What may score it |
 | --- | --- | --- |
-| `ok` | passed `boxQuality()` | everything, unchanged — `rangePenalty` is `0` and the field is absent from the match |
-| `far-reid` | under 0.18 but above the far floor | `reid` only, and only above a **stricter** score |
-| `below-floor` | under `FAR_REID_MIN_HEIGHT_RATIO` (0.09) or `FAR_REID_MIN_WIDTH_RATIO` (0.025), or tall but too narrow | nothing, and no OSNet inference is spent on it either |
-| `partial-body` / `edge-clipped` | `boxQuality()`'s two non-distance refusals | nothing. Unchanged by the band |
+| `true` | passed `boxQuality()` | everything: `reid`, the MobileNet blend, or colours alone, whichever the room has |
+| `false` | too small, a bad aspect ratio, or clipped by the frame edge while still small | nothing, and no OSNet inference is spent on it either |
 
-Both far floors are read off OSNet's own input size (128 × 256 in `reid.js`) at the point where the
-crop is **4× upscaled** — a quarter of the linear detail, a sixteenth of the pixels the model
-expects, which is where a standing person's distinguishing bands drop under about 8 px and a pixel
-of box jitter moves them by more than one band. Which floor binds depends on how slim the box is:
-for a standing person (aspect ~2.5 in a 16:9 frame) it is the width one, reached at about 0.111 of
-frame height, so the band buys roughly 1.6× the range — 10–12 m becomes 16–19 m. The height floor
-binds only for squatter boxes, where it reaches 0.09.
+There is no signal-specific relaxation and no penalty band. One gate, one answer, and whatever
+passes it is scored by whichever signal the room is on — which is exactly why the **closed-set
+score floor** matters now. Closed-set mode assumes everyone in frame is a player and waives the
+colour path's corroborating gates (the per-part minimums and the margin, which exist to prop up a
+weak signal in a room that might contain bystanders). It used to waive the score floor with them,
+accepting the best of a field of non-matches at *any* score — a track was observed being named at
+**0.0**. With a 0.18 gate a distant box never reached a colour ranking, so that was unreachable
+from range; at 0.065 it is directly reachable, and on a phone where OSNet failed to load a tiny far
+box would be named with no threshold whatsoever. `decideRankings()` now keeps `MATCH_THRESHOLD` on
+the colour path in closed set, and all of the thresholds on the re-identification path.
 
-A band box is charged a **penalty on the score it has to clear**, not a discount: a small crop is
-less trustworthy, so it must beat a higher bar. The penalty is the normalised shortfall below 0.18,
-squared — 0 at the line, rising to `FAR_REID_MAX_PENALTY` (0.11) at the floor, which puts the
-floor's requirement at 0.65 + 0.11 = **0.76**, the strictest row in [the measured
-table](#with-a-re-identification-embedding) below. Squared rather than linear so there is no step
-at 0.18: a detector box jittering across the line behaves the same on both sides.
-
-Two consequences are worth stating plainly, because they are what makes the band safe:
-
-- **At or above 0.18, behaviour is unchanged.** The penalty is 0 and `rangePenalty` is absent from
-  the match object entirely.
-- **A band box that can't clear its bar produces no ranking at all** — not a rejected one. That is
-  byte for byte what it produced before, so evidence accumulation, soft labels, the closed-set
-  assignment and a latched name all carry on behaving exactly as they did.
-
-`Tracker.update()` also stops asking `reid.js` for an embedding on a `below-floor` box. It used to
-request one before matching and the result was discarded at the `usable` gate, so every too-small
-box in frame bought a full 128 × 256 inference on every check.
+`Tracker.update()` does not ask `reid.js` for an embedding on an unusable box. It used to request
+one before matching and the result was discarded at the `usable` gate, so every too-small box in
+frame bought a full 128 × 256 inference, plus a `getImageData(128, 256)` readback on the main
+thread, on every check. A coasting track is skipped for the same reason: with no box this cycle
+`track.box` is the last smoothed observation, stale by one or more cycles, so embedding it buys a
+readback of wherever the person *was* and feeds it to the 3 s median as if it were an observation
+of where they are.
 
 ## The re-identification embedding (`reid.js`)
 
@@ -164,7 +159,7 @@ Only two checks apply, because the score is a single well-calibrated similarity:
 
 | Check | Threshold | Rejection reason |
 | --- | --- | --- |
-| Overall score | ≥ 0.65 by default (`?reid=` to tune), plus the box's [range penalty](#box-range-and-the-far-band) if it was in the far band; inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`) | `score` |
+| Overall score | ≥ 0.65 by default (`?reid=` to tune); inside the tracker, the median of the last 3 s of checks (`REID_HISTORY_MS`) | `score` |
 | Lead over runner-up | ≥ 0.03 (`REID_MATCH_MARGIN`) | `margin` |
 
 The threshold was chosen on Market-1501 in simulated 2–4 player games, per single check:
@@ -199,8 +194,8 @@ If the best match is the local player (`excludeId`), the result is rejected with
 
 The game runs matching in **closed-set** mode: the local player is included as a candidate (for the self-match guard) and the ranking is returned even when nothing clears the bar. What happens to a sub-threshold best match differs by signal:
 
-- **Colour only:** closed set assumes everyone visible is one of the room's players and accepts the best match anyway. That's survivable for weak colour features, but it's exactly what used to label bystanders as players.
-- **With `reid`:** the thresholds are kept (`accepted` is only true when nothing was rejected), because the scores are reliable enough to say "none of them". A bystander in frame stays "Person".
+- **Colour only:** closed set waives the *corroborating* gates — the per-part minimums and the margin, which exist to prop up a weak signal in a room that might contain bystanders — and keeps the **score floor** (`MATCH_THRESHOLD`, 0.54). It used to waive the floor too and accept the best match at *any* score, which is exactly what labelled bystanders as players: a track was observed being named at **0.0**. See [Box range](#box-range) for why the range change made that reachable rather than theoretical.
+- **With `reid`:** every threshold is kept (`accepted` is only true when nothing was rejected), because the scores are reliable enough to say "none of them". A bystander in frame stays "Person".
 
 That second guarantee used to hold only while **one** person was on screen: with two or more visible tracks, [closed-set assignment](#5-closed-set-assignment) reassigned every track from the raw rankings without consulting `accepted` or `reason` at all, so a bystander matching nobody still got a name. It now holds whatever the room contains — see that section for what the resolver may assign.
 
@@ -318,7 +313,7 @@ What it may assign is the whole question, and it is bounded by three rules — w
 
 | Rule | Why |
 | --- | --- |
-| Only candidates that clear the accept floors are considered — the threshold plus any [range penalty](#box-range-and-the-far-band) with `reid`, or 0.48 and each part ≥ 0.24 without | The resolver chooses *among* credible candidates; it does not manufacture one. A bystander whose best score is 0.07 offers nothing to assign |
+| Only candidates that clear the accept floors are considered — the threshold plus any [range penalty](#box-range) with `reid`, or 0.48 and each part ≥ 0.24 without | The resolver chooses *among* credible candidates; it does not manufacture one. A bystander whose best score is 0.07 offers nothing to assign |
 | A track whose top two candidates are inside the accept margin offers nothing | That is a tie, and which name lands on which person would be decided by the sort order. Waiting is the documented behaviour |
 | A track already holding a name offers only that name | Changing an identity is the switch hysteresis' job (4 agreeing checks). A greedy pass that reassigns on one check is how a look-alike takes a name |
 
@@ -394,10 +389,10 @@ practice: two people standing still produce no usable correlation at all.
 
 ### What it is allowed to do (`target.js`)
 
-**`?motion=on` is additive only.** It may confirm — `targetConfirmedBy()` returns `'moves'`, which
-is how the overlay shows *"Name (moves)"* — and it may do nothing else. The id `targetPlayerId()`
-returns under `?motion=on` is identical to the id it returns with motion off, for every possible
-correlation.
+**Motion is additive only, in every mode.** It may confirm — `targetConfirmedBy()` returns
+`'moves'`, which is how the overlay shows *"Name (moves)"* — and it may do nothing else. The id
+`targetPlayerId()` returns with motion on is identical to the id it returns with motion off, for
+every possible correlation.
 
 This is a deliberate reduction from the previous design, which the project's audit recorded as able
 to "veto or silently retarget a correct identification". Both are gone:
@@ -411,12 +406,25 @@ to "veto or silently retarget a correct identification". Both are gone:
   shorten the target lock or excuse a low score, because that would let an unvalidated correlation
   create a shot appearance refused.
 
-**`?motion=strict` keeps a veto, bounded to withholding**: a shot counts only when the target's own
-phone confirms them. It may refuse a target, never move one. It is kept because withholding is the
-entire content of the flag, and because it is the only way to find out in the field whether the
-signal is worth trusting — but note its cost, which `target-motion-strict.test.js` asserts: two
-people standing still is `unknown`, so in strict mode an ordinary stand-off makes everyone
-unshootable. It is an experiment, not a way to play.
+- **The veto is gone.** `?motion=strict` used to withhold a target motion had not confirmed,
+  bounded to that one safe direction, and the argument for keeping it was that withholding is the
+  entire content of the flag. The rule it broke is simpler than the argument: motion contributes
+  to the decision, it does not replace it, and withholding an identity appearance has accepted
+  *is* replacing it. It was also unplayable — correlation needs variance, so two people standing
+  still reads `unknown` (by far the most common answer), and strict made everybody in a stand-off
+  unshootable; declining one iOS sensor prompt had the same effect for a whole round.
+
+`?motion=strict` is now an **alias for `?motion=on`** rather than an error, so a typed-out URL
+degrades to the working mode instead of silently turning motion off. `REQUIRE_MOTION` is gone.
+`target-motion-strict.test.js` asserts the property that regresses if the veto comes back: for
+every correlation the real maths can produce — consistent, inconsistent, unknown, and nothing
+shared at all — the id is the id appearance gave.
+
+What motion could still usefully contribute to is **detection**: an enrolled, alive player whose
+phone reports movement with no live track named as them is evidence that a known person is in the
+room and has not been found, which is a reason to run the fast detection tier. That is not built —
+it needs the identified-id set threaded into `detectTier()` and a refractory so a pocketed phone
+cannot pin the fast tier open — and it would produce no box, reach no threshold and name nobody.
 
 ### Why there is no provider seam
 

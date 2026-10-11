@@ -17,8 +17,11 @@ Read once at startup in `frontend/public/env.js`:
 | Parameter | Effect |
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
-| `?room=<code>` | Pre-fills the room code on the join screen |
+| `?export` | Sets `SCAN_EXPORT`: each scanned player's lobby row gets an **Export** button that downloads their scan as JSON and a **✕** that deletes it for everyone, and every row gets an **Import** button that loads one back in. Off by default. See [Scanning → Exporting and importing a scan](../client/scanning.md#exporting-and-importing-a-scan). |
+| `?room=<code>` | Pre-fills the code in the **Join Room** pop-up (uppercased, letters and digits only, first 6 kept) |
 | `?reid=<0-1>` | Overrides the re-identification accept threshold for this device (`REID_THRESHOLD` in `env.js`, applied by `setReidThreshold()` in `identify.js`). Defaults to `REID_DEFAULT_THRESHOLD` (0.65). See the re-identification table below. |
+| `?motion=on` (or `strict`) | Sets `MOTION_ENABLED`: asks for motion-sensor access, shares one activity number per 100 ms with the room, and cross-checks it against each tracked person's on-screen movement. **Additive only** — it may confirm an identity (the overlay reads *"Name (moves)"*) and may never remove or redirect one, so the player it names is identical to the one named with motion off. `strict` is accepted as a synonym; its old veto is gone, because withholding a target made a stand-off unplayable (two people standing still correlate to `unknown`). |
+| no motion parameter | The default. No permission prompt, no samples, no cross-check: targeting is appearance identity plus `isStableTarget()` in `target.js`. |
 
 ## Game rules
 
@@ -31,6 +34,7 @@ Defined in `backend/models.py`.
 | `MAX_HP` | 100 | Starting HP |
 | `DAMAGE` | body 20, head 50 | Damage per hit zone |
 | `SHOT_COOLDOWN_MS` | 350 | Server-side minimum time between shots |
+| `SHOT_COOLDOWN_SLACK_MS` | 60 | How much early a shot may arrive and still pass the cooldown (network jitter) |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round |
 
 The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `frontend/public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `frontend/public/screens/lobby.js`). Keep them equal to the server values.
@@ -228,29 +232,19 @@ it. The same applies to `EVIDENCE_MIN_PART` below. See [Open items](../open-item
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `MIN_MATCH_HEIGHT_RATIO` | 0.18 | Box height as a fraction of the frame, in game. **Deliberately unchanged** — the far band below relaxes it for one signal instead of moving it |
-| `MIN_BOX_WIDTH_RATIO` | 0.035 | Box width as a fraction of the frame, in game (scans use 0.025) |
+| `MIN_MATCH_HEIGHT_RATIO` | 0.065 | Box height as a fraction of the frame, in game; sets the range limit, about 20 m on a typical phone camera |
+| `MIN_BOX_WIDTH_RATIO` | 0.018 | Box width as a fraction of the frame, in game (scans use 0.025) |
 | `MIN_ASPECT` / `MAX_ASPECT` | 0.58 / 6.5 | Accepted height/width ratio in game |
 | `MIN_SCAN_ASPECT` / `MAX_SCAN_ASPECT` | 0.65 / 7.0 | Accepted height/width ratio while scanning |
 | `MIN_SCAN_HEIGHT_RATIO` | 0.18 | Box height as a fraction of the frame, while scanning |
 
-**The far re-identification band** (how far past `MIN_MATCH_HEIGHT_RATIO` signal 1 alone may still
-try — see [Box range and the far band](../client/identification.md#box-range-and-the-far-band)):
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `FAR_REID_MIN_HEIGHT_RATIO` | 0.09 | Box height floor for the band. 256 px of OSNet input ÷ 4× upscale = 64 px, ÷ 720 |
-| `FAR_REID_MIN_WIDTH_RATIO` | 0.025 | Box width floor for the band. 128 px ÷ 4× = 32 px, ÷ 1280 |
-| `FAR_REID_MAX_PENALTY` | 0.11 | Added to the re-identification threshold at the floor, i.e. 0.76 there. Scales as the squared shortfall below 0.18, so it is ~0 just inside the band |
-
-These are the only range numbers that are open to tuning. `MIN_MATCH_HEIGHT_RATIO` is not: the
-whole point of the band is that at or above 0.18 nothing changed, and that property is what makes
-it safe at the ranges that already worked (`test/range-reid-gate.test.js` asserts the match object
-is identical to a pre-band one). Both floors are
-derived from OSNet's 128 × 256 input rather than picked, so if you move them, move them by changing
-the upscale factor you are willing to accept and say so — the arithmetic is in the comment beside
-them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0
-removes the band's protection entirely and is how it would start naming bystanders.
+`MIN_MATCH_HEIGHT_RATIO` is the in-game range limit, and it is the number to move if players are
+not recognised far enough away: 0.065 is a 1.75 m person at roughly 20 m through a ~65° camera.
+It replaced a 0.18 gate plus a re-identification-only "far band" with a score penalty; the flat
+pair is simpler and reaches further, at the cost of the band's stricter bar on small boxes. That
+is why `decideRankings` now applies `MATCH_THRESHOLD` on the colour path in closed-set mode —
+without the band, a small distant box could otherwise be named at any score on a phone whose
+re-identification model failed to load.
 
 **Signature resolution:** `HUE_BINS` (12), `SAT_BINS` (4), `LUMA_BINS` (8), `SAT_DETAIL_BINS` (8), `GRID_W` (6), `GRID_H` (8), `GRID_FEATURES` (4), `EMBED_DIMS` (256), `EMBED_PRECISION` (10 000, i.e. 4 decimals). Changing any of these changes vector lengths: bump `SCAN_CACHE_VERSION` and check `GALLERY_FIELDS` limits on both servers.
 

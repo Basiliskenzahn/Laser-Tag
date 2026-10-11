@@ -12,8 +12,6 @@ Your `join` message includes `debug: true`, and the server adds a second player 
 
 So one person with one laptop can scan, launch, and play a full round: point the webcam at yourself (or a photo of yourself) and fire with **Space**. Because the clone has exactly your gallery, the person on camera is identified as the clone and hits are credited to it. See [Game rules → Debug clones](../server/game-rules.md#debug-clones).
 
-A debug session and a normal session for the same room don't resume each other: the saved `activeLobby` records whether it was a debug session.
-
 ## 2. The stats overlay
 
 A text overlay shows live numbers. A typical game-screen readout:

@@ -32,9 +32,9 @@ More about what this starts: [Docker setup](operations/docker.md).
 2. Accept the certificate warning. The server signs its own certificate, and phones only allow camera access over HTTPS.
    - **iPhone:** *Show Details* → *visit this website*.
    - **Android:** *Advanced* → *Proceed*.
-3. Enter a name and the **same room code** as everyone else, then allow camera access.
+3. Enter a name. One player taps **Create Room**; everyone else taps **Join Room** and enters the 6-character code shown in that player's lobby. Allow camera access.
 
-Tip: share a link with the room code pre-filled, e.g. `https://192.168.1.23:3443/?room=friday`.
+Tip: share a link with the room code pre-filled in the Join pop-up, e.g. `https://192.168.1.23:3443/?room=K7Q2XZ`.
 
 ## 3. Play
 

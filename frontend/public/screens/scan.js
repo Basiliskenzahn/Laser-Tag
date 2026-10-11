@@ -140,6 +140,21 @@ export function loadScanCache() {
   }
 }
 
+// Whether a gallery on its own - no cache wrapper round it - is enrollable. The import path needs
+// this: it gets a gallery out of a *file* rather than out of storage, so validScanCache's version
+// and room checks do not apply, but the per-sample bar must be identical or an import is a way in
+// for samples a scan would have rejected. `degenerateSignature` is the same check validScanCache
+// uses (scan-cache.js rule 2: an all-zero vector is a sample whose pixels were never read, and it
+// scores 0 against everybody for the rest of the round).
+function validScanGallery(gallery) {
+  return (
+    Array.isArray(gallery) &&
+    gallery.length >= SCAN_MIN_SAMPLES &&
+    gallery.length <= SCAN_TARGET_SAMPLES &&
+    gallery.every((sample) => degenerateSignature(sample) === null)
+  );
+}
+
 // Caches the scan that has just finished, if it is this phone owner's own - see scan-cache.js for
 // why a scan of anybody else is not cached at all, and why the slot is not addressed by name. The
 // id is the only thing consulted, and that is the whole fix: a name is not an identity.
@@ -162,6 +177,24 @@ function saveScanCache(targetId) {
   } catch {
     // Remembering a scan across a reload is a convenience; the live scan still works without it.
   }
+}
+
+// Called when a scan is deleted (net.js, `scanCleared`), so a phone holding that scan does not
+// send it straight back on its next join.
+//
+// No name, and no id. The cache holds exactly one entry - this phone owner's own scan in this room
+// (scan-cache.js) - so "forget the cached scan" has only one possible meaning, and nothing else
+// was ever readable to forget. Taking a *name* here, which is what the delete feature originally
+// did, would be rule 1's bug with a new caller: two players called Sam, and deleting one clears
+// the other's.
+export function forgetOwnScanCache() {
+  const key = scanCacheKey(state.room);
+  try {
+    if (key) localStorage.removeItem(key);
+  } catch {
+    // Nothing cached, or storage is unavailable: either way nothing will be resent.
+  }
+  state.savedScan = null;
 }
 
 function afterNextPaint(callback) {
@@ -771,6 +804,86 @@ function saveCurrentScan(targetId, message) {
 // Corrects the lobby status line after the fact, and only if the player is still reading it.
 function replaceLobbyMessage(message) {
   if (state.mode === 'lobby') $('lobby-status').textContent = message;
+}
+
+// ---- Exporting and importing a scan (?export) ----
+
+// Downloads a player's scan as JSON. The gallery comes from the roster, because that is what the
+// server shares and what every phone matches against.
+//
+// `scannedAt` rides along only when this phone is the one that captured the scan. The local cache
+// holds exactly one gallery - this phone owner's own (scan-cache.js) - so comparing the cached
+// gallery against the one being exported is the whole test, and no name is consulted: a name is
+// not an identity, which is rule 1.
+export function exportPlayerScan(player) {
+  const gallery = player?.gallery ?? [];
+  if (!gallery.length) return false;
+  const cache = loadScanCache();
+  const ownScan = Boolean(cache) && JSON.stringify(cache.gallery[0]?.hist) === JSON.stringify(gallery[0]?.hist);
+  const data = {
+    format: 'laser-tag-scan',
+    version: SCAN_CACHE_VERSION,
+    exportedAt: new Date().toISOString(),
+    room: state.game?.code ?? state.room,
+    player: { id: player.id, name: player.name },
+    scannedAt: ownScan ? new Date(cache.savedAt).toISOString() : null,
+    sampleCount: gallery.length,
+    gallery,
+  };
+  const safeName = (player.name || 'player').replace(/[^\w-]+/g, '_');
+  const stamp = data.exportedAt.slice(0, 19).replace(/[:T]/g, '-');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `scan-${data.room}-${safeName}-${stamp}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Some mobile browsers start the download asynchronously, so the URL has to outlive the click.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
+}
+
+// Loads a file written by exportPlayerScan and makes it `player`'s scan. The id and room in the
+// file are only a record of where it came from - ids are per session - so the scan goes to
+// whichever row the button was on. Returns the message for the lobby status line.
+//
+// An import for somebody else is **published and not cached**, and that is the important line in
+// this function. The cache is owner-only by design (scan-cache.js rule 1): there is no correct
+// slot for another player's gallery, so writing one is the name-keyed bug by a shorter route - an
+// import is the easiest possible way to end up holding a gallery you never captured and then
+// publishing it as your own appearance on the next join. Nothing is lost by not caching it: the
+// server has it from the `scan` message below and re-sends it in the roster, which is where every
+// phone reads galleries from anyway. For a self-import the ordinary save path applies, and
+// saveScanCache() checks the id itself rather than trusting this caller.
+export async function importPlayerScan(player, file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return `${file.name} is not a scan export.`;
+  }
+  if (data?.format !== 'laser-tag-scan') return `${file.name} is not a scan export.`;
+  // A signature is only comparable with one extracted by the same code - see SCAN_CACHE_VERSION.
+  if (data.version !== SCAN_CACHE_VERSION) {
+    return `That scan is from an older version of the app (v${data.version}, now v${SCAN_CACHE_VERSION}). Rescan instead.`;
+  }
+  if (!validScanGallery(data.gallery)) return `${file.name} does not contain a usable scan.`;
+
+  const gallery = data.gallery;
+  const own = player.id === localSelfId();
+  if (own) {
+    state.localGallery = gallery;
+    // Exactly what a finished rotation leaves behind, so the one writer stays the one writer.
+    state.gallery = gallery;
+  }
+  const delivery = send({ type: 'scan', targetId: player.id, gallery });
+  if (own) saveScanCache(player.id);
+  delivery.then((delivered) => {
+    if (!delivered) replaceLobbyMessage(`${player.name}'s scan could not be sent. Check the connection and try again.`);
+  });
+  const from = data.player?.name && data.player.name !== player.name ? ` (exported from ${data.player.name})` : '';
+  return `Imported ${gallery.length}-angle scan for ${player.name}${from}.`;
 }
 
 // Scan screen: just highlight whoever would be captured if "Capture" were tapped now.

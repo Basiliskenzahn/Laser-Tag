@@ -16,7 +16,7 @@
 // WHAT IS STILL NOT KNOWN: see the header of motion/matching.js. The correlation this file feeds
 // has never been run against a real accelerometer.
 
-import { MOTION_ENABLED, REQUIRE_MOTION } from '../env.js';
+import { MOTION_ENABLED } from '../env.js';
 import { motionCheck, visualActivity } from './matching.js';
 import { MotionSensor } from './sensor.js';
 import { gamePlayer, localSelfId } from '../roster.js';
@@ -182,5 +182,5 @@ export function motionDebugLine(now, liveTracks = []) {
       return corr ? `#${track.id} [${corr}]` : '';
     })
     .filter(Boolean);
-  return `motion ${status}${REQUIRE_MOTION ? ' strict' : ''} · from ${players.join(',') || 'nobody'}${tracks.length ? `\nMotion ${tracks.join(' | ')}` : ''}`;
+  return `motion ${status} · from ${players.join(',') || 'nobody'}${tracks.length ? `\nMotion ${tracks.join(' | ')}` : ''}`;
 }
