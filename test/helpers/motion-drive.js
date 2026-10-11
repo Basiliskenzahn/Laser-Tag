@@ -45,7 +45,11 @@ export function makeDriver({ targetPlayerId, targetConfirmedBy, motionConfirmati
   //
   // `from` is who the shared activity belongs to - pass somebody other than the track's player to
   // check that a matching phone cannot capture a shot aimed at a different one.
-  return function drive({ personMoving, phoneMoving, track = namedTrack(), beforeStep = null, from = OPPONENT }) {
+  // `callsPerStep` mirrors how often the real frame loop asks. One detection is followed by
+  // several frames, and each frame asks targetPlayerId() more than once per track (the hit test
+  // and the overlay), so in the app this is well above 1 - which is exactly why noteTrackBox()
+  // records at most one box per detection rather than one per call.
+  return function drive({ personMoving, phoneMoving, track = namedTrack(), beforeStep = null, from = OPPONENT, callsPerStep = 1 }) {
     const realNow = Date.now;
     let clock = 1_700_000_000_000;
     Date.now = () => clock;
@@ -59,9 +63,14 @@ export function makeDriver({ targetPlayerId, targetConfirmedBy, motionConfirmati
         // The camera: 0.6 box heights per second while the person on screen moves.
         if (personMoving(step)) track.box = { ...track.box, x: track.box.x + 0.6 * BOX_H * (STEP_MS / 1000) };
         track.lastSeen = perfNow; // only a changed lastSeen records a box - one per detection
-        id = targetPlayerId(track, perfNow);
-        clock += STEP_MS;
-        perfNow += STEP_MS;
+        // The step's 100 ms is divided between the calls, so adding calls adds frames rather than
+        // time: every scenario covers the same simulated duration whatever callsPerStep is.
+        const perCall = STEP_MS / callsPerStep;
+        for (let call = 0; call < callsPerStep; call++) {
+          id = targetPlayerId(track, perfNow);
+          clock += perCall;
+          perfNow += perCall;
+        }
       }
       // `probe` is what the correlation actually measured, so an assertion that motion changed
       // nothing can also show that motion had a real opinion to change it with.

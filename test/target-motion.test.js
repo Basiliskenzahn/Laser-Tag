@@ -66,6 +66,24 @@ test('two people standing still is "unknown", and unknown changes nothing either
   assert.equal(probe.status, 'unknown');
 });
 
+test('the frame loop asking many times per detection does not change the answer', () => {
+  // noteTrackBox() records at most one box per detection, keyed on track.lastSeen. It has to:
+  // targetPlayerId() is called by the hit test and by the overlay, for every live track, every
+  // animation frame - far more often than the detector runs. Recording per call instead would
+  // fill the history with the same box at frame cadence, inserting runs of zero movement between
+  // the real detections and shortening the 12 s of history to a couple of seconds of frames.
+  //
+  // Asserted by driving the same scenario at 1 and at 8 calls per detection over the same
+  // simulated time. (Observed: deleting the dedup survived while the driver asked exactly once.)
+  const once = drive({ personMoving: alternating, phoneMoving: alternating, callsPerStep: 1 });
+  const often = drive({ personMoving: alternating, phoneMoving: alternating, callsPerStep: 8 });
+
+  assert.equal(once.probe.status, 'consistent', 'precondition: one call per detection confirms');
+  assert.equal(often.id, OPPONENT);
+  assert.equal(often.probe.status, 'consistent', 'and eight calls per detection still confirms');
+  assert.equal(often.confirmedBy, 'moves');
+});
+
 test('motion cannot name a player appearance did not name', () => {
   // The old fusion had a "classifier names nobody, exactly one phone matches -> that player" rule,
   // so a shot could land on an identity that came from accelerometer correlation alone. Nothing in

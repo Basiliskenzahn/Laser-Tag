@@ -98,10 +98,26 @@ test('tolerates the phones\' clocks being a few hundred ms apart', () => {
   assert.ok(Math.abs(c.lagMs - 300) <= 100, `lag ${c.lagMs}`); // the correlation peak is broad
 });
 
-test('no decision when nobody moves', () => {
+test('no decision when nobody moves, and the reason says which side was still', () => {
+  // Each side needs its own case, and the reason has to be asserted, or this test cannot tell the
+  // two spread guards apart: with only the both-still case and only `status` checked, deleting
+  // either minVisualSpread or minRemoteSpread still produces 'unknown' via the other one, so
+  // neither threshold is actually held in place. (Observed: zeroing minVisualSpread survived.)
   const still = () => false;
-  const c = motionCheck({ visual: visualActivity(cameraBoxes(still, SECONDS)), remote: phoneActivity(still, SECONDS), now });
-  assert.equal(c.status, 'unknown');
+  const moving = schedule(SECONDS, 11);
+
+  const neither = motionCheck({ visual: visualActivity(cameraBoxes(still, SECONDS)), remote: phoneActivity(still, SECONDS), now });
+  assert.equal(neither.status, 'unknown');
+
+  // The person stands there while their phone is being waved: only minVisualSpread can answer.
+  const personStill = motionCheck({ visual: visualActivity(cameraBoxes(still, SECONDS)), remote: phoneActivity(moving, SECONDS), now });
+  assert.equal(personStill.status, 'unknown');
+  assert.equal(personStill.reason, 'person not moving');
+
+  // ...and the other way round: the person walks about but the phone is lying on a table.
+  const phoneStill = motionCheck({ visual: visualActivity(cameraBoxes(moving, SECONDS)), remote: phoneActivity(still, SECONDS), now });
+  assert.equal(phoneStill.status, 'unknown');
+  assert.equal(phoneStill.reason, 'phone not moving');
 });
 
 test('moments when the shooter pans the camera are ignored', () => {

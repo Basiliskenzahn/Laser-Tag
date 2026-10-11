@@ -53,7 +53,11 @@ const DEFAULTS = {
 
 // Values of a time series ({ t, v } sorted by t) on the 10 Hz grid ending at `end`, by linear
 // interpolation; null where there's no data within `gapMs`.
-export function resample(series = [], end, windowMs, gapMs = 350) {
+//
+// Deliberately does NOT default `series`. motionCheck() is the entry point and defaults every
+// series there; a default here as well would mean neither guard was observable - removing either
+// one changes no behaviour, so no test can hold either one in place.
+export function resample(series, end, windowMs, gapMs = 350) {
   const n = Math.round(windowMs / SAMPLE_MS);
   const out = new Array(n).fill(null);
   let j = 0;

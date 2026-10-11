@@ -171,14 +171,23 @@ test('starting twice does not take two sensors', async () => {
   motion.stopMotion();
 });
 
-test('stopping twice, or stopping a sensor that never started, is harmless', () => {
+test('a sensor can be started and stopped any number of times without stacking listeners', () => {
+  // Both halves are asserted on the class directly, because startMotion() never calls either one
+  // twice on the same instance - it builds a fresh sensor every time and guards with its own
+  // `sensor || permissionPending` check. So the module-level test above cannot reach these, and
+  // without this one `start()`'s guard was unasserted. (Observed: deleting it survived.)
   const sensor = new MotionSensor();
   sensor.stop(); // never started
-  sensor.start();
-  assert.equal(devicemotionListeners(), 1);
-  sensor.stop();
-  sensor.stop();
   assert.equal(devicemotionListeners(), 0);
+
+  sensor.start();
+  sensor.start();
+  assert.equal(devicemotionListeners(), 1, 'a second start must not attach a second listener');
+
+  sensor.stop();
+  sensor.stop();
+  assert.equal(devicemotionListeners(), 0, 'and one stop is enough to detach it');
+
   motion.stopMotion();
   motion.stopMotion();
 });
@@ -237,5 +246,46 @@ test('a message that is not motion is ignored rather than breaking the handler',
   // anything else - including a shape with no `from` at all.
   for (const msg of [undefined, null, {}, { type: 'whatever' }, { type: 'motion' }]) {
     assert.doesNotThrow(() => motion.onMotionMessage(msg), JSON.stringify(msg));
+    // ...and the debug line has to survive whatever that left behind, which is where the real
+    // failure was: a `motion` message with no `from` was filed under the key `undefined`, and
+    // onMotionMessage itself returned perfectly happily. The crash came later, rendering that
+    // key as a player name. Asserting only doesNotThrow on the call above tested nothing.
+    // (Observed: deleting the sender guard survived until this line was added.)
+    assert.doesNotThrow(() => motion.motionDebugLine(0, []), `debug line after ${JSON.stringify(msg)}`);
+  }
+  assert.match(motion.motionDebugLine(0, []), /from nobody/, 'and none of them counts as a sharer');
+});
+
+test('the panning threshold is what decides the ego flag, at the value the sensor actually uses', () => {
+  // PANNING_DEG_PER_S masks bins where this phone was turning too fast for image motion to mean
+  // anything. Nothing used to exercise it: the pan test in motion.test.js builds the ego series by
+  // hand, so the constant itself was unasserted - which is how the docs came to say 10 while the
+  // code said 25 without anything noticing.
+  //
+  // The threshold is NOT read from the module here. A test that imported it would pass at any
+  // value, including the 10 the docs claimed, which is the whole failure being guarded against.
+  const realNow = Date.now;
+  let clock = 2_000_000;
+  Date.now = () => clock;
+  try {
+    const flagFor = (turning) => {
+      const sensor = new MotionSensor();
+      sensor.start();
+      const fire = () => (dom.windowListeners.get('devicemotion') ?? []).at(-1)({
+        acceleration: { x: 1, y: 0, z: 0 },
+        rotationRate: { alpha: turning, beta: 0, gamma: 0 },
+      });
+      fire();
+      clock += 150; // crosses the bin boundary, closing the bin above
+      fire();
+      sensor.stop();
+      return sensor.ego.at(-1).v;
+    };
+
+    assert.equal(flagFor(5), 0, 'a steady hand is not panning');
+    assert.equal(flagFor(20), 0, 'nor are the small corrections of aiming - this is why 10 was wrong');
+    assert.equal(flagFor(40), 1, 'swinging the camera to follow somebody is');
+  } finally {
+    Date.now = realNow;
   }
 });
