@@ -191,6 +191,30 @@ function coveredBy(inner, outer) {
   return inter / Math.max(1, inner.w * inner.h);
 }
 
+// How much the two have to share before the box is said to account for the region.
+const REGION_COVER_SHARE = 0.5;
+
+// Does any of `boxes` account for `region`? Used by frame-motion.js to tell movement we have
+// already found from movement we have not. Same coordinates for both, and `boxes` is normally
+// short (maxResults is 8), so this is a handful of rectangle intersections.
+//
+// Measured **against the smaller of the two**, which is the whole subtlety here and was a bug the
+// obvious version had. `coveredBy(region, box)` alone asks what share of the region the box
+// covers, and a box smaller than the region can never answer more than its own area - so a box
+// smaller than a movement cell could never account for anything, at any overlap. That is exactly
+// backwards for the case this module exists for: a person 8% of the frame's height has a box
+// about 1.3% of the frame wide, while a cell is 8.3% of it, so a *detected* distant person's own
+// movement read as movement nobody had found, and spent the hint's refractory on somebody already
+// in hand. Taking the better of the two directions asks the question that is actually meant -
+// "do these two substantially coincide" - and is right at both ends: a big box covering half a
+// cell accounts for it, and a small box sitting inside a cell accounts for it too.
+export function regionCovered(region, boxes, minShare = REGION_COVER_SHARE) {
+  for (const box of boxes) {
+    if (Math.max(coveredBy(region, box), coveredBy(box, region)) >= minShare) return true;
+  }
+  return false;
+}
+
 function centerDistanceRatio(a, b) {
   const ax = a.x + a.w / 2;
   const ay = a.y + a.h / 2;

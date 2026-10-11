@@ -9,6 +9,7 @@
 
 import { DEBUG, canvas, ctx, video, $ } from '../env.js';
 import { bodyBox, contains, detectTrackedPeople, detectTrackedPeopleFast, headBox } from '../detector.js';
+import { frameMotionHint, frameMotionWorthSampling, sampleFrameMotion } from '../frame-motion.js';
 import { RECHECK_MS, getReidThreshold } from '../identify.js';
 import { isAlivePlayer, isDeadPlayer, localSelfId, matchingRoster, rosterCandidateCount } from '../roster.js';
 import { startupTimingLine } from '../startup.js';
@@ -137,6 +138,14 @@ function refreshScanPreview() {
 //                velocity (missedFrames > 0). We saw that person a moment ago, so this is a real
 //                missed detection, not an absence - and it is the one the player notices, because
 //                the box drifts off someone standing right in front of them.
+//   'motion'     something in the frame moved where neither a box nor a live track accounts for
+//                it (frame-motion.js). This is the one state here that is a *guess* rather than
+//                something the app knows - but it is the only state that speaks for a person the
+//                object detector never found at all, which the other two cannot: both of them
+//                need a track to already exist. EfficientDet-Lite0's 320x320 tensor loses a
+//                person long before the camera stops seeing them move, so this is where the
+//                extra range comes from. It is bounded in frame-motion.js rather than here, by a
+//                refractory on the hint, so a moving curtain cannot hold the fast tier open.
 //   'acquiring'  a live track with no identity yet. Already the state the old two-tier split was
 //                built around.
 //
@@ -155,6 +164,11 @@ export function detectTier(now = performance.now()) {
     if ((track.missedFrames ?? 0) > 0) return 'lost'; // strongest signal, so it wins outright
     if (!track.playerId) acquiring = true;
   }
+  // Movement outranks 'acquiring' because the two want different work. An acquiring track has
+  // already been found - more detection will not name it any sooner, since naming is throttled by
+  // RECHECK_MS and by re-identification, not by the detection rate. Unaccounted-for movement is
+  // somebody not found yet, and detection is exactly what finds them.
+  if (frameMotionHint(now)) return 'motion';
   return acquiring ? 'acquiring' : null;
 }
 
@@ -167,13 +181,20 @@ function gameDetectInterval(now, tier = detectTier(now)) {
 // cap above - so the cycle *after* a pose cycle is stretched. That is the price of relaxing it, and
 // it is bounded: at the search interval roughly one cycle in four runs pose, and one stretched
 // interval in four at the measured 23 + pose costs under a tenth of the detection rate. Worth it
-// only while there is actually someone to find, which is why 'lost' is the only tier that relaxes
-// it - 'acquiring' gets the fast object-detection tier and nothing more, because a track that
-// exists does not need a second way to be found.
+// only while there is actually someone to find, which is why 'acquiring' does not relax it - it
+// gets the fast object-detection tier and nothing more, because a track that exists does not need
+// a second way to be found.
+//
+// 'lost' and 'motion' both do relax it, and for the same reason: each is a person the object
+// detector is not finding, and the pose landmarker is the one thing in the app that finds a person
+// the object detector missed ("a pose nowhere near any surviving object box", detector.js). Buying
+// a pose pass is most of the point of the movement hint, which is why the hint is held open
+// (frame-motion.js HINT_HOLD_MS) for longer than this interval.
 function shouldUsePoseFallback(now, tier) {
   if (!state.poseDetector) return false;
   if (rosterCandidateCount() < 2) return false;
-  const interval = tier === 'lost' ? GAME_POSE_SEARCH_INTERVAL_MS : GAME_POSE_DETECT_INTERVAL_MS;
+  const searching = tier === 'lost' || tier === 'motion';
+  const interval = searching ? GAME_POSE_SEARCH_INTERVAL_MS : GAME_POSE_DETECT_INTERVAL_MS;
   return now - state.lastGamePoseDetectAt >= interval;
 }
 
@@ -185,10 +206,36 @@ function detectGameplayPeople(source, timestamp, tier) {
   return detectTrackedPeopleFast(state.detector, source, timestamp);
 }
 
+// The movement look, once per detection cycle at most and inside the cycle's own timing.
+//
+// Two things about where this sits are deliberate. It runs on `source`, the same picture the
+// object detector is about to be handed, so what moved is measured on what was looked at; and it
+// is compared against the *previous* cycle's boxes and tracks, which is the most recent account of
+// who has already been found - there is no answer for this cycle yet, and waiting for one would
+// mean a second readback.
+//
+// It is also inside the t0..inferenceMs window on purpose. inferenceMs feeds the duty cap, so if
+// the readback turns out to cost real time on some phone, that phone lengthens its own detection
+// interval instead of quietly spending the FIRE button's share of the thread. The alternative -
+// timing it separately so it looks free - would hide exactly the cost worth knowing about.
+//
+// `tier === 'lost'` skips it outright. That is the busiest state the loop has, and it is already
+// running the fast cadence with pose relaxed, so there is no escalation left for movement to ask
+// for and nothing a hint could change. Zero added cost in the state where the thread is most
+// contended is the whole adaptivity claim here.
+function sampleMotionHint(source, t0, scaleX, scaleY, tier) {
+  if (tier === 'lost' || !frameMotionWorthSampling(t0)) return;
+  // Into `source`'s coordinates, which is what frame-motion.js compares its cells against.
+  const toSource = (boxes) => scaleBoxes(boxes, 1 / scaleX, 1 / scaleY);
+  const live = state.tracks.filter((track) => isLiveTrack(track, t0)).map((track) => liveBox(track, t0));
+  sampleFrameMotion(source, t0, { boxes: toSource(state.boxes), trackBoxes: toSource(live) });
+}
+
 function refreshGameDetection(tier = detectTier()) {
   if (state.mode !== 'game' || video.readyState < 2) return false;
   const t0 = performance.now();
   const { source, scaleX, scaleY } = gameplayInferenceSource();
+  sampleMotionHint(source, t0, scaleX, scaleY, tier);
   state.boxes = scaleBoxes(detectGameplayPeople(source, t0, tier), scaleX, scaleY);
   state.tracks = state.tracker.update(state.boxes, video, matchingRoster(), localSelfId(), t0, {
     includeRejected: DEBUG,
