@@ -225,6 +225,12 @@ function grab(source) {
 
   let data;
   try {
+    // Cleared first so that a source with nothing to give leaves transparent black rather than
+    // the last frame it did give. Without this, a camera that stops delivering frames - or a
+    // backing store iOS discarded - reads back as *the previous frame again*, which differences
+    // to zero and looks like a still room rather than like no information. 9216 pixels, and it
+    // buys the alpha check below its meaning.
+    context.clearRect(0, 0, w, h);
     context.drawImage(source, 0, 0, w, h);
     data = context.getImageData(0, 0, w, h).data;
   } catch (err) {
