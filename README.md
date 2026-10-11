@@ -4,7 +4,7 @@ Port 8080 (HTTP) will be exposed through the reverse proxy and is after deployme
 
 # Laser Tag
 
-Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at your opponent, hit **FIRE**, and the phone works out whether the crosshair was on them - including *who* it was, from a pre-match scan, an on-device appearance/re-identification model, and a phone-motion cross-check.
+Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at your opponent, tap the screen to fire, and the phone works out whether the crosshair was on them - including *who* it was, from a pre-match scan, an on-device appearance/re-identification model, and a phone-motion cross-check.
 
 Built during a 42-hour hackathon.
 

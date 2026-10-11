@@ -14,7 +14,7 @@ A guide for players. For setup, see [Getting started](getting-started.md).
 
 Enter a name (up to 20 characters). Then either tap **Create Room**, which makes a new room with a random 6-character code, or tap **Join Room** and type or paste the code someone else shared (letters and digits; case doesn't matter). Allow camera access. The first load takes a few seconds while the phone downloads the recognition models.
 
-An iPhone will also ask for **Motion & Orientation access**. Allowing it is worth it: your phone then shares how much it's being moved, which helps the other phones confirm that the person they're aiming at really is you. Declining only makes recognition fall back to appearance alone — everything still works.
+If the game was opened with `?motion=on` or `?motion=strict`, an iPhone will also ask for **Motion & Orientation access**. Allowing it is worth it: your phone then shares how much it's being moved, which helps the other phones confirm that the person they're aiming at really is you. Declining only makes recognition fall back to appearance alone — everything still works.
 
 - A room holds **2 to 8 players**.
 - You can't join a room while a round is running. You'll see *"Lobby is already running."* Wait for the round to finish and try again.
@@ -67,7 +67,8 @@ Your phone also remembers your own scan for that room and name. If you leave and
 The round starts after a 3-second countdown with beeps and a **GO!**.
 
 - The **crosshair** is the centre of the screen. It lights up when it's on a player you can hit.
-- Tap anywhere on the screen to fire (or press **Space** on a laptop). You can fire roughly three times a second.
+- Tap anywhere on the screen to fire (or press **Space** on a laptop). You can fire roughly three times a second; a small bar under the crosshair drains while you're reloading.
+- **Leave** in the corner asks before it lets you go. Leaving mid-round counts as being knocked out: you stay on the scoreboard as down until the round ends.
 - Each person the camera sees gets an outline:
 
 | Outline | Meaning |
@@ -91,7 +92,7 @@ Everyone starts with **100 HP**. At 0 HP you're down for the rest of the round. 
 
 ### Feedback
 
-- **You hit someone:** a short "ping" (a double ping for a headshot), and a popup like `−20` or `HEADSHOT −50`.
+- **You hit someone:** a short "ping" (a double ping for a headshot), a popup like `−20` or `HEADSHOT −50`, and their health bar appears over their head for a moment.
 - **You got hit:** a buzz sound, a red flash, and a vibration on Android. iPhones don't support vibration in the browser.
 - **Round over for you:** the moment you're knocked out (or win), the screen flashes and dims over the camera, then shows your placing — gold **#1**, silver **#2**, bronze **#3** — and your stats line by line, with a jingle. **Rematch** starts the next round once everyone's round has ended; **Done** takes you back to the lobby.
 

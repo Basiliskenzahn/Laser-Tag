@@ -49,6 +49,10 @@ Adds a player with full HP, 0 wins and the given gallery (possibly empty). Fails
 
 Stores a player's scan. Fails during a round, for an unknown player, or for an empty gallery. Also copies the gallery between a player and their [debug clone](#debug-clones).
 
+### `clearGallery(id)`
+
+Deletes a player's scan (and their debug clone's), so they count as unscanned again and block `start()` until rescanned. Fails during a round or for an unknown player. It's kept apart from `setGallery` so an empty scan is still refused rather than treated as a delete.
+
 ### `start()`
 
 Any player can start. Fails if a round is already running, there are fewer than 2 players, or anyone (other than debug clones) has no scan. The error names up to three unscanned players: *"Scan everyone before launch: Alice, Bob +2"*. On success it resets everyone to full HP, clears the winner and everyone's [round stats](#round-stats), and begins the countdown.

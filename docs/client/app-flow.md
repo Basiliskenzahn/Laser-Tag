@@ -4,7 +4,7 @@
 
 | Module | Used for |
 | --- | --- |
-| `env.js` | URL-parameter flags (`DEBUG`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
+| `env.js` | URL-parameter flags (`DEBUG`, `SCAN_EXPORT`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
 | `state.js` | The one shared `state` object and the `localStorage` helpers |
 | `roster.js` | Read-only lookups over the server's roster/game snapshot |
 | `camera.js` | Starting the camera and the on-device models, once |
@@ -55,14 +55,15 @@ stateDiagram-v2
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error.
 - On success: switches to the lobby, requests a screen wake lock, starts the render loop and opens the connection.
 - **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So `prepareCameraAndDetector()` now fires one throwaway inference per freshly loaded model (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, on the lobby, which is the one screen with nothing else to do. A warm-up that fails is only logged — the models still work cold, which is where this started.
-- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on the first **FIRE** press, which also covers an automatic rejoin where there was no join tap.
+- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on every tap on the game screen, which also covers an automatic rejoin where there was no join tap.
 
 ### Lobby (`#lobby-screen`)
 
 - Rendered by `renderLobby()` from the latest `state` and `roster` messages.
 - One row per player with a **Scan/Rescan** button. Debug clones have no button and show *"Mirrors <name>'s scan"*.
+- With `?export`, every row also gets **Import**, and a scanned row gets **Export** and a **✕** that deletes the scan for everyone after a confirm prompt. See [Scanning → Exporting and importing a scan](scanning.md#exporting-and-importing-a-scan).
 - **Launch** (`launchGame`) first checks locally that everyone is scanned, then starts a local countdown of `GAME_LAUNCH_COUNTDOWN_MS` (3 s, mirroring the server's `COUNTDOWN_MS`), switches to the game screen, and sends `{type: 'start'}`. The local countdown is only a prediction so the first second isn't dead time: every `state` message with status `countdown` resets it to the server's own `startsInMs`. If the server rejects the start, the client returns to the lobby with the error.
-- **Leave** (`leaveLobby`) tells the server immediately (`sendBeacon` to `/api/disconnect`), stops the camera and clears the saved lobby.
+- **Leave** (`leaveLobby`) tells the server immediately (`sendBeacon` to `/api/disconnect?…&forfeit=1`), stops the camera and clears the saved lobby. Leaving is always deliberate, so mid-round the server counts it as a [forfeit](../server/game-rules.md#forfeitid).
 
 ### Scan (`#scan-screen`)
 
@@ -75,6 +76,8 @@ A **✕** button in the corner calls `cancelScan()`, which just sets `state.auto
 - `enterGame()` shows the camera, opens the SSE stream for the room and renders the HUD.
 - Every frame, `loop()` runs detection when due, then `drawGame()` draws each live track with its hitboxes and label (see [Feedback](feedback.md#track-outlines)).
 - A tap anywhere but a button (pointer down) or **Space** calls `fire()`. See [Shooting](#shooting).
+- The **Leave** button in the corner opens a confirm pop-up (`#leave-dialog`): **Leave** calls the same `leaveLobby()` as the lobby, so mid-round it's a forfeit; **Stay**, Esc or a tap outside the box cancels. Taps and **Space** don't fire while it's open.
+- A **Start game** button (**Play again** after a round) shows in the banner while the room is `waiting` or `over`, and sends `{type: 'start'}` directly.
 - **No zooming on fast taps.** Every element has `touch-action: manipulation`, since iOS ignores the viewport's `user-scalable=no`. On top of that the game and scan screens cancel `touchend` everywhere except their buttons and the leave dialog, because rapid firing can still trigger a double-tap zoom on some iPhones. Firing uses `pointerdown`, so the click the cancelled touch would have made isn't needed.
 - As soon as the round is over for this phone — a `state` message shows it knocked out, or says `over` — it switches to [Results](#results-results), after a 400 ms pause so the shot that ended the round (hitmarker, damage number, red flash) plays out first.
 
@@ -108,7 +111,7 @@ When enabled, motion itself runs on its own timers rather than in the loop: this
 `fire()`:
 
 1. Returns early unless the round is `playing`, the local player is alive, and 350 ms have passed since the last shot.
-2. Plays the shot sound and button animation.
+2. Plays the shot sound, the crosshair recoil and the [cooldown bar](feedback.md#other-feedback).
 3. If the last detection is older than 90 ms, runs a fresh one (including the pose model when there are at least two candidates), so the shot uses an up-to-date frame.
 4. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
 5. POSTs `/api/hit` with the target and zone if a targetable player is under the crosshair, or with no target if not. The miss still goes to the server so it can count your shots fired and accuracy.
@@ -152,3 +155,7 @@ The scan cache is versioned (`SCAN_CACHE_VERSION`, currently **11** — version 
 ## Wake lock
 
 `keepScreenOn()` requests a screen wake lock when entering the lobby, scan or game, and again whenever the page becomes visible. If the browser doesn't support it, the game carries on.
+
+## Coming back from the background
+
+Hiding the browser pauses the `<video>`, and phones often end the camera track outright (iOS sometimes leaves it `live` but never sends another frame). So whenever the page becomes visible again, or is restored from the back/forward cache (`pageshow` with `persisted`), `resumeCamera()` in `camera.js` plays the video again and waits up to 1.2 s (`RESUME_FRAME_TIMEOUT_MS`) for a new frame. If none arrives, it stops the old stream and asks for a fresh one. It does nothing when there's no stream, i.e. the camera was never started or the player left the lobby.

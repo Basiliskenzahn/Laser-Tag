@@ -7,7 +7,7 @@ nothing in CI runs either of them (see [Deployment](../operations/deployment.md)
 | Suite | Docker | Local | Tests |
 | --- | --- | --- | --- |
 | JS | `docker compose run --rm tests` | `npm test` | 19 |
-| Python | `docker compose run --rm backend-tests` | `python -m unittest discover -s backend -p "test_*.py" -v` | 40 |
+| Python | `docker compose run --rm backend-tests` | `python -m unittest discover -s backend -p "test_*.py" -v` | 45 |
 
 Both Docker services use the `test` profile, so `docker compose up` doesn't start them. Docker is
 the default: it needs nothing installed locally and pins the same Node and Python versions the
@@ -54,7 +54,7 @@ python -m unittest discover -s backend -p "test_*.py" -v
 
 The `pip install` step is not optional: `test_protocol.py` imports `aiohttp.test_utils`, so
 without it that whole module fails to import (`ModuleNotFoundError: No module named 'aiohttp'`)
-and the run reports one error instead of its 16 tests. Also avoid Python 3.14 for now: the pinned
+and the run reports one error instead of its 17 tests. Also avoid Python 3.14 for now: the pinned
 `aiohttp==3.10.11` predates it and has no prebuilt wheel, so `pip` tries to compile it from source.
 The Docker service uses `python:3.12-slim`, the same image as `backend/Dockerfile`.
 
@@ -72,20 +72,23 @@ like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ### `backend/test_models.py`: game rules
 
-Unit tests for the `Room` class, 20 cases: starting needs 2 players and full scans, room capacity,
-no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
+Unit tests for the `Room` class, 24 cases: starting needs 2 players and full scans, room capacity,
+no joins mid-round, no shots during countdown, damage and cooldown (and its slack for network
+jitter), no self-targeting, an
 unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
 it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round,
 forfeiting (a knockout that stays on the scoreboard, can decide the round, and is a plain leave
 outside a live round), misses counting as shots, the per-round stats (kills, damage actually
 dealt, shots, hits, headshots, time alive) and their reset on the next start, that
-`roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
-directions.
+`roster()` carries galleries while `snapshot()` doesn't, debug-clone gallery mirroring in both
+directions, and deleting a scan (it unscans the player and their clone, is refused mid-round and
+for unknown players, and an empty scan still doesn't count as one).
 
 ### `backend/test_protocol.py`: HTTP/SSE protocol
 
 Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
-phones), 16 cases: joining and starting, launching only once everyone is scanned, resuming with a
+phones), 17 cases: joining and starting, launching only once everyone is scanned, a deleted scan
+reaching every phone and unscanning the player, resuming with a
 remembered player id, immediate removal on disconnect, a mid-round forfeit counting as a death that
 can't be resumed, debug clones (mirroring scans both ways,
 being targetable instead of the owner, self-hits on the real player rejected with `400`), a full

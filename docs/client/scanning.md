@@ -187,7 +187,7 @@ Note that the required-field check does *not* include `reid`. A cache saved on a
 
 ## Exporting and importing a scan
 
-With `?export` in the URL (`SCAN_EXPORT` in `env.js`), every scanned player's lobby row has an **Export** button. Without it the button is not shown. `exportPlayerScan()` downloads `scan-<room>-<name>-<timestamp>.json` with `format: 'laser-tag-scan'`, `version` (the cache version), `room`, `player` (`id`, `name`), `sampleCount` and `gallery`.
+With `?export` in the URL (`SCAN_EXPORT` in `env.js`), every scanned player's lobby row has an **Export** button, and the **✕** described in [Who scans whom](#who-scans-whom). Without the flag neither is shown. `exportPlayerScan()` downloads `scan-<room>-<name>-<timestamp>.json` with `format: 'laser-tag-scan'`, `version` (the cache version), `room`, `player` (`id`, `name`), `sampleCount` and `gallery`.
 
 The gallery always comes from the roster, the copy the server shares and every phone matches against. `thumbs`, `scannedAt` and `frames` exist only in the scanning phone's local cache. The export includes them only when that cache holds the same scan (its first sample's `hist` matches the roster's). Otherwise they are `[]`, `null` and `null`.
 

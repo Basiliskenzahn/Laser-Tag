@@ -13,7 +13,7 @@ Nothing lands on `dev` from here until the whole set passes both test suites tog
 
 ```bash
 docker compose run --rm tests                         # 19 JS tests
-docker compose run --rm backend-tests                 # 36 backend tests
+docker compose run --rm backend-tests                 # 45 backend tests
 ```
 
 Or locally (needs `pip install -r backend/requirements.txt` first, on Python 3.12/3.13; see

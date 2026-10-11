@@ -56,7 +56,7 @@ sequenceDiagram
   participant O as Other phones
 
   Note over S: Every 120–180 ms: detect people,<br/>update tracks, identify them
-  S->>S: FIRE: refresh detection if stale,<br/>hit-test the crosshair
+  S->>S: Tap to fire: refresh detection if stale,<br/>hit-test the crosshair
   S->>B: POST /api/hit {room, shooterId, targetId, zone}
   B->>B: Room.shoot(): checks, cooldown, damage, stats
   B-->>S: hitConfirmed (via its poll)
