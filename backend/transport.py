@@ -57,7 +57,6 @@ MAX_QUEUED_MOTION = 64
 #: mailbox is evicted instead - see :meth:`Poller._shed`.
 MAX_QUEUED_MESSAGES = 512
 
-#: Most events one SSE spectator feed will hold before the oldest are dropped.
 
 #: room code -> Room
 rooms = {}
