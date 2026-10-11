@@ -37,15 +37,16 @@ On its own it serves no client. To play against it locally, put something in fro
 
 | Part | Module | What it is |
 | --- | --- | --- |
-| Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
-| Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `SWEEP_INTERVAL_S`, `MAX_QUEUED_MESSAGES`, `MAX_BODY_BYTES` (1 MB), `GALLERY_FIELDS` |
-| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, last shot time, gallery revision |
+| Constants | `models.py` | `MIN_PLAYERS`, `MAX_PLAYERS`, `MAX_HP`, `DAMAGE`, `SHOT_COOLDOWN_MS`, `SHOT_COOLDOWN_SLACK_MS`, `COUNTDOWN_MS`, `CLONE_SUFFIX` |
+| Constants | `transport.py`/`sanitize.py` | `POLL_WAIT_MS`, `POLL_EXPIRY_MS`, `SWEEP_INTERVAL_S`, `MAX_QUEUED_MOTION`, `MAX_QUEUED_MESSAGES`, `MAX_BODY_BYTES` (1 MB), `GALLERY_FIELDS`, `MAX_GALLERY_SAMPLES`, `MAX_MOTION_SAMPLES`, `MAX_MOTION_ACTIVITY` |
+| `Player` (dataclass) | `models.py` | id, name, gallery, hp, wins, alive, forfeited, last shot time, gallery revision, round stats, time of going out |
+| `RoundStats` (dataclass) | `models.py` | One player's kills, damage, shots, hits and headshots this round |
 | `Room` | `models.py` | The game rules: originally a line-by-line port of the now-archived `deprecated/server/game.js`. See [Game rules](game-rules.md). |
 | `Poller` (dataclass) | `transport.py` | One polling session: its token, a capped message queue, last-seen time, a future per parked poll, an eviction reason, and its `Session` |
 | Global dicts | `transport.py` | `rooms` (code → Room), `connections` (player id → Session), `pollers` (token → Poller) |
-| `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, and galleries (including the optional `reid` field) |
+| `clean_*` helpers | `sanitize.py` | Input sanitising for room codes, names, player ids, galleries (including the optional `reid` field) and motion samples |
 | `broadcast_*`, `roster_for`, `process_hit` | `transport.py` | Fan-out of `state`, `roster` and hit messages. `roster_for()` is the per-connection roster [delta](protocol.md#the-roster-delta) |
-| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `start`, and cleans up on `close()`. Shots arrive via `POST /api/hit` instead. Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
+| `Session` | `transport.py` | One connected phone: handles `join`, `scan`, `clearScan`, `motion`, `start`, and cleans up on `close()` - with `forfeit=True` for a deliberate leave. Shots arrive via `POST /api/hit` instead. Writes require `is_seated` - holding a room is not enough, the session must still *be* a player in it. |
 | `evict`, `displace`, `poller_for` | `transport.py` | Ending one conversation without touching the room: marks a mailbox, drops its queue and delivery record, and wakes its parked poll so the phone is told `410`. See [Seat handover](protocol.md#seat-handover) |
 | `api_*`, `health`, `create_app` | `app.py` | HTTP handlers and app assembly - the entrypoint |
 | `sweep_once` / `sweep_pollers` | `transport.py` | One reaping pass, and the loop that runs it every 5 s: closes sessions not seen for 30 s |
@@ -110,6 +111,11 @@ to be made injectable - and without it the suite spent about 23 of its 31 second
 a suite people skip. Anything asserting that the room *passed through* `countdown` has to ask the
 message history rather than the newest scoreboard (`saw_status()`), because 200 ms is short enough
 that the newest one is already `playing`.
+
+The same trick covers the shot cooldown: the one protocol test that posts two shots in a row
+patches `SHOT_COOLDOWN_MS` and `SHOT_COOLDOWN_SLACK_MS` to `0` rather than sleeping 290 ms through
+the real one. What the cooldown is actually worth is asserted in `test_models.py`, over the fake
+clock, where it costs nothing.
 
 Note for anyone adding a test that looks a room up in `transport.rooms`: `clean_room_code` caps a
 code at 16 characters, so the key is the *cleaned* code, not whatever the test passed as `room`.

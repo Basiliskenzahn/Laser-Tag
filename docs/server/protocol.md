@@ -1,6 +1,6 @@
 # API and protocol reference
 
-The [Python backend](python-backend.md) speaks this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` and `/events/` to it.
+The [Python backend](python-backend.md) speaks this protocol. Behind nginx, the paths are the same; nginx just forwards `/api/` to it.
 
 All bodies are JSON. Responses carry `Cache-Control: no-store`.
 
@@ -11,9 +11,8 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 | `POST` | `/api/connect` | — | `200 {"token": "<uuid>"}` |
 | `POST` | `/api/send?token=T` | One [client message](#client--server-messages) | `204` |
 | `GET` | `/api/poll?token=T` | — | `200 [ …server messages ]` |
-| `POST` | `/api/disconnect?token=T` | — | `204` |
+| `POST` | `/api/disconnect?token=T[&forfeit=1]` | — | `204` |
 | `POST` | `/api/hit` | [Hit request](#post-apihit) | `200` result, or `400`/`404` with `{ok: false, error}` |
-| `GET` | `/events/<room>` | — | `text/event-stream` |
 | `GET` | `/` | — | `laser-tag python backend` (health check) |
 
 ### Sessions and long polling
@@ -21,6 +20,8 @@ All bodies are JSON. Responses carry `Cache-Control: no-store`.
 `/api/connect` creates a session and returns its token. The token identifies one *connection*, not a player; the player id arrives later in `welcome`.
 
 `/api/poll` returns every queued message for the session as a JSON array. If nothing is queued it holds the request open until a message arrives or **20 s** pass (then returns `[]`). The 20 s stays under the 30 s upstream timeout common in reverse proxies. The client is expected to hold only one poll open per session, but two are handled: each parked poll gets its own future and all of them are woken, so neither can orphan the other.
+
+`/api/disconnect` closes the session and removes the player at once. With `forfeit=1` the player is leaving on purpose: mid-round that counts as a knockout (the player stays in `state` as down with `forfeited: true` until the round ends, which is how the rest of the room hears about it). See [`forfeit()`](game-rules.md#forfeitid).
 
 A session that hasn't polled or sent for **30 s** is closed, and its player leaves the room. The server sweeps for these every 5 s.
 
@@ -49,29 +50,19 @@ The server cannot tell a genuine reconnect from a second tab — both are "a pho
 { "room": "demo", "shooterId": "<player id>", "targetId": "<player id>", "zone": "body" }
 ```
 
-`room` is optional; without it the server finds the room containing `shooterId`. On success:
+`room` is **required**: an empty code resolves to the default room `demo`, so a hit that names none is a `404` rather than a shot into whichever room happens to be called that. Searching every room for `shooterId` instead would be an unauthenticated walk of every room's player list, which is why that fallback is gone. A shot that hit nobody is posted with `targetId` (and `zone`) `null` or left out, so the server can count it toward the shooter's [stats](game-rules.md#round-stats). On a hit:
 
 ```json
-{ "ok": true, "victimId": "…", "damage": 20, "zone": "body", "ko": false, "hp": 80, "alive": true }
+{ "ok": true, "hit": true, "victimId": "…", "damage": 20, "zone": "body", "ko": false, "hp": 80, "alive": true }
 ```
 
-On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if neither room nor shooter is found. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
+`damage` is the zone's full damage, even when the target had less HP left. On a miss, or a shot at a player who is already down: `{ "ok": true, "hit": false }`.
 
-A successful hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop), a `health` SSE event (and `death` on a knockout), and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message.
+On failure: `{ "ok": false, "error": "Cooldown" }` with status `400`, or `404` if the body names no room or no room by that code exists. Error strings are listed under [`shoot()`](game-rules.md#shootshooterid-targetid-zone).
 
-### `GET /events/<room>` (Server-Sent Events)
+A miss tells nobody. A hit sends `hitConfirmed` to the shooter and `gotHit` to the victim (both via their poll loop) and a fresh `state` to the room. This is the **only** way a hit reaches the server - there is no client → server `shoot` message.
 
-Streams room-wide events. It starts with a `: connected` comment, then:
-
-```
-event: health
-data: {"type":"health","room":"demo","shooterId":"…","targetId":"…","zone":"head","damage":50,"hp":50,"alive":true}
-
-event: death
-data: {"type":"death","room":"demo","playerId":"…","killerId":"…"}
-```
-
-`death` follows `health` when a hit knocks a player out. No authentication: anyone who knows a room code can listen.
+There is no room-wide event feed. A read-only `GET /events/<room>` SSE stream used to carry `health` and `death` events for spectator surfaces; it was removed along with the only client that read it, which logged them to a debug console. Everything a phone needs is in its own poll.
 
 ## Client → server messages
 
@@ -101,6 +92,16 @@ Only the first `join` per session counts. Replies: `welcome`, then `state` and `
 
 Saves a scan for any player in the room. Replies `scanSaved` to the sender, then `roster` and `state` to everyone; or `error`. Only the scanned player's gallery travels, not the whole room's — see [The roster delta](#the-roster-delta).
 
+### `clearScan`
+
+```json
+{ "type": "clearScan", "targetId": "<player id>" }
+```
+
+Deletes a player's scan (and their debug clone's), so they show as unscanned and block launch until scanned again. Sends `scanCleared` to everyone, then `roster` and `state` to everyone; or `error` (*"Round already running"*, *"Unknown player"*). A `scan` with an empty gallery is still refused rather than treated as a delete.
+
+`targetId` is cleaned the same way `scan`'s is, and the **cleaned** id is what `scanCleared` carries, because that is the key every phone holds the scan under. The `roster` that follows attaches an explicit empty `gallery` for that player rather than leaving the key out, which would mean *keep what you have* — see [The roster delta](#the-roster-delta).
+
 ### `start`
 
 ```json
@@ -128,12 +129,13 @@ Delivered through `/api/poll`.
 | Type | Fields | Sent to | When |
 | --- | --- | --- | --- |
 | `welcome` | `id` | Joiner | Join succeeded. `id` is your player id. |
-| `error` | `message` | Sender | A join, scan or start was refused |
+| `error` | `message` | Sender | A join, scan, scan deletion or start was refused |
 | `state` | `state` (below) | Everyone in the room | Any change, and when a countdown ends |
-| `roster` | `players: [{id, name, gallery?}]` | Everyone in the room, each their own [delta](#the-roster-delta) | Joins, leaves, scans |
+| `roster` | `players: [{id, name, gallery?}]` | Everyone in the room, each their own [delta](#the-roster-delta) | Joins, leaves, scans, deleted scans |
 | `motion` | `from` (sender's player id), `s: [[t, v], …]` | Everyone in the room **except** the sender | A phone sent a `motion` message (about every 500 ms per phone) |
 | `scanSaved` | `targetId` | Scanner | Scan stored |
-| `hitConfirmed` | `zone`, `damage`, `ko` | Shooter | Your shot landed |
+| `scanCleared` | `targetId` | Everyone in the room | A scan was deleted. Arrives before the `roster` without it, and each phone drops its locally cached copy so it isn't resent on the next join. |
+| `hitConfirmed` | `targetId`, `zone`, `damage`, `hp` (the target's, after the hit), `ko` | Shooter | Your shot landed |
 | `gotHit` | `zone`, `damage`, `ko` | Victim | You were hit |
 
 ### The roster delta
@@ -197,7 +199,10 @@ Egress is now linear in the room size instead of quadratic, and what the *scanne
   "minPlayers": 2,
   "maxPlayers": 8,
   "players": [
-    { "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true }
+    {
+      "id": "…", "name": "Alice", "hp": 60, "wins": 1, "alive": true, "forfeited": false,
+      "stats": { "kills": 0, "damage": 50, "shots": 4, "hits": 2, "headshots": 1, "timeAliveMs": 41250 }
+    }
   ]
 }
 ```
@@ -207,6 +212,8 @@ Egress is now linear in the room size instead of quadratic, and what the *scanne
 | `status` | `waiting`, `countdown`, `playing` or `over` |
 | `startsInMs` | Milliseconds until play starts during `countdown`, else `null` |
 | `winner` | Player id of the last round's winner, or `null` |
+| `players[].forfeited` | `true` for a player who left mid-round; they stay listed as down until the round ends |
+| `players[].stats` | What the player did this round (or the last one). See [Round stats](game-rules.md#round-stats). |
 
 ## Gallery format
 

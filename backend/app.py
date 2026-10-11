@@ -103,12 +103,16 @@ async def api_send(request):
 
 
 async def api_disconnect(request):
-    """Voluntary goodbye (page unload), so the room drops the player at once."""
+    """Voluntary goodbye, so the room drops the player at once.
+
+    ``?forfeit=1`` marks it as the player quitting on purpose, which mid-round
+    counts as being knocked out (see :meth:`backend.transport.Session.close`).
+    """
     token = request.query.get("token")
     poller = pollers.pop(token, None)
     if poller:
         poller.wake()
-        await poller.session.close()
+        await poller.session.close(forfeit=request.query.get("forfeit") == "1")
     return web.Response(status=204)
 
 
@@ -135,11 +139,16 @@ async def api_poll(request):
 
 
 async def api_hit(request):
-    """Register a hit without a session - the stateless shortcut for a shot.
+    """Register a shot without a session - the stateless shortcut for a shot.
 
     The client resolves aiming locally and only needs the server to arbitrate.
-    ``Room.shoot`` validates the ids, so nothing here has to: every value in the
-    body is attacker controlled and is passed through as-is.
+    Every shot comes here, a miss too (no ``targetId``), so the shooter's
+    accuracy is counted. ``Room.shoot`` validates the ids, so nothing here has to:
+    every value in the body is attacker controlled and is passed through as-is.
+
+    The room has to be named in the body. Falling back to a scan for whichever
+    room the shooter is sitting in was an unauthenticated walk of every room's
+    player list, so a hit that names no room is simply unknown.
     """
     try:
         msg = await request.json()
