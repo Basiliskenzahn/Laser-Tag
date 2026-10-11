@@ -195,8 +195,9 @@ class PollingClient:
     async def send(self, msg):
         return await self.client.post("/api/send", params={"token": self.token}, json=msg)
 
-    async def disconnect(self):
-        return await self.client.post("/api/disconnect", params={"token": self.token})
+    async def disconnect(self, forfeit=False):
+        params = {"token": self.token, **({"forfeit": "1"} if forfeit else {})}
+        return await self.client.post("/api/disconnect", params=params)
 
     def stop(self):
         if self._task:
@@ -401,6 +402,31 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 1)
         self.assertEqual(last_state(a.messages)["players"][0]["name"], "A")
 
+    async def test_forfeiting_mid_round_is_a_death_and_cannot_be_resumed(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        c = self.track(await self.polling_client())
+        room = unique_room("forfeit")
+        for client, name in ((a, "A"), (b, "B"), (c, "C")):
+            await client.send({"type": "join", "name": name, "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 3)
+        b_id = b.welcome_id()
+        events_resp = await self.client.get(f"/events/{room}")
+
+        await a.send({"type": "start"})
+        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+        await b.disconnect(forfeit=True)
+
+        event = await read_sse_event(events_resp, "death")
+        self.assertEqual((event["playerId"], event["killerId"]), (b_id, None))
+        await wait_for(lambda: next((p for p in last_state(a.messages)["players"] if p["id"] == b_id), {}).get("forfeited"))
+        self.assertEqual(last_state(a.messages)["status"], "playing")
+
+        rejoin = self.track(await self.polling_client())
+        await rejoin.send({"type": "join", "name": "B", "room": room, "playerId": b_id, "gallery": GALLERY})
+        await wait_for(lambda: any(m["type"] == "error" for m in rejoin.messages))
+        self.assertFalse(any(m["type"] == "welcome" for m in rejoin.messages))
+
     async def test_debug_clone_receives_the_local_players_scan(self):
         debug = self.track(await self.polling_client())
         room = unique_room("clone-scan-lobby")
@@ -428,6 +454,20 @@ class ProtocolTests(AioHTTPTestCase):
         await wait_for(lambda: last_roster(debug.messages)
                         and next((p for p in last_roster(debug.messages) if p["id"] == debug_id), {}).get("gallery")
                         and next((p for p in last_roster(debug.messages) if p["id"] == clone["id"]), {}).get("gallery"))
+
+    async def test_clearing_a_scan_tells_everyone_and_unscans_the_player(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("clear-scan")
+        await a.send({"type": "join", "name": "A", "room": room})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        b_id = b.welcome_id()
+
+        await a.send({"type": "clearScan", "targetId": b_id})
+        await wait_for(lambda: any(m["type"] == "scanCleared" and m["targetId"] == b_id for m in b.messages))
+        await wait_for(lambda: last_roster(a.messages)
+                        and next((p for p in last_roster(a.messages) if p["id"] == b_id), {}).get("gallery") == [])
 
     async def test_eight_players_can_fill_a_room_and_start_together(self):
         room = unique_room("eight-player-room")
@@ -486,8 +526,34 @@ class ProtocolTests(AioHTTPTestCase):
         self.assertEqual(hit_resp.status, 200)
 
         await wait_for(lambda: any(m["type"] == "hitConfirmed" for m in a.messages))
+        confirmed = next(m for m in a.messages if m["type"] == "hitConfirmed")
+        self.assertEqual((confirmed["targetId"], confirmed["hp"]), (b_id, 80))
         await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
         await wait_for(lambda: next(p for p in last_state(b.messages)["players"] if p["id"] == b_id)["hp"] == 80)
+
+    async def test_a_posted_miss_counts_as_a_shot_and_tells_nobody(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("miss")
+        await a.send({"type": "join", "name": "A", "room": room, "gallery": GALLERY})
+        await b.send({"type": "join", "name": "B", "room": room, "gallery": GALLERY})
+        await wait_for(lambda: last_state(a.messages) and len(last_state(a.messages)["players"]) == 2)
+        a_id, b_id = a.welcome_id(), b.welcome_id()
+        await a.send({"type": "start"})
+        await wait_for(lambda: last_state(a.messages) and last_state(a.messages)["status"] == "playing", 7)
+
+        miss = await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": None, "zone": None})
+        self.assertEqual(miss.status, 200)
+        self.assertEqual(await miss.json(), {"ok": True, "hit": False})
+        await asyncio.sleep(0.38)
+        await self.client.post("/api/hit", json={"room": room, "shooterId": a_id, "targetId": b_id, "zone": "head"})
+
+        await wait_for(lambda: next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]["shots"] == 2)
+        stats = next(p for p in last_state(a.messages)["players"] if p["id"] == a_id)["stats"]
+        self.assertEqual((stats["hits"], stats["headshots"], stats["damage"]), (1, 1, 50))
+        await wait_for(lambda: any(m["type"] == "gotHit" for m in b.messages))
+        self.assertEqual(sum(m["type"] == "hitConfirmed" for m in a.messages), 1)
+        self.assertEqual(sum(m["type"] == "gotHit" for m in b.messages), 1)
 
     async def test_three_players_can_play_a_free_for_all_to_one_winner(self):
         a = self.track(await self.polling_client())

@@ -12,8 +12,6 @@ Your `join` message includes `debug: true`, and the server adds a second player 
 
 So one person with one laptop can scan, launch, and play a full round: point the webcam at yourself (or a photo of yourself) and fire with **Space**. Because the clone has exactly your gallery, the person on camera is identified as the clone and hits are credited to it. See [Game rules → Debug clones](../server/game-rules.md#debug-clones).
 
-A debug session and a normal session for the same room don't resume each other: the saved `activeLobby` records whether it was a debug session.
-
 ## 2. The stats overlay
 
 A text overlay shows live numbers. A typical game-screen readout:
@@ -22,7 +20,7 @@ A text overlay shows live numbers. A typical game-screen readout:
 GPU+Pose+Embed+ReID · 8 fps · 23 ms
 1280×720 · 2 people · 2/3 live tracks · 1 identified
 Bob:0.78 reid u0.82 l0.77 g0.69 s0.93 e0.61
-Range 2box h .41 .14* ≥.18 · ok14 far5
+Range 2box h .41 .05* ≥.07 · ok14 far5
 Dist Bob .78@.41
 Input tap 12/104 shot 2/3 n4 · block 96
 Ranks #4 Bob:0.78/0.21,Alice:0.57/-0.21 | #5 self:0.80/0.22
@@ -57,7 +55,7 @@ of frame height, admitting that band is nearly free. On screen the two are ident
 unidentified *"Person"*, or nothing at all. Hence the line.
 
 ```
-Range 2box h .41 .14* ≥.18 · ok14 far5
+Range 2box h .41 .05* ≥.07 · ok14 far5
 Dist Bob .78@.41
 ```
 
@@ -65,25 +63,22 @@ Dist Bob .78@.41
 | --- | --- |
 | `2box` | How many boxes the **last detection** returned. From `state.boxes`, not from the tracks, because a track coasts for up to half a second after its box is gone — and "the detector has stopped finding them" is the signal that must never be hidden |
 | `h .41 .14*` | Each live box's height as a fraction of frame height, biggest first, at most four. This is the exact quantity the gate compares, so it sits next to the gate |
-| *(suffix)* | No suffix: at or above the gate, a box the matcher will score. `*`: under the gate — **detected and refused**. `-`: under the far floor, where no gate change can help. The suffix is computed on the exact ratio, so `.18*` is a box that rounds to `.18` in print but is genuinely below it |
-| `≥.18` | The live height gate (`MIN_MATCH_HEIGHT_RATIO`). Appears as `≥.18/.10` once a far floor exists; until then no floor is shown, rather than one being invented |
-| `ok14 far5` | `rangeDiagnostics()` tallies **for the last whole second** — reset on the same window as `fps`, so they read "here, at this distance, now" rather than a session total that never comes back down once you walk closer. `ok` passed the gate; `far` was in the far band and refused; `reid` was in the band and allowed through the re-identification path; `low` was under the far floor; `part` and `clip` are the non-distance refusals (`partial-body`, `edge-clipped`). `ok` always shows — `ok0` is the loudest reading there is — and the rest only when non-zero |
+| *(suffix)* | No suffix: at or above the gate, a box the matcher will score. `*`: under the gate — **detected and refused**. The suffix is computed on the exact ratio, so `.18*` is a box that rounds to `.18` in print but is genuinely below it |
+| `≥.07` | The live height gate (`MIN_MATCH_HEIGHT_RATIO`, 0.065) |
+| `ok14 far5` | `rangeDiagnostics()` tallies **for the last whole second** — reset on the same window as `fps`, so they read "here, at this distance, now" rather than a session total that never comes back down once you walk closer. `ok` passed the gate; `far` was under it; `part` and `clip` are the non-distance refusals (`partial-body`, `edge-clipped`). `ok` always shows — `ok0` is the loudest reading there is — and the rest only when non-zero |
 | `Dist Bob .78@.41` | Per named track: the re-identification score next to that track's box height. Absent when nobody on screen has a name. A score marked `c` (`Bob c.52@.41`) is the colour blend, not an OSNet cosine — they are different scales and must not be read as one series |
 
 Reading it:
 
-- **At 5 m.** `Range 1box h .45 ≥.18 · ok37` — one box, well above the gate, nothing refused. The
+- **At 5 m.** `Range 1box h .45 ≥.07 · ok37` — one box, well above the gate, nothing refused. The
   pipeline is being given everything it needs; if the player is still not named, the problem is
   appearance matching, not range. Look at `Ranks` and `Rejected`.
-- **At 25 m, detected.** `Range 1box h .09- ≥.18/.10 · ok0 low41`. The detector *is* finding them.
-  The box is nine per cent of frame height and every check is being refused on distance alone, so
-  no feature is ever scored. **A gate change is exactly the fix**, and the `-` says the box is
-  small enough that even a far floor at 0.10 would not admit it.
-- **At 25 m, not detected.** `Range 0box ≥.18/.10 · ok0`. No box at all, so there is nothing for
+- **At 25 m, detected.** `Range 1box h .05* ≥.07 · ok0 far41`. The detector *is* finding them.
+  The box is five per cent of frame height and every check is being refused on distance alone, so
+  no feature is ever scored. **A gate change is exactly the fix** if that range is wanted.
+- **At 25 m, not detected.** `Range 0box ≥.07 · ok0`. No box at all, so there is nothing for
   any gate to refuse. **A gate change buys nothing** — this is the case that needs the
   region-of-interest pass, and the only case that justifies paying for it.
-- **In between, around 15 m.** `Range 1box h .15* ≥.18/.10 · ok0 far9` — in the band, refused.
-  `reid9` instead means the band is already being admitted through re-identification.
 - **Testing whether score degrades with distance.** Walk backwards watching `Dist`. `Bob .78@.41`
   becoming `Bob .61@.22` and then `Bob .48@.15` is the hypothesis confirmed; a score that holds up
   while the box shrinks says distance is not what is breaking identification.

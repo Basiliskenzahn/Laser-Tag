@@ -12,8 +12,16 @@ what makes the conflicts resolvable in one pass instead of three.
 Nothing lands on `dev` from here until the whole set passes both test suites together:
 
 ```bash
-npm test                                              # 119 JS tests
-python -m unittest discover -s backend -p "test_*.py" # 40 backend tests
+docker compose run --rm tests                         # 305 JS tests
+docker compose run --rm backend-tests                 # 83 backend tests
+```
+
+Or locally (needs `pip install -r backend/requirements.txt` first, on Python 3.12/3.13; see
+[Testing](docs/development/testing.md)):
+
+```bash
+npm test
+python -m unittest discover -s backend -p "test_*.py"
 ```
 
 `npm run eval:shape` is **not** part of that gate — it is a measurement instrument, see the

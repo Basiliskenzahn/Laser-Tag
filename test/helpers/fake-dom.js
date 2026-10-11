@@ -155,11 +155,15 @@ class FakeElement {
     this.textContent = '';
     this.innerHTMLValue = '';
     this.hidden = false;
+    this.open = false;
+    this.style = { setProperty() {}, removeProperty() {} };
+    this.dataset = {};
     this.children = [];
+    this.queried = new Map();
     this.classes = new Set();
     this.classList = {
-      add: (name) => this.classes.add(name),
-      remove: (name) => this.classes.delete(name),
+      add: (...names) => names.forEach((name) => this.classes.add(name)),
+      remove: (...names) => names.forEach((name) => this.classes.delete(name)),
       contains: (name) => this.classes.has(name),
       toggle: (name, on) => (on ? this.classes.add(name) : this.classes.delete(name)),
     };
@@ -174,8 +178,27 @@ class FakeElement {
     if (!value) this.children = [];
   }
 
+  get firstChild() {
+    return this.children[0] ?? null;
+  }
+
+  get lastChild() {
+    return this.children.at(-1) ?? null;
+  }
+
+  insertBefore(node, before) {
+    this.children = this.children.filter((child) => child !== node);
+    const at = this.children.indexOf(before);
+    this.children.splice(at < 0 ? this.children.length : at, 0, node);
+    return node;
+  }
+
   append(...nodes) {
     this.children.push(...nodes);
+  }
+
+  replaceChildren(...nodes) {
+    this.children = nodes;
   }
 
   appendChild(node) {
@@ -189,12 +212,29 @@ class FakeElement {
 
   removeEventListener() {}
 
-  querySelector() {
-    return null;
+  // One stable stand-in per selector, so code that reaches into markup it wrote with innerHTML
+  // (the HUD's health bars) has something to set styles on.
+  querySelector(selector) {
+    if (!this.queried.has(selector)) this.queried.set(selector, new FakeElement(''));
+    return this.queried.get(selector);
   }
 
   querySelectorAll() {
     return [];
+  }
+
+  closest() {
+    return null;
+  }
+
+  setAttribute() {}
+
+  showModal() {
+    this.open = true;
+  }
+
+  close() {
+    this.open = false;
   }
 }
 

@@ -102,8 +102,22 @@ test('leaving cancels the pending retry rather than leaning on the guard behind 
   // the point of having both - but it also means a regression that dropped the cancellation would
   // go unnoticed there, leaving a timer to fire on every leave. So pin it directly.
   await connected();
-  server.drop();
-  await settleClose();
+  // Other things leaving clears (the results screen's timer, say) may clear timers too, so pin
+  // the retry's own handle rather than counting.
+  const scheduled = [];
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (...args) => {
+    const handle = realSetTimeout(...args);
+    scheduled.push(handle);
+    return handle;
+  };
+  try {
+    server.drop();
+    await settleClose();
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.equal(scheduled.length, 1, 'precondition: the drop scheduled exactly one retry');
 
   const cleared = [];
   const realClearTimeout = globalThis.clearTimeout;
@@ -113,7 +127,7 @@ test('leaving cancels the pending retry rather than leaning on the guard behind 
   };
   try {
     leaveLobby();
-    assert.equal(cleared.length, 1, 'the pending reconnect was cleared, not just ignored later');
+    assert.ok(cleared.includes(scheduled[0]), 'the pending reconnect was cleared, not just ignored later');
   } finally {
     globalThis.clearTimeout = realClearTimeout;
   }
@@ -288,22 +302,21 @@ test('closing the tab tells the server once, and leaves no retry behind', async 
   assert.equal(server.connects, 1, 'and nothing dialled back in from the closed page');
 });
 
-test('a throw while starting the lobby does not latch the join button', async () => {
-  // `startingLobby` gates the join button for the whole camera/model wait, so a throw inside that
-  // window used to leave the button permanently inert with nothing on screen to say why. Nothing
-  // in there is known to throw - the camera step has its own catch - so this is the hardening the
-  // audit asked for rather than a reproduction of a real crash; the throw is injected.
-  const { enterLobbyFromForm } = await import('../frontend/public/screens/join.js');
+test('a throw while starting the lobby does not latch the title screen', async () => {
+  // `startingLobby` gates the title screen for the whole camera/model wait, so a throw inside that
+  // window used to leave it permanently inert with nothing on screen to say why. Nothing in there
+  // is known to throw - the camera step has its own catch - so this is the hardening the audit
+  // asked for rather than a reproduction of a real crash; the throw is injected.
+  const { enterLobby } = await import('../frontend/public/screens/join.js');
   dom.$('name').value = 'Ann';
-  dom.$('room').value = 'demo';
 
-  const btn = dom.$('join-btn');
+  const btn = dom.$('create-room-btn');
   let thrown = false;
-  const descriptor = Object.getOwnPropertyDescriptor(btn, 'hidden');
-  Object.defineProperty(btn, 'hidden', {
+  const descriptor = Object.getOwnPropertyDescriptor(btn, 'disabled');
+  Object.defineProperty(btn, 'disabled', {
     configurable: true,
     get() {
-      return this.hiddenValue;
+      return this.disabledValue;
     },
     set(value) {
       // Once, at the first write after state.startingLobby = true.
@@ -311,22 +324,22 @@ test('a throw while starting the lobby does not latch the join button', async ()
         thrown = true;
         throw new Error('injected: something in the join path threw');
       }
-      this.hiddenValue = value;
+      this.disabledValue = value;
     },
   });
   const errors = [];
   const realError = console.error;
   console.error = (...args) => errors.push(args);
   try {
-    await enterLobbyFromForm(); // must not reject: app.js's three callers have no .catch
+    await enterLobby({ room: 'demo' }); // must not reject: app.js's callers have no .catch
     assert.ok(thrown, 'precondition: the injected throw happened inside the guarded window');
-    assert.equal(state.startingLobby, false, 'the flag that gates the join button was released');
-    assert.equal(btn.disabled, false, 'and the button is usable again');
+    assert.equal(state.startingLobby, false, 'the flag that gates the title screen was released');
+    assert.equal(btn.disabled, false, 'and its buttons are usable again');
     assert.match(dom.$('join-status').textContent, /Try again/, 'with something on screen to say so');
     assert.equal(errors.length, 1, 'the throw was logged rather than hidden');
   } finally {
     console.error = realError;
-    Object.defineProperty(btn, 'hidden', descriptor ?? { value: false, writable: true, configurable: true });
+    Object.defineProperty(btn, 'disabled', descriptor ?? { value: false, writable: true, configurable: true });
   }
 });
 

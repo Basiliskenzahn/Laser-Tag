@@ -16,7 +16,7 @@ clock" the methods already call as ``self.now()``.
 
 import unittest
 
-from backend.models import DAMAGE, MAX_HP, MAX_PLAYERS, Room, SHOT_COOLDOWN_MS, COUNTDOWN_MS
+from backend.models import DAMAGE, MAX_HP, MAX_PLAYERS, Room, SHOT_COOLDOWN_MS, SHOT_COOLDOWN_SLACK_MS, COUNTDOWN_MS
 
 GALLERY = [{"hist": [1, 0], "grid": [0, 1]}]
 
@@ -95,6 +95,14 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(room.shoot("a", "b", "head")["damage"], DAMAGE["head"])
         self.assertEqual(room.players["b"].hp, MAX_HP - DAMAGE["body"] - DAMAGE["head"])
 
+    def test_cooldown_allows_a_little_slack_for_network_jitter(self):
+        room, clock = started_room()
+        room.shoot("a", None, None)
+        clock.advance(SHOT_COOLDOWN_MS - SHOT_COOLDOWN_SLACK_MS - 1)
+        self.assertEqual(room.shoot("a", None, None)["error"], "Cooldown")
+        clock.advance(1)
+        self.assertTrue(room.shoot("a", None, None)["ok"])
+
     def test_cannot_target_self_or_someone_outside_the_room(self):
         room, _ = started_room()
         self.assertFalse(room.shoot("a", "a", "body")["ok"])
@@ -130,7 +138,9 @@ class RoomTests(unittest.TestCase):
             clock.advance(SHOT_COOLDOWN_MS)
         self.assertFalse(room.players["b"].alive)
         self.assertEqual(room.status, "playing")  # c is still standing
-        self.assertFalse(room.shoot("a", "b", "body")["ok"])
+        self.assertEqual(room.shoot("a", "b", "body"), {"ok": True, "hit": False})
+        self.assertEqual(room.players["b"].hp, 0)
+        clock.advance(SHOT_COOLDOWN_MS)
 
         result = {"ko": False}
         while not result["ko"]:
@@ -159,6 +169,86 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(room.status, "over")
         self.assertEqual(room.winner, "a")
         self.assertEqual(room.players["a"].wins, 1)
+
+    def test_forfeit_mid_round_is_a_knockout_that_stays_on_the_scoreboard(self):
+        room, _ = started_room(("a", "b", "c"))
+        self.assertEqual(room.forfeit("b"), {"ok": True, "ko": True})
+        self.assertEqual(room.status, "playing")
+        down = next(p for p in room.snapshot()["players"] if p["id"] == "b")
+        self.assertEqual((down["hp"], down["alive"], down["forfeited"]), (0, False, True))
+        self.assertFalse(room.shoot("a", "b", "body")["hit"])
+        self.assertFalse(room.shoot("b", "a", "body")["ok"])  # the forfeited player can't shoot
+
+    def test_forfeit_can_decide_the_round_and_then_leaves_the_room(self):
+        room, _ = started_room(("a", "b", "c"))
+        room.forfeit("b")
+        room.forfeit("c")
+        self.assertEqual(room.status, "over")
+        self.assertEqual(room.winner, "a")
+        self.assertEqual(room.players["a"].wins, 1)
+        self.assertEqual(list(room.players), ["a"])
+
+    def test_forfeit_outside_a_live_round_is_a_plain_leave(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        room.join("b", "Bob", GALLERY)
+        self.assertEqual(room.forfeit("b"), {"ok": True, "ko": False})
+        self.assertNotIn("b", room.players)
+        self.assertFalse(room.forfeit("ghost")["ok"])
+
+    def test_misses_count_as_shots_but_need_a_live_round_shooter_and_cooldown(self):
+        room, clock = started_room()
+        self.assertEqual(room.shoot("a", None, None), {"ok": True, "hit": False})
+        self.assertEqual(room.shoot("a", None, None)["error"], "Cooldown")
+        clock.advance(SHOT_COOLDOWN_MS)
+        self.assertTrue(room.shoot("a", "b", "body")["hit"])
+        self.assertEqual(room.players["a"].stats.shots, 2)
+        self.assertEqual(room.players["a"].stats.hits, 1)
+        self.assertEqual(room.players["b"].hp, MAX_HP - DAMAGE["body"])
+        self.assertFalse(room.shoot("ghost", None, None)["ok"])
+
+        waiting, _ = make_room()
+        waiting.join("a", "Alice", GALLERY)
+        self.assertFalse(waiting.shoot("a", None, None)["ok"])
+        self.assertEqual(waiting.players["a"].stats.shots, 0)
+
+    def test_round_stats_track_what_each_player_did(self):
+        room, clock = started_room(("a", "b", "c"))
+        room.shoot("a", "b", "head")  # b: 50
+        clock.advance(SHOT_COOLDOWN_MS)
+        room.shoot("a", None, None)
+        clock.advance(SHOT_COOLDOWN_MS)
+        room.shoot("a", "b", "body")  # b: 30
+        clock.advance(SHOT_COOLDOWN_MS)
+        room.shoot("a", "b", "head")  # b: 0, a 50-point headshot that only had 30 HP to take
+        clock.advance(10_000)
+        room.forfeit("c")
+
+        stats = {p["id"]: p["stats"] for p in room.snapshot()["players"]}
+        self.assertEqual(room.status, "over")
+        self.assertEqual(
+            stats["a"],
+            {"kills": 1, "damage": 100, "shots": 4, "hits": 3, "headshots": 2, "timeAliveMs": 3 * SHOT_COOLDOWN_MS + 10_000},
+        )
+        self.assertEqual(stats["b"]["timeAliveMs"], 3 * SHOT_COOLDOWN_MS)
+        self.assertEqual(stats["b"]["kills"], 0)
+        self.assertNotIn("c", stats)  # forfeited players leave once the round is over
+
+        clock.advance(5_000)
+        self.assertEqual(room.snapshot()["players"][0]["stats"]["timeAliveMs"], 3 * SHOT_COOLDOWN_MS + 10_000)
+
+    def test_stats_reset_when_the_next_round_starts(self):
+        room, clock = started_room()
+        room.shoot("a", "b", "head")
+        clock.advance(SHOT_COOLDOWN_MS)
+        room.shoot("a", "b", "head")
+        self.assertEqual(room.status, "over")
+        room.start()
+        for player in room.snapshot()["players"]:
+            self.assertEqual(
+                player["stats"],
+                {"kills": 0, "damage": 0, "shots": 0, "hits": 0, "headshots": 0, "timeAliveMs": 0},
+            )
 
     def test_roster_carries_gallery_snapshot_does_not(self):
         room, _ = make_room()
@@ -239,6 +329,31 @@ class RoomTests(unittest.TestCase):
         self.assertNotEqual(room.mirrored_gallery_rev(clone), before)
         self.assertEqual(room.mirrored_gallery(clone), GALLERY)
         self.assertEqual(room.mirrored_gallery_rev(clone), room.players["a"].gallery_rev)
+
+    def test_clearing_a_scan_unscans_the_player_and_its_clone(self):
+        room, _ = make_room()
+        room.join("a", "Alice", [])
+        room.join("a:debug-clone", "Alice clone", [])
+        room.set_gallery("a", GALLERY)
+        self.assertTrue(room.clear_gallery("a")["ok"])
+        self.assertEqual(room.players["a"].gallery, [])
+        self.assertEqual(room.roster()[1]["gallery"], [])
+        self.assertEqual([p.id for p in room.unscanned_players()], ["a"])
+
+    def test_clearing_a_scan_is_refused_mid_round_and_for_unknown_players(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        room.join("b", "Bob", GALLERY)
+        self.assertFalse(room.clear_gallery("nobody")["ok"])
+        self.assertTrue(room.start()["ok"])
+        self.assertEqual(room.clear_gallery("a"), {"ok": False, "error": "Round already running"})
+        self.assertEqual(room.players["a"].gallery, GALLERY)
+
+    def test_an_empty_scan_still_does_not_clear_one(self):
+        room, _ = make_room()
+        room.join("a", "Alice", GALLERY)
+        self.assertFalse(room.set_gallery("a", [])["ok"])
+        self.assertEqual(room.players["a"].gallery, GALLERY)
 
 
 if __name__ == "__main__":

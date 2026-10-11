@@ -166,16 +166,16 @@ test('the shot figure spans fire(), so work put back on the shot path would show
   // resolving the shot - which is the only way to prove the second measurement is a span and not
   // a hard-coded zero.
   arrangeRound({ tracks: [centredTarget(dom.now)] });
-  const fireBtn = dom.element('fire-btn');
-  const realAdd = fireBtn.classList.add;
-  fireBtn.classList.add = (name) => {
+  const crosshair = dom.element('crosshair');
+  const realAdd = crosshair.classList.add;
+  crosshair.classList.add = (name) => {
     dom.advance(45);
     return realAdd(name);
   };
   try {
     game.fire(dom.now - 7);
   } finally {
-    fireBtn.classList.add = realAdd;
+    crosshair.classList.add = realAdd;
   }
   frame();
 

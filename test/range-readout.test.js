@@ -20,7 +20,6 @@ import {
 
 const FRAME_HEIGHT = 480;
 const GATE = 0.18;
-const FLOOR = 0.1;
 
 // A live track at a given box height in frame pixels. `h` is what the whole readout turns on.
 function track(h, extra = {}) {
@@ -28,7 +27,7 @@ function track(h, extra = {}) {
   return { box, playerId: null, name: null, score: 0, reid: 0, hasReid: false, ...extra };
 }
 
-const diagnostics = (over = {}) => ({ ok: 0, tooFar: 0, farReid: 0, belowFloor: 0, partialBody: 0, edgeClipped: 0, ...over });
+const diagnostics = (over = {}) => ({ ok: 0, tooFar: 0, partialBody: 0, edgeClipped: 0, ...over });
 
 // ---- the distinction the whole line exists for ----
 
@@ -42,7 +41,6 @@ test('nobody detected reads differently from somebody detected and refused', () 
     videoHeight: FRAME_HEIGHT,
     diagnostics: diagnostics({ ok: 0 }),
     gate: GATE,
-    floor: FLOOR,
   });
   // 25 m, detector finds them, the gate throws the box away: a lower gate is exactly the fix.
   const foundAndRefused = rangeReadout({
@@ -50,28 +48,26 @@ test('nobody detected reads differently from somebody detected and refused', () 
     boxes: [track(43).box],
     tracks: [track(43)],
     videoHeight: FRAME_HEIGHT,
-    diagnostics: diagnostics({ belowFloor: 11 }),
+    diagnostics: diagnostics({ tooFar: 11 }),
     gate: GATE,
-    floor: FLOOR,
   });
 
-  assert.equal(nothingFound, 'Range 0box ≥.18/.10 · ok0');
-  assert.equal(foundAndRefused, 'Range 1box h .09- ≥.18/.10 · ok0 low11');
+  assert.equal(nothingFound, 'Range 0box ≥.18 · ok0');
+  assert.equal(foundAndRefused, 'Range 1box h .09* ≥.18 · ok0 far11');
   assert.notEqual(nothingFound, foundAndRefused);
 });
 
-test('a box height is marked by which side of which threshold it falls on', () => {
-  // .40 above the gate, .14 in the far band, .06 under the floor - three distances, one line.
+test('a box height is marked when it is under the gate', () => {
+  // .40 above the gate, .14 and .06 under it - three distances, one line.
   const line = rangeReadout({
     mode: 'game',
     boxes: [1, 2, 3].map(() => ({})),
     tracks: [track(192), track(67), track(29)],
     videoHeight: FRAME_HEIGHT,
-    diagnostics: diagnostics({ ok: 8, tooFar: 3, belowFloor: 4 }),
+    diagnostics: diagnostics({ ok: 8, tooFar: 7 }),
     gate: GATE,
-    floor: FLOOR,
   });
-  assert.equal(line, 'Range 3box h .40 .14* .06- ≥.18/.10 · ok8 far3 low4');
+  assert.equal(line, 'Range 3box h .40 .14* .06* ≥.18 · ok8 far7');
 });
 
 test('heights are biggest first, so the likeliest target leads', () => {
@@ -108,9 +104,8 @@ test('box heights are used when there are no tracks, as on the scan screen', () 
     tracks: [],
     videoHeight: FRAME_HEIGHT,
     gate: GATE,
-    floor: FLOOR,
   });
-  assert.equal(line, 'Range 2box h .18 .09- ≥.18/.10');
+  assert.equal(line, 'Range 2box h .18 .09* ≥.18');
 });
 
 test('only the screens that actually detect get a reading', () => {
@@ -130,8 +125,8 @@ test('the mark is exact even where the printed ratio rounds to the gate', () => 
   // 86/480 is 0.1792: it prints as `.18` but it is under the gate, so it must still be marked.
   // Without the mark the line would read as if the box had passed, which is the one thing a
   // reader standing in a field cannot check for themselves.
-  const line = rangeReadout({ mode: 'game', boxes: [{ h: 86 }], videoHeight: FRAME_HEIGHT, gate: GATE, floor: FLOOR });
-  assert.equal(line, 'Range 1box h .18* ≥.18/.10');
+  const line = rangeReadout({ mode: 'game', boxes: [{ h: 86 }], videoHeight: FRAME_HEIGHT, gate: GATE });
+  assert.equal(line, 'Range 1box h .18* ≥.18');
 });
 
 // ---- the score-degrades-with-distance pairing ----
@@ -180,8 +175,8 @@ test('only the refusal reasons that are firing are printed, and ok always is', (
   assert.equal(refusalTallies(diagnostics({ ok: 12, tooFar: 3 })), 'ok12 far3');
   assert.equal(refusalTallies(diagnostics()), 'ok0');
   assert.equal(
-    refusalTallies({ ok: 1, tooFar: 2, farReid: 3, belowFloor: 4, partialBody: 5, edgeClipped: 6 }),
-    'ok1 far2 reid3 low4 part5 clip6',
+    refusalTallies({ ok: 1, tooFar: 2, partialBody: 5, edgeClipped: 6 }),
+    'ok1 far2 part5 clip6',
   );
 });
 
@@ -204,13 +199,6 @@ test('nothing is printed before the video has dimensions', () => {
   assert.equal(rangeReadout({}), '');
 });
 
-test('an unavailable far floor is left out rather than invented', () => {
-  // identify.js does not export the far floor yet. A readout that guessed one would be showing a
-  // threshold nothing enforces, so sub-gate boxes fall back to the plain "refused" mark.
-  const line = rangeReadout({ mode: 'game', boxes: [{ h: 29 }], videoHeight: FRAME_HEIGHT, gate: GATE, floor: null });
-  assert.equal(line, 'Range 1box h .06* ≥.18');
-});
-
 test('absent diagnostics drop the tallies instead of printing zeroes or NaN', () => {
   const line = rangeReadout({ mode: 'game', boxes: [{ h: 197 }], videoHeight: FRAME_HEIGHT, diagnostics: null, gate: GATE });
   assert.equal(line, 'Range 1box h .41 ≥.18');
@@ -231,12 +219,10 @@ test('ratio formatting', () => {
 
 // ---- retune tripwire ----
 
-test('the mark boundaries are inclusive at the gate and exclusive at the floor', () => {
-  // Literals, not GATE/FLOOR: these are the boundary decisions, and deriving them from the inputs
-  // would make the assertions vacuous.
-  assert.equal(heightMark(0.18, 0.18, 0.1), '');
-  assert.equal(heightMark(0.1799, 0.18, 0.1), '*');
-  assert.equal(heightMark(0.1, 0.18, 0.1), '*');
-  assert.equal(heightMark(0.0999, 0.18, 0.1), '-');
-  assert.equal(heightMark(0.05, 0.18, null), '*');
+test('the mark boundary is inclusive at the gate', () => {
+  // Literals, not GATE: this is the boundary decision, and deriving it from the input would make
+  // the assertions vacuous.
+  assert.equal(heightMark(0.18, 0.18), '');
+  assert.equal(heightMark(0.1799, 0.18), '*');
+  assert.equal(heightMark(0.05, 0.18), '*');
 });

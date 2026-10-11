@@ -100,12 +100,15 @@ function centredAt(cx, cy, { w = 60, h = 200 } = {}) {
   return { x: cx - w / 2, y: cy - h / 2, w, h };
 }
 
+// Every shot is posted, a miss too (with no target) so the server can count accuracy. `hits` is
+// only the ones that named somebody, which is what these tests are about.
 const hits = [];
 
 function arrangeRound({ detector = countingDetector(), tracks = [], detectedAt = null, scheduling = undefined } = {}) {
   hits.length = 0;
   globalThis.fetch = async (url, options) => {
-    hits.push(JSON.parse(options.body));
+    const shot = JSON.parse(options.body);
+    if (shot.targetId != null) hits.push(shot);
     return { ok: true, text: async () => '' };
   };
   Object.defineProperty(globalThis, 'navigator', { value: scheduling ? { scheduling } : {}, writable: true, configurable: true });

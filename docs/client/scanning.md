@@ -6,7 +6,7 @@ The code lives in `frontend/public/screens/scan.js`, with three pieces of it in 
 
 ## Who scans whom
 
-Any phone can scan any player: each lobby row has a **Scan** button, and the gallery is saved under that player's id (`{type: 'scan', targetId, gallery}`). Usually players pair up and scan each other. The server refuses scans while a round is in countdown or playing.
+Any phone can scan any player: each lobby row has a **Scan** button, and the gallery is saved under that player's id (`{type: 'scan', targetId, gallery}`). With `?export` in the URL, a scanned row also has a **✕** that, after a confirm prompt, deletes the scan for everyone (`{type: 'clearScan', targetId}`); the phone whose own scan it was drops its cached copy (`forgetScanCache`), so it is not sent straight back on the next join. Usually players pair up and scan each other. The server refuses scans while a round is in countdown or playing.
 
 `beginPlayerScan(player)` sets `state.scanTargetId`/`scanTargetName`, swaps to the scan screen, keeps the screen awake, and then — after one paint, so the screen is actually visible first — starts `runAutoScan()`.
 
@@ -151,7 +151,7 @@ One thing is computed only for the samples that survived selection, because only
 
 A 48×64 JPEG used to be cropped from every chosen sample's frame, measured as its own phase, stored in `state.scanThumbs`, and persisted into the cache. **None of it could ever be seen.** `#scan-thumbs` lives inside `#scan-screen`, and every exit from a scan goes through `showLobby()`, which hides that screen — including the too-few-angles path, where a comment claimed the strip was the feedback. `loadScanCache`'s only consumer reads `cache.gallery`; `cache.thumbs` was `Array.isArray`-checked and never read. So up to 24 JPEG encodes, their timing, and their storage bought nothing.
 
-Given the choice between making them visible and not computing them, they are gone. Making them visible means a post-scan review screen — a feature with its own design, not a repair — and the strip's one interaction (`appendScanThumb`'s click handler: *"tap to redo this and later angles"*) belongs to the retired incremental-capture flow and is meaningless for a single rotation. A deliberate, visible version can be added later; silently computing one was the thing to stop. `#scan-thumbs` and its CSS are still in the page, unused, because they are not this change's files to remove.
+Given the choice between making them visible and not computing them, they are gone. Making them visible means a post-scan review screen — a feature with its own design, not a repair — and the strip's one interaction (`appendScanThumb`'s click handler: *"tap to redo this and later angles"*) belongs to the retired incremental-capture flow and is meaningless for a single rotation. A deliberate, visible version can be added later; silently computing one was the thing to stop. `#scan-thumbs` and its CSS have since been removed too.
 
 This ordering is what makes the embedding affordable. OSNet is the single most expensive inference in the app, and selection cannot see its output, so embedding every usable frame meant paying for it on every frame that selection then threw away. The gallery is unchanged — the same frames are embedded and averaged the same way — but far fewer frames are embedded.
 
@@ -289,14 +289,14 @@ That last clause used to be `Array.isArray` and nothing else, so a sample with `
 
 ### The `join.js` change this still wants
 
-`enterLobbyFromForm` calls `loadScanCache()` for the side effect of pre-filling `state.localGallery`, and that is now safe: the only entry it can find is this phone owner's own. But it calls it **before** `connect()`, i.e. before the room has said who you are, which means the cache cannot be checked against the id the server ends up giving you. If `join.js` is ever reworked, the honest shape is to pass what it knows:
+`enterLobby` calls `loadScanCache()` for the side effect of pre-filling `state.localGallery`, and that is now safe: the only entry it can find is this phone owner's own. But it calls it **before** `connect()`, i.e. before the room has said who you are, which means the cache cannot be checked against the id the server ends up giving you. If `join.js` is ever reworked, the honest shape is to pass what it knows:
 
 ```js
 // screens/join.js, in place of the bare loadScanCache() call
 state.savedScan = loadScanCache({ resumePlayerId });
 ```
 
-…with `loadScanCache` ignoring a cache whose `playerId` is set and does not match a supplied `resumePlayerId`. That would close the same-phone-different-person case for the auto-rejoin path, which is the one path where the id *is* known up front (`loadActiveLobby()` supplies it). It is not needed for the bug above and `join.js` belongs to another change, so it is written down rather than done.
+…with `loadScanCache` ignoring a cache whose `playerId` is set and does not match a supplied `resumePlayerId`. That would close the same-phone-different-person case for a path that knows the id up front. Nothing does today: the auto-rejoin that did (`loadActiveLobby()`) was removed, and a reload now starts from the title screen. It is not needed for the bug above and `join.js` belongs to another change, so it is written down rather than done.
 
 ### Why the version exists
 
@@ -306,7 +306,19 @@ The current version is **13**, and it exists for an identity change rather than 
 
 Version 12 stored `shape` raw instead of L2-normalised: a version-11 `shape` is a unit vector, and the corrected comparison reads it as a wildly wrong aspect ratio rather than failing ([the bug report](../shape-feature-bug.md)). Version 11 was the one whose samples carry a `reid` embedding; bumping to it is what discarded the pre-re-identification caches.
 
+The cache also records `frames: {usable, total}` from the scan that produced it. Nothing reads it back except [Export](#exporting-and-importing-a-scan), so it is not part of the validity check.
+
 Note that the required-field check does *not* include `reid`. A cache saved on a phone where OSNet failed to load is still valid — it just produces weaker matching for that player, which is the same graceful degradation the live path has.
+
+## Exporting and importing a scan
+
+With `?export` in the URL (`SCAN_EXPORT` in `env.js`), every scanned player's lobby row has an **Export** button, and the **✕** described in [Who scans whom](#who-scans-whom). Without the flag neither is shown. `exportPlayerScan()` downloads `scan-<room>-<name>-<timestamp>.json` with `format: 'laser-tag-scan'`, `version` (the cache version), `room`, `player` (`id`, `name`), `sampleCount` and `gallery`.
+
+The gallery always comes from the roster, the copy the server shares and every phone matches against. `scannedAt` and `frames` exist only in the [local cache](#local-cache), which only ever holds this phone owner's own scan. So the export includes them only for your own row, and only when the cache holds the same scan (its first sample's `hist` matches the roster's). Otherwise both are `null`. Exports carry no thumbnails: they are [no longer made](#thumbnails-removed-not-hidden), and an older file's `thumbs` is ignored.
+
+The same flag adds an **Import** button to every player row, scanned or not, disabled while a round is counting down or playing. It loads an exported file into that row's player with `importPlayerScan()`. The id, name and room in the file are only a record of where it came from: ids are per session, so the scan always goes to the row you tapped. The file is rejected unless `format` is `'laser-tag-scan'`, `version` equals the current `SCAN_CACHE_VERSION`, and the gallery passes the same sample checks as the [local cache](#local-cache). An accepted import is handled like a finished scan: it is sent as `{type: 'scan', targetId, gallery}`, and when it is this phone's own player it becomes `state.localGallery` and is written to the local cache, so a reload or a later export still has it. An import into anybody else's row is the server's to keep, like any other scan of them.
+
+An imported scan matches only as well as the person still looks like it. Recognition leans on clothing colour, so a change of outfit, or very different lighting, means a rescan. A file exported before a `SCAN_CACHE_VERSION` bump is refused, for the reason in [Why the version exists](#why-the-version-exists).
 
 ## Testing
 

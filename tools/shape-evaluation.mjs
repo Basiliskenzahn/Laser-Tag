@@ -64,11 +64,9 @@ function threshold(name, mirrored) {
 const MIN_SHAPE_SCORE = threshold('MIN_SHAPE_SCORE', 0.36);
 const EVIDENCE_MIN_PART = threshold('EVIDENCE_MIN_PART', 0.24);
 const EVIDENCE_MIN_SCORE = threshold('EVIDENCE_MIN_SCORE', 0.42);
-// The live-matching height gate and the far-re-identification height floor below it, both now
-// real exports. `--floor` still overrides the floor, so a sweep can bracket a value that is not
-// the shipped one.
-const MIN_MATCH_HEIGHT_RATIO = threshold('MIN_MATCH_HEIGHT_RATIO', 0.18);
-const FAR_REID_MIN_HEIGHT_RATIO = threshold('FAR_REID_MIN_HEIGHT_RATIO', 0.09);
+// The live-matching height gate, a real export. The far floor the sweep reports against is an
+// assumption (`--floor`), not a shipped constant.
+const MIN_MATCH_HEIGHT_RATIO = threshold('MIN_MATCH_HEIGHT_RATIO', 0.065);
 
 const FRAME = { width: 640, height: 480 };
 const ENROLLED_PLAYERS = 4; // a typical game
@@ -405,10 +403,11 @@ function evaluate(seed) {
 // The counterfactual is where the risk lives, so wrong-player and bystander acceptance are the
 // columns to read first.
 
-// Straddling both thresholds, so the table shows what each one is buying rather than only where
-// the current one sits: two buckets under the assumed far floor, two between floor and gate, and
-// three above it up to a box filling most of the frame.
+// Straddling the gate and the assumed far floor, so the table shows what each one is buying rather
+// than only where the current one sits: one bucket wholly under the gate, buckets either side of the
+// assumed floor, and the rest up to a box filling most of the frame.
 const SCALE_BUCKETS = [
+  [0.03, 0.05],
   [0.05, 0.08],
   [0.08, 0.1],
   [0.1, 0.13],

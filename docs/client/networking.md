@@ -50,14 +50,14 @@ Nothing on the client has to detect a gap or ask for a resend. The server tracks
 - On close, it shows *"Connection lost. Reconnecting…"* and opens a new connection after 1.5 s.
 - After two failed attempts in a row that never opened, the message changes to *"Can't connect to the game server…"*.
 - Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round. The takeover is a new session, so the roster it receives is the complete one — a reconnect cannot land on a stale or partial set of galleries.
-- If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the join screen.
+- If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the title screen.
 - The last `state` snapshot is **kept**, not cleared. Everything that gates on it — the HUD, whether this phone may fire, what is under the crosshair — would otherwise blank out for the whole 1.5 s on every blip, and on a phone network that is often. `state.connected` is what says the snapshot is no longer live.
 
 ### Leaving, as opposed to dropping
 
-`leaveRoom({notify})` is the one way out: it **cancels the pending reconnect**, closes the connection, nulls `state.conn` and stops the identity provider. The three paths that leave a room — `leaveLobby()`, `showJoinRejected()`, and the camera-failure path in `enterLobbyFromForm()` — all go through it, as does `pagehide`.
+`leaveRoom({notify})` is the one way out: it **cancels the pending reconnect**, closes the connection, nulls `state.conn` and stops the identity provider. The three paths that leave a room — `leaveLobby()`, `showJoinRejected()`, and the camera-failure path in `enterLobby()` — all go through it, as does `pagehide`.
 
-Cancelling matters because leaving deliberately keeps `name`/`room`/`resumePlayerId` so that a *blip* reconnects as the same player. A retry that outlived a leave therefore had everything `sendJoin()` needed, and would quietly put the player back in the room they had just left — a ghost nobody can scan or shoot, whose `welcome` then saved that room as the one to resume into on the next page load.
+Cancelling matters because leaving deliberately keeps `name`/`room`/`resumePlayerId` so that a *blip* reconnects as the same player. A retry that outlived a leave therefore had everything `sendJoin()` needed, and would quietly put the player back in the room they had just left — a ghost nobody can scan or shoot.
 
 Two things know the connection is no longer live:
 
@@ -68,9 +68,9 @@ Two things know the connection is no longer live:
 
 `net.js` listens for **`pagehide`** and calls `leaveRoom({notify: true})`, so the room drops the player at once instead of holding a phantom until the long poll times out. `pagehide` rather than `beforeunload`, which iOS Safari does not reliably fire — and deliberately *not* `visibilitychange`, because the page goes hidden every time the player glances at a notification and a round has to survive that. The server's poll timeout remains the backstop for a tab the OS kills outright.
 
-## Resuming after a reload
+## Reloading the page
 
-When the server sends `welcome`, the client saves `{name, room, playerId, debug}` to `localStorage` as `activeLobby`. On page load, `resumeActiveLobby()` reads it and rejoins automatically with that `playerId`. This is what makes an accidental reload mid-game recoverable.
+The player id lives only in memory. A reload goes back to the title screen, and joining from there (including through a `?room=` link) creates a new player, so it is rejected with *"Lobby is already running."* until the round ends. The player left behind expires once the server stops seeing its polls.
 
 ## Hits
 

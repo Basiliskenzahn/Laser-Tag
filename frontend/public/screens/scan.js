@@ -128,6 +128,12 @@ function scanPersonName() {
   return state.scanTargetName || state.name;
 }
 
+// The same sample checks a cached gallery has to pass (scan-cache.js), for an imported one.
+function validScanGallery(gallery) {
+  const options = { room: state.room, minSamples: SCAN_MIN_SAMPLES, maxSamples: SCAN_TARGET_SAMPLES };
+  return validScanCache({ version: SCAN_CACHE_VERSION, room: state.room, gallery }, options);
+}
+
 export function loadScanCache() {
   const key = scanCacheKey(state.room);
   if (!key) return null;
@@ -141,18 +147,35 @@ export function loadScanCache() {
   }
 }
 
+// How many recorded frames the last finished scan had, and how many passed the quality gates.
+// Not needed to play - it only rides along in the cache so an exported scan can show it.
+let lastScanFrames = null;
+
+// Called when this phone owner's own scan is deleted (net.js, `scanCleared`), so it is not sent
+// straight back on the next join. Nobody else's scan is ever cached - see scan-cache.js.
+export function forgetScanCache() {
+  const key = scanCacheKey(state.room);
+  try {
+    if (key) localStorage.removeItem(key);
+  } catch {
+    // Storage is unavailable: then nothing was cached, and nothing will be resent.
+  }
+  state.savedScan = null;
+}
+
 // Caches the scan that has just finished, if it is this phone owner's own - see scan-cache.js for
 // why a scan of anybody else is not cached at all, and why the slot is not addressed by name.
-function saveScanCache(targetId) {
+function saveScanCache(targetId, { gallery = state.gallery, frames = lastScanFrames, name = scanPersonName() } = {}) {
   const key = scanCacheKey(state.room);
   if (!key || !cacheableScan({ targetId, selfId: localSelfId() })) return;
-  if (state.gallery.length < SCAN_MIN_SAMPLES) return;
+  if (gallery.length < SCAN_MIN_SAMPLES) return;
   const cache = {
     version: SCAN_CACHE_VERSION,
     room: state.room,
-    name: scanPersonName(), // for the debug overlay only; never an identity check - see rule 1
+    name, // for the debug overlay only; never an identity check - see rule 1
     savedAt: Date.now(),
-    gallery: state.gallery,
+    frames,
+    gallery,
   };
   try {
     // Dropped before the write, not after it: a quota the stale entries are filling is exactly
@@ -645,6 +668,7 @@ async function runAutoScan() {
   state.autoScanning = true;
   state.gallery = [];
   resetScanCost();
+  lastScanFrames = null;
 
   try {
     // The optional models keep loading behind the lobby rather than blocking it (startup.js), so
@@ -697,6 +721,7 @@ async function runAutoScan() {
       return;
     }
 
+    lastScanFrames = { usable: result.usableFrames, total: result.totalFrames };
     finalMessage = `Saved scan for ${scanPersonName()} with ${result.samples.length} angles.`;
     state.autoScanning = false;
     saveCurrentScan(targetId, finalMessage);
@@ -797,6 +822,67 @@ function saveCurrentScan(targetId, message = `Saved scan for ${scanPersonName()}
     },
     (err) => replaceLobbyMessage(`${name}'s scan could not be sent: ${err?.message || err}. Rescan to try again.`),
   );
+}
+
+// Downloads a player's scan as JSON. The gallery comes from the roster, because that is what the
+// server shares and every phone matches against. The frame counts and scan time only exist in
+// this phone's cache, which only ever holds its owner's own scan (scan-cache.js), so they are
+// added for this phone's own player when the cache holds the same scan, and left out otherwise.
+export function exportPlayerScan(player) {
+  const gallery = player?.gallery ?? [];
+  if (!gallery.length) return false;
+  const cache = player.id === localSelfId() ? loadScanCache() : null;
+  const sameScan = cache && JSON.stringify(cache.gallery[0]?.hist) === JSON.stringify(gallery[0]?.hist);
+  const data = {
+    format: 'laser-tag-scan',
+    version: SCAN_CACHE_VERSION,
+    exportedAt: new Date().toISOString(),
+    room: state.game?.code ?? state.room,
+    player: { id: player.id, name: player.name },
+    scannedAt: sameScan ? new Date(cache.savedAt).toISOString() : null,
+    frames: sameScan ? (cache.frames ?? null) : null,
+    sampleCount: gallery.length,
+    gallery,
+  };
+  const safeName = (player.name || 'player').replace(/[^\w-]+/g, '_');
+  const stamp = data.exportedAt.slice(0, 19).replace(/[:T]/g, '-');
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `scan-${data.room}-${safeName}-${stamp}.json`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Some mobile browsers start the download asynchronously, so the URL has to outlive the click.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  return true;
+}
+
+// Loads a file written by exportPlayerScan and saves it as `player`'s scan, exactly as if this
+// phone had just scanned them: sent to the server, and kept as the local gallery and cached when
+// it is this phone's own player, so a reload or a later export still has it. The id and room in
+// the file are only a record of where it came from - ids are per session, so the scan goes to
+// whichever row the button was on. Returns the message for the lobby status line.
+export async function importPlayerScan(player, file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch {
+    return `${file.name} is not a scan export.`;
+  }
+  if (data?.format !== 'laser-tag-scan') return `${file.name} is not a scan export.`;
+  // A signature is only comparable with one extracted by the same code - see SCAN_CACHE_VERSION.
+  if (data.version !== SCAN_CACHE_VERSION) {
+    return `That scan is from an older version of the app (v${data.version}, now v${SCAN_CACHE_VERSION}). Rescan instead.`;
+  }
+  if (!validScanGallery(data.gallery)) return `${file.name} does not contain a usable scan.`;
+
+  const gallery = data.gallery;
+  if (player.id === localSelfId()) state.localGallery = gallery;
+  send({ type: 'scan', targetId: player.id, gallery });
+  saveScanCache(player.id, { gallery, frames: data.frames ?? null, name: player.name || 'Player' });
+  const from = data.player?.name && data.player.name !== player.name ? ` (exported from ${data.player.name})` : '';
+  return `Imported ${gallery.length}-angle scan for ${player.name}${from}.`;
 }
 
 // Corrects the lobby status line after the fact, and only if the player is still reading it.

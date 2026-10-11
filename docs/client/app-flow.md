@@ -1,10 +1,10 @@
 # App flow and screens
 
-`frontend/public/app.js` is now just the entry point: it wires DOM events to the four screens and resumes an active lobby on load. Everything it used to own directly has moved into focused modules:
+`frontend/public/app.js` is now just the entry point: it wires DOM events to the four screens. Everything it used to own directly has moved into focused modules:
 
 | Module | Used for |
 | --- | --- |
-| `env.js` | URL-parameter flags (`DEBUG`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
+| `env.js` | URL-parameter flags (`DEBUG`, `SCAN_EXPORT`, `MOTION_ENABLED`, `REQUIRE_MOTION`, `MOTION_OFF`), `$()`, and the shared `video`/`canvas`/`ctx` |
 | `state.js` | The one shared `state` object and the `localStorage` helpers |
 | `roster.js` | Read-only lookups over the server's roster/game snapshot, plus `mergeRoster()` which folds in each roster delta |
 | `camera.js` | Starting the camera and the on-device models, once, plus the first-inference warm-up |
@@ -14,10 +14,11 @@
 | `appearance-identity.js` | The provider installed by default: `isStableTarget()` and an appearance-only `resolve()` |
 | `motion-identity.js` | The provider installed by `?motion=on`/`?motion=strict`: all phone-motion plumbing, sealed behind the provider it exports |
 | `net.js` | Reconnect/resume and what each server message does to the screens, built on `transport.js`'s long-polling connection |
-| `screens/join.js` | The join form and camera/model startup |
+| `screens/join.js` | The title screen (name, Create Room, Join Room, How to Play), room codes, and camera/model startup |
 | `screens/lobby.js` | Lobby list, launch, leave |
 | `screens/scan.js` | The rotation scan: recording, scoring, outlier/duplicate removal, the cache |
 | `screens/game.js` | The frame loop, overlay, HUD/countdown and shooting |
+| `screens/results.js` | The end-of-round overlay: your placing, stats, Done and Rematch |
 | [`detector.js`](detection.md) | Creating the MediaPipe models and finding people in frames |
 | [`identify.js`](identification.md) | Signatures, matching and the `Tracker` |
 | [`reid.js`](identification.md#the-re-identification-embedding-reidjs) | The OSNet person re-identification embedding, the strongest identification signal when it loads |
@@ -32,26 +33,32 @@
 ```mermaid
 stateDiagram-v2
   [*] --> join
-  join --> lobby: Continue (camera + object detector)
+  join --> lobby: Create Room / Join Room (camera + object detector)
   lobby --> scan: Scan / Rescan
   scan --> lobby: scan saved or failed
   lobby --> game: Launch, or server state = countdown
   scan --> game: server state = countdown / playing
-  game --> lobby: server state = over
+  game --> results: knocked out, or server state = over
+  results --> lobby: Done
+  results --> game: Rematch, or server state = countdown
   lobby --> join: Leave
   lobby --> join: "Lobby is already running."
 ```
 
-`state.mode` tracks the current screen: `'join' | 'lobby' | 'scan' | 'game'`.
+`state.mode` tracks the current screen: `'join' | 'lobby' | 'scan' | 'game' | 'results'`.
 
-### Join (`#join-screen`)
+### Title (`#join-screen`)
 
-- Pre-fills name and room from `localStorage`, or the room from a `?room=` URL parameter. The default room is `demo`.
-- On **Continue**: unlocks audio, calls `identity.start()` — a no-op unless `?motion=on` or `?motion=strict` installed the motion provider, and inside the tap because that's the only place iOS will show a sensor prompt — then opens the connection to the room and starts the camera and the models.
+- A name field, then three buttons. The name is pre-filled from `localStorage`. **Create Room** and **Join Room** both need it first: an empty name shows *"Enter your name first."* and focuses the field.
+- **Create Room** makes a random 6-character code from `A–Z` and `0–9` (`generateRoomCode`, using `crypto.getRandomValues` without modulo bias) and enters it straight away. The creator shares the code from the lobby.
+- **Join Room** opens a pop-up (`#join-dialog`) with a code field, **Cancel** and **Join**. Typed or pasted text is normalised to uppercase letters and digits, at most 6 (`normalizeRoomCode`), so `abc-123` from a message becomes `ABC123`. **Join** is enabled only at exactly 6 characters. A `?room=` URL parameter pre-fills the field.
+- **How to Play** opens a pop-up (`#rules-dialog`) with four one-line rules.
+- Room codes are case-insensitive on the server (`clean_room_code` lowercases them), so the client stores and sends them lowercase and shows them uppercase.
+- On **Create Room** or **Join**: unlocks audio, calls `identity.start()` — a no-op unless `?motion=on` or `?motion=strict` installed the motion provider, and inside the tap because that's the only place iOS will show a sensor prompt — then opens the connection to the room and starts the camera and the models.
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error. A camera failure also leaves the room again, rather than parking a player in everyone else's roster who can never be scanned or shot.
 - On success: switches to the lobby, requests a screen wake lock and starts the render loop.
 
-#### What Continue actually waits for
+#### What entering a room actually waits for
 
 This is the part worth getting right, because it used to be the longest wait in the app. There are 18 MB of models and **only the object detector is required** — see the Required column in [Detection → The models](detection.md). The lobby itself needs none of them: `renderLobby()` reads the roster and draws a Scan button per player.
 
@@ -76,19 +83,20 @@ Nothing is fire-and-forget, though, because code downstream reads these models. 
 
 With `?debug`, the overlay gets a `Startup` line with each step's duration and the two totals — time to lobby-visible and time to all-models-ready. See [Debug mode](../development/debug-mode.md#startup-and-scan-costs).
 
-- **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So every freshly loaded model gets one throwaway inference (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, so the join screen never waits for it. A warm-up that fails is only logged — the models still work cold, which is where this started.
+- **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So every freshly loaded model gets one throwaway inference (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, so the title screen never waits for it. A warm-up that fails is only logged — the models still work cold, which is where this started.
 
   Since the models no longer finish together, the warm-up is now **per model, as each one arrives**, rather than one batch at the end. That needed one subtlety spelling out. `warmUpStep` normally stands down once a screen that infers is up, because the warm-up's deliberately-low timestamp would be a step backwards for a model the scan or game loop has already fed a `performance.now()` value. A model created a moment ago is exempt (`fresh`): MediaPipe's monotonic-timestamp rule is **per task instance**, so a brand-new task has never been handed a timestamp by anyone — and "the first inference has been paid anyway" is simply untrue of a model that did not exist when those loops started. Without the exemption, a late embedder would pay its first inference in the middle of processing a rotation, which is the exact cost the warm-up exists to move.
-- **Camera zoom** (`?zoom=`, off by default) is the one thing the camera does beyond starting. It asks the `MediaStreamTrack` to magnify the sensor so far-away players are big enough to detect and recognise, and it is wired so that it cannot affect anything above: it is a follow-up `applyConstraints` *after* the stream exists rather than part of the `getUserMedia` constraints (where a `zoom` entry would be a required constraint on a property most phones lack — an `OverconstrainedError`, and a camera that never starts), `startCamera()` does not await it, so it never reaches the `camera` promise in the table, and nothing is sent to the camera while the join, lobby or scan screen is up, so it cannot renegotiate the stream underneath a warm-up frame either. It only engages on the game screen — **enrolment always runs at 1×**, because the gallery it builds is matched by every phone in the room and a gallery captured at one zoom and matched at another is a domain mismatch. A device with no zoom support is probed once and then behaves exactly as it does today. See [Configuration → Camera zoom](../development/configuration.md#camera-zoom).
-- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on the first **FIRE** press, which also covers an automatic rejoin where there was no join tap.
+- **Camera zoom** (`?zoom=`, off by default) is the one thing the camera does beyond starting. It asks the `MediaStreamTrack` to magnify the sensor so far-away players are big enough to detect and recognise, and it is wired so that it cannot affect anything above: it is a follow-up `applyConstraints` *after* the stream exists rather than part of the `getUserMedia` constraints (where a `zoom` entry would be a required constraint on a property most phones lack — an `OverconstrainedError`, and a camera that never starts), `startCamera()` does not await it, so it never reaches the `camera` promise in the table, and nothing is sent to the camera while the title, lobby or scan screen is up, so it cannot renegotiate the stream underneath a warm-up frame either. It only engages on the game screen — **enrolment always runs at 1×**, because the gallery it builds is matched by every phone in the room and a gallery captured at one zoom and matched at another is a domain mismatch. A device with no zoom support is probed once and then behaves exactly as it does today. See [Configuration → Camera zoom](../development/configuration.md#camera-zoom).
+- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on every tap on the game screen.
 
 ### Lobby (`#lobby-screen`)
 
 - Rendered by `renderLobby()` from the latest `state` and `roster` messages.
 - One row per player with a **Scan/Rescan** button. Debug clones have no button and show *"Mirrors <name>'s scan"*.
-- **Launch** (`launchGame`) first checks locally that everyone is scanned, then starts a local countdown of `GAME_LAUNCH_COUNTDOWN_MS` (3 s, mirroring the server's `COUNTDOWN_MS`), switches to the game screen, and sends `{type: 'start'}`. The local countdown is only a prediction so the first second isn't dead time: every `state` message with status `countdown` resets it to the server's own `startsInMs`. If the server rejects the start, the client returns to the lobby with the error.
-- **Launch** is disabled whenever the connection is down as well as while a round is running, because `start` has to reach the server; see [Networking → Leaving](networking.md#leaving-as-opposed-to-dropping).
-- **Leave** (`leaveLobby`) goes through `leaveRoom({notify: true})`, which cancels any pending reconnect before telling the server (`sendBeacon` to `/api/disconnect`) — otherwise a drop in the last 1.5 s would rejoin the room behind the player. It then stops the camera, the identity provider and clears the saved lobby.
+- With `?export`, every row also gets **Import**, and a scanned row gets **Export** and a **✕** that deletes the scan for everyone after a confirm prompt. See [Scanning → Exporting and importing a scan](scanning.md#exporting-and-importing-a-scan).
+- **Launch** is disabled while the latest `state` has fewer than `minPlayers` players (debug clones count), and a hint under the list says *"Waiting for more players…"* It is also disabled whenever the connection is down as well as while a round is running, because `start` has to reach the server; see [Networking → Leaving](networking.md#leaving-as-opposed-to-dropping).
+- `launchGame` first checks the player count again, then checks locally that everyone is scanned, then starts a local countdown of `GAME_LAUNCH_COUNTDOWN_MS` (3 s, mirroring the server's `COUNTDOWN_MS`), switches to the game screen, and sends `{type: 'start'}`. The local countdown is only a prediction so the first second isn't dead time: every `state` message with status `countdown` resets it to the server's own `startsInMs`. If the server rejects the start, the client returns to the lobby with the error.
+- **Leave** (`leaveLobby`) goes through `leaveRoom({notify: true})`, which cancels any pending reconnect before telling the server (`sendBeacon` to `/api/disconnect?…&forfeit=1`) — otherwise a drop in the last 1.5 s would rejoin the room behind the player. It then stops the camera and the identity provider. Leaving is always deliberate, so mid-round the server counts it as a [forfeit](../server/game-rules.md#forfeitid).
 
 ### Scan (`#scan-screen`)
 
@@ -102,8 +110,21 @@ A round that starts **during** a scan cancels it and takes the phone into the ga
 
 - `enterGame()` shows the camera, opens the SSE stream for the room and renders the HUD.
 - Every frame, `loop()` runs detection when due, then `drawGame()` draws each live track with its hitboxes and label (see [Feedback](feedback.md#track-outlines)).
-- **FIRE** (pointer down) or **Space** calls `fire()`. See [Shooting](#shooting).
-- When a `state` message says `over`, every phone returns to the lobby showing *"You win!"* or *"<name> wins!"*.
+- A tap anywhere but a button (pointer down) or **Space** calls `fire()`. See [Shooting](#shooting).
+- The **Leave** button in the corner opens a confirm pop-up (`#leave-dialog`): **Leave** calls the same `leaveLobby()` as the lobby, so mid-round it's a forfeit; **Stay**, Esc or a tap outside the box cancels. Taps and **Space** don't fire while it's open.
+- A **Start game** button (**Play again** after a round) shows in the banner while the room is `waiting` or `over`, and sends `{type: 'start'}` directly.
+- **No zooming on fast taps.** Every element has `touch-action: manipulation`, since iOS ignores the viewport's `user-scalable=no`. On top of that the game and scan screens cancel `touchend` everywhere except their buttons and the leave dialog, because rapid firing can still trigger a double-tap zoom on some iPhones. Firing uses `pointerdown`, so the click the cancelled touch would have made isn't needed.
+- As soon as the round is over for this phone — a `state` message shows it knocked out, or says `over` — it switches to [Results](#results-results), after a 400 ms pause so the shot that ended the round (hitmarker, damage number, red flash) plays out first.
+
+### Results (`#results`)
+
+An overlay inside the game screen, opened by `showResults()`. It switches `state.mode` to `'results'`, which stops detection and overlay drawing while the camera keeps running behind it, and hides the HUD, crosshair, banner and Leave button.
+
+- **The reveal** is all CSS: a flash (red when knocked out, white when you win) fades into a dark wash, then the rank lands, the stat lines come in one every 110 ms with a soft tick each, and the buttons appear last. `results.js` only sets each element's `animation-delay`.
+- **The rank** is `#1` for the winner, otherwise one more than the number of other players still standing when you went down. `#1`–`#3` are gold, silver and bronze; the rest are white.
+- **The stats** are your entry's `stats` in the `state` that opened the screen (see [Round stats](../server/game-rules.md#round-stats)): kills, damage dealt, shots fired, accuracy (hits ÷ shots, `–` with no shots), headshots and time alive as `m:ss`. They're final by then, since a downed player can't shoot.
+- **Rematch** stays disabled, with *"Waiting for the round to end…"*, while anyone is still playing. It goes through the lobby (`showLobby()` then `launchGame()`), so a missing scan or a refused start lands on a screen that can show it. **Done** returns to the lobby.
+- A `countdown` (someone else started the next round) takes every phone on this screen straight back into the game.
 
 ## The render loop
 
@@ -160,11 +181,11 @@ What would move: the MediaPipe object detector, the pose landmarker and the Mobi
 `fire()`:
 
 1. Returns early unless the round is `playing`, the local player is alive, and 350 ms have passed since the last shot.
-2. Plays the shot sound and button animation.
+2. Plays the shot sound, the crosshair recoil and the [cooldown bar](feedback.md#other-feedback).
 3. Hit-tests the **centre of the video frame**, which is also the centre of the screen because the video is centred with `object-fit: cover`.
-4. If a targetable player is under the crosshair, POSTs `/api/hit` with the target and zone.
+4. POSTs `/api/hit` with the target and zone if a targetable player is under the crosshair, or with no target if not. The miss still goes to the server so it can count your shots fired and accuracy.
 
-No detection runs anywhere in there. `fire()` takes one optional argument, the originating event's `timeStamp`, which `app.js` hands on from the `pointerdown`; it is read only by the `?debug` [input readout](../development/debug-mode.md#the-input-readout) and ignored otherwise.
+No detection runs anywhere in there. `fire()` takes one optional argument, the originating event's `timeStamp`, which `app.js` hands on from the game screen's `pointerdown`; it is read only by the `?debug` [input readout](../development/debug-mode.md#the-input-readout) and ignored otherwise.
 
 ### Why the shot doesn't force a detection
 
@@ -210,12 +231,15 @@ All keys are prefixed with `laser-tag:`. Reads and writes are wrapped in `try/ca
 
 | Key | Contents |
 | --- | --- |
-| `name`, `room` | Last-used name and room code |
-| `activeLobby` | `{version: 1, name, room, playerId, debug}`. Used on page load to rejoin automatically as the same player. Cleared on Leave or rejection. |
-| `scan:<room>:<name>` | Cached scan `{version, name, room, savedAt, gallery, thumbs}`. Your own cached scan is sent with your `join` message, so rejoining doesn't need a rescan. |
+| `name` | Last-used name |
+| `scan:self:<room>` | Your own cached scan `{version, room, name, savedAt, frames, gallery}`, and only your own: see [Scanning → Local cache](scanning.md#local-cache). It is sent with your `join` message, so rejoining doesn't need a rescan. |
 
-The scan cache is versioned (`SCAN_CACHE_VERSION`, currently **12** — version 12 stores `shape` raw rather than L2-normalised; version 11 was the one whose samples carry a re-identification embedding). Bump it when the signature format changes so old caches are ignored.
+The scan cache is versioned (`SCAN_CACHE_VERSION`, currently **13** — see [Why the version exists](scanning.md#why-the-version-exists)). Bump it when the signature format changes so old caches are ignored.
 
 ## Wake lock
 
 `keepScreenOn()` requests a screen wake lock when entering the lobby, scan or game, and again whenever the page becomes visible. If the browser doesn't support it, the game carries on.
+
+## Coming back from the background
+
+Hiding the browser pauses the `<video>`, and phones often end the camera track outright (iOS sometimes leaves it `live` but never sends another frame). So whenever the page becomes visible again, or is restored from the back/forward cache (`pageshow` with `persisted`), `resumeCamera()` in `camera.js` plays the video again and waits up to 1.2 s (`RESUME_FRAME_TIMEOUT_MS`) for a new frame. If none arrives, it stops the old stream and asks for a fresh one. It does nothing when there's no stream, i.e. the camera was never started or the player left the lobby.

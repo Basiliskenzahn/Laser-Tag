@@ -35,19 +35,11 @@ export function ratio(value) {
   return value.toFixed(2).replace(/^0/, '');
 }
 
-// Which side of which threshold this box height falls on, which is the entire point of the line:
-//
-//   (none)  at or above the live gate: a box the matcher will score
-//   *       between the far floor and the gate: the band a far-re-identification path could admit
-//   -       below the far floor: too few pixels for any gate change to rescue
-//
-// With no far floor known, everything under the gate is `*` - still the useful distinction,
-// because `*` always means "detected but refused".
-export function heightMark(heightRatio, gate, floor = null) {
+// Which side of the live gate this box height falls on, which is the entire point of the line:
+// nothing at or above it (a box the matcher will score), `*` under it ("detected but refused").
+export function heightMark(heightRatio, gate) {
   if (!Number.isFinite(heightRatio) || !Number.isFinite(gate)) return '';
-  if (heightRatio >= gate) return '';
-  if (Number.isFinite(floor) && heightRatio < floor) return '-';
-  return '*';
+  return heightRatio >= gate ? '' : '*';
 }
 
 // Short labels for rangeDiagnostics(), in the order a box meets the gates. `ok` is always shown,
@@ -56,8 +48,6 @@ export function heightMark(heightRatio, gate, floor = null) {
 const REFUSAL_LABELS = [
   ['ok', 'ok'],
   ['tooFar', 'far'],
-  ['farReid', 'reid'],
-  ['belowFloor', 'low'],
   ['partialBody', 'part'],
   ['edgeClipped', 'clip'],
 ];
@@ -103,7 +93,6 @@ export function rangeReadout({
   selfId = null,
   diagnostics = null,
   gate = null,
-  floor = null,
 } = {}) {
   if (!DETECTING_MODES.includes(mode)) return '';
   if (!(videoHeight > 0)) return '';
@@ -118,8 +107,8 @@ export function rangeReadout({
     .slice(0, MAX_SHOWN_HEIGHTS);
 
   let line = `Range ${boxes.length}box`;
-  if (heights.length) line += ` h ${heights.map((h) => ratio(h) + heightMark(h, gate, floor)).join(' ')}`;
-  if (Number.isFinite(gate)) line += ` ≥${ratio(gate)}${Number.isFinite(floor) ? `/${ratio(floor)}` : ''}`;
+  if (heights.length) line += ` h ${heights.map((h) => ratio(h) + heightMark(h, gate)).join(' ')}`;
+  if (Number.isFinite(gate)) line += ` ≥${ratio(gate)}`;
   const tallies = refusalTallies(diagnostics);
   if (tallies) line += ` · ${tallies}`;
 

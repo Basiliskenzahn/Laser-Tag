@@ -50,7 +50,7 @@ docker-compose.yml
 
 1. Branch off `main`.
 2. Run locally: `docker compose up --build`, or `npm run dev` for faster iteration on the client.
-3. Test: `docker compose run --rm tests` (or `npm test`). For anything involving the camera, also test by hand with [`?debug`](debug-mode.md), ideally on a real phone.
+3. Test both suites: `docker compose run --rm tests` and `docker compose run --rm backend-tests` (or run them locally, see [Testing](testing.md)). For anything involving the camera, also test by hand with [`?debug`](debug-mode.md), ideally on a real phone.
 4. Open a pull request into `main`. Merging (or closing) it **deploys automatically** to the hackathon server. See [Deployment](../operations/deployment.md).
 
 ## Conventions

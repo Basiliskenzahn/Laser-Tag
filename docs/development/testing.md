@@ -1,7 +1,17 @@
 # Testing
 
 Two separate test suites: JS (`node --test`, for the client) and Python (`unittest`, for the
-backend). Neither needs a dependency beyond the project's own.
+backend). Neither needs a dependency beyond the project's own. **Run both before merging** -
+nothing in CI runs either of them (see [Deployment](../operations/deployment.md)).
+
+| Suite | Docker | Local | Tests |
+| --- | --- | --- | --- |
+| JS | `docker compose run --rm tests` | `npm test` | 19 |
+| Python | `docker compose run --rm backend-tests` | `python -m unittest discover -s backend -p "test_*.py" -v` | 45 |
+
+Both Docker services use the `test` profile, so `docker compose up` doesn't start them. Docker is
+the default: it needs nothing installed locally and pins the same Node and Python versions the
+app runs on.
 
 ## Running the JS suite
 
@@ -39,12 +49,18 @@ In Docker:
 docker compose run --rm backend-tests
 ```
 
-Or with Python 3.12+ and the backend's own dependencies:
+Or with Python 3.12 or 3.13 and the backend's own dependencies:
 
 ```bash
 pip install -r backend/requirements.txt
 python -m unittest discover -s backend -p "test_*.py" -v
 ```
+
+The `pip install` step is not optional: `test_protocol.py` imports `aiohttp.test_utils`, so
+without it that whole module fails to import (`ModuleNotFoundError: No module named 'aiohttp'`)
+and the run reports one error instead of its 17 tests. Also avoid Python 3.14 for now: the pinned
+`aiohttp==3.10.11` predates it and has no prebuilt wheel, so `pip` tries to compile it from source.
+The Docker service uses `python:3.12-slim`, the same image as `backend/Dockerfile`.
 
 `backend/test_models.py` and `backend/test_protocol.py` are a from-scratch port of the Node
 implementation's archived test suites (`deprecated/server/game.test.js`,
@@ -60,12 +76,17 @@ like phones do - no mocking of `Room`/`Session` internals in either suite.
 
 ### `backend/test_models.py`: game rules
 
-Unit tests for the `Room` class, 18 cases: starting needs 2 players and full scans, room capacity,
-no joins mid-round, no shots during countdown, damage and cooldown, no self-targeting, an
+Unit tests for the `Room` class, 28 cases: starting needs 2 players and full scans, room capacity,
+no joins mid-round, no shots during countdown, damage and cooldown (and its slack for network
+jitter), no self-targeting, an
 unhashable zone/target id (a JSON list or object) being a clean error rather than the `TypeError`
-it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round, that
-`roster()` carries galleries while `snapshot()` doesn't, and debug-clone gallery mirroring in both
-directions.
+it used to crash with, knockouts and winners, free-for-all eliminations and leaving mid-round,
+forfeiting (a knockout that stays on the scoreboard, can decide the round, and is a plain leave
+outside a live round), misses counting as shots, the per-round stats (kills, damage actually
+dealt, shots, hits, headshots, time alive) and their reset on the next start, that
+`roster()` carries galleries while `snapshot()` doesn't, debug-clone gallery mirroring in both
+directions, and deleting a scan (it unscans the player and their clone, is refused mid-round and
+for unknown players, and an empty scan still doesn't count as one).
 
 Plus the bookkeeping behind [the roster delta](../server/protocol.md#the-roster-delta): a roster
 entry can omit its gallery while still carrying the identity half; every gallery write moves
@@ -76,11 +97,14 @@ scan.
 ### `backend/test_protocol.py`: HTTP/SSE protocol
 
 Drives the real aiohttp app with polling clients (connect, send, poll, disconnect - just like
-phones), 19 cases: joining and starting, launching only once everyone is scanned, resuming with a
-remembered player id, immediate removal on disconnect, debug clones (mirroring scans both ways,
+phones), 30 cases: joining and starting, launching only once everyone is scanned, a deleted scan
+reaching every phone and unscanning the player, resuming with a
+remembered player id, immediate removal on disconnect, a mid-round forfeit counting as a death that
+can't be resumed, debug clones (mirroring scans both ways,
 being targetable instead of the owner, self-hits on the real player rejected with `400`), a full
 room of 8, a held poll answered promptly, `410` for unknown sessions, `POST /api/hit` damage
-reaching both players over their poll loops and producing an SSE `health` event, a three-player
+reaching both players over their poll loops and producing an SSE `health` event, a posted miss counting toward the shooter's stats without
+notifying anyone, a three-player
 free-for-all fought entirely over `/api/hit`, and motion samples being sanitised and relayed to
 everyone except the sender.
 
@@ -104,6 +128,14 @@ shared by the whole test process (there's no per-test app state to reset) - ever
 Every shot in this suite goes through `POST /api/hit`, matching the real client - see
 [Streamlining](../streamlining.md) for why the session-based `{"type": "shoot"}` message these
 tests originally used no longer exists.
+
+### `backend/test_sanitize.py`: motion-sample sanitising
+
+Unit tests for `clean_motion_samples()`, 4 cases: an over-long backlog keeps its *newest* samples
+(the 6 s correlation window in `motion/matching.js` needs the recent tail, not the stale head),
+short flushes pass through unchanged and in order, junk entries are dropped inside the newest-N
+window without letting older samples back in, and non-list input becomes `[]`. The protocol suite
+never sends more than the cap, so it can't see which samples survive truncation.
 
 ### `frontend/public/identify.test.js`: tracker
 
@@ -158,7 +190,7 @@ The thresholds in `motion/matching.js` were chosen against this simulation, so c
 
 ### `test/range-readout.test.js`: the `?debug` range readout
 
-Tests `frontend/public/range-readout.js`, the line that says whether distant players are failing to be *detected* or being detected and *refused* ([debug mode](debug-mode.md#the-range-readout)). The tests that matter are the ones that fail if the line stops distinguishing those two: the box count coming from the detections rather than from coasting tracks; the `*`/`-` marks for which side of the gate and floor a box height falls on, including the case where the printed ratio rounds to `.18` but the box is genuinely under it; a far floor that does not exist being left out rather than invented; and only the screens that actually detect getting a reading at all. Every expectation is a **literal** — never derived from the thresholds passed in, which would make the assertion `x >= x`.
+Tests `frontend/public/range-readout.js`, the line that says whether distant players are failing to be *detected* or being detected and *refused* ([debug mode](debug-mode.md#the-range-readout)). The tests that matter are the ones that fail if the line stops distinguishing those two: the box count coming from the detections rather than from coasting tracks; the `*` mark for a box height under the gate, including the case where the printed ratio rounds to the gate but the box is genuinely under it; and only the screens that actually detect getting a reading at all. Every expectation is a **literal** — never derived from the thresholds passed in, which would make the assertion `x >= x`.
 
 ### `test/range-readout-cost.test.js`: the readout costs nothing without `?debug`
 
@@ -174,7 +206,7 @@ A structural test over `screens/game.js`, because that module cannot be imported
 
 ## What isn't covered
 
-- **`backend/sanitize.py`'s edge cases beyond what the protocol tests exercise incidentally** (e.g. the motion-samples test covers non-finite/negative/malformed values, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send). Worth a dedicated unit test file if `sanitize.py` grows more rules.
+- **Gallery sanitising in `backend/sanitize.py`.** Motion samples have their own tests in `test_sanitize.py`, but gallery sanitising only gets covered via whatever `GALLERY` fixtures the other tests happen to send. Add cases to `test_sanitize.py` if `sanitize.py` grows more rules.
 - **Detection, scanning, and most of signature extraction.** These need a real browser, camera and models. Test them by hand with `?debug`. The exception is the canvas-read half of `extractSignature()`, which `test/fixtures/synthetic-frame.mjs` now makes testable — the pattern is reusable for the other colour features if a reason comes up. What it cannot stand in for is real pixels: a synthetic flat-colour person says nothing about whether a histogram discriminates real clothing.
 - **The re-identification model itself.** `reid.js` needs ONNX Runtime Web, a canvas and the model file, so nothing exercises the loading, pre-processing or the request/collect queue. Only the matching rules built on its output are tested.
 - **The motion sensor.** `motion/sensor.js` needs `devicemotion` events; only the pure matching half is tested. Its accuracy numbers come from simulation, not from real phones.

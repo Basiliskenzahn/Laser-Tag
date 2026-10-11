@@ -16,12 +16,48 @@ function makeElement(id = '') {
     value: '',
     type: '',
     srcObject: null,
-    style: {},
+    open: false,
+    style: { setProperty() {}, removeProperty() {} },
+    dataset: {},
+    attributes: new Map(),
+    queried: new Map(),
     children: [],
     classes: new Set(),
     listeners: new Map(),
+    get firstChild() {
+      return this.children[0] ?? null;
+    },
+    get lastChild() {
+      return this.children.at(-1) ?? null;
+    },
+    insertBefore(node, before) {
+      this.children = this.children.filter((child) => child !== node);
+      const at = this.children.indexOf(before);
+      this.children.splice(at < 0 ? this.children.length : at, 0, node);
+      return node;
+    },
     append(...nodes) {
       this.children.push(...nodes);
+    },
+    replaceChildren(...nodes) {
+      this.children = nodes;
+    },
+    // One stable stand-in per selector, so code that reaches into markup it wrote with innerHTML
+    // (the HUD's health bars) has something to set styles on.
+    querySelector(selector) {
+      if (!this.queried.has(selector)) this.queried.set(selector, makeElement());
+      return this.queried.get(selector);
+    },
+    querySelectorAll: () => [],
+    closest: () => null,
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+    },
+    showModal() {
+      this.open = true;
+    },
+    close() {
+      this.open = false;
     },
     remove() {},
     addEventListener(type, fn) {

@@ -9,13 +9,14 @@
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
-import { state, saveActiveLobby } from './state.js';
+import { state } from './state.js';
 import { localSelfId, mergeRoster, scannedGallery } from './roster.js';
 import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
-import { cancelScan } from './screens/scan.js';
-import { enterGame, popup, renderHud, restartAnimation } from './screens/game.js';
+import { cancelScan, forgetScanCache } from './screens/scan.js';
+import { enterGame, popup, renderHud, restartAnimation, showHitBar } from './screens/game.js';
+import { showResultsSoon, updateResults } from './screens/results.js';
 
 const UNREACHABLE_MESSAGE = "Can't connect to the game server. Check your internet connection. Still retrying…";
 const LOBBY_RUNNING_MESSAGE = 'Lobby is already running.';
@@ -40,9 +41,9 @@ function cancelReconnect() {
 // Leaving a room for good, as opposed to riding out a blip: call off any pending retry first so
 // nothing dials back in behind the player, drop the connection, and stop the per-room identity
 // signals (the motion provider's sensor and the activity it has collected per player id).
-export function leaveRoom({ notify = false } = {}) {
+export function leaveRoom({ notify = false, forfeit = false } = {}) {
   cancelReconnect();
-  state.conn?.close({ notify });
+  state.conn?.close({ notify, forfeit });
   state.conn = null;
   state.connected = false;
   identity.stop();
@@ -166,7 +167,6 @@ function handleMessage(msg) {
       state.myId = msg.id;
       state.resumePlayerId = msg.id;
       state.bannerOverride = null;
-      saveActiveLobby();
       break;
     case 'error':
       if (!state.myId && [LOBBY_RUNNING_MESSAGE, 'Round already running'].includes(msg.message)) {
@@ -191,6 +191,18 @@ function handleMessage(msg) {
     case 'scanSaved':
       if (state.mode === 'lobby') $('lobby-status').textContent = 'Scan saved.';
       break;
+    case 'scanCleared': {
+      // Sent before the roster that drops the gallery, so the name is still here to find.
+      const name = state.roster.find((player) => player.id === msg.targetId)?.name;
+      // Only this phone owner's own scan is ever cached (scan-cache.js), so only that one can be
+      // sent straight back on the next join.
+      if (msg.targetId === localSelfId()) {
+        forgetScanCache();
+        state.localGallery = [];
+      }
+      if (state.mode === 'lobby') $('lobby-status').textContent = `${name ?? 'A player'}'s scan was deleted.`;
+      break;
+    }
     case 'state':
       onState(msg.state);
       break;
@@ -198,6 +210,7 @@ function handleMessage(msg) {
       sound.hitConfirmed(msg.zone === 'head');
       restartAnimation($('crosshair'), 'hit');
       popup(msg.zone === 'head' ? `HEADSHOT −${msg.damage}` : `−${msg.damage}`, msg.zone === 'head');
+      showHitBar(msg.targetId, msg.hp, msg.damage);
       break;
     case 'gotHit':
       sound.hurt();
@@ -218,10 +231,29 @@ function onState(game) {
   if (game.status === 'countdown') state.countdownEndsAt = performance.now() + game.startsInMs;
   else if (game.status !== 'playing') state.countdownEndsAt = null;
   if (game.status === 'countdown' || game.status === 'playing') state.launchingFromLobby = false;
+  // Our own start (Launch, Rematch) is on its way: an "over" from before it must not end the new round.
+  if (game.status === 'over' && state.launchingFromLobby) return;
+  const me = game.players.find((player) => player.id === state.myId);
+  if (state.mode === 'results') {
+    // Only a new round takes us off the results screen; anything else just updates it.
+    if (game.status !== 'countdown' && !(game.status === 'playing' && me?.alive)) {
+      updateResults(game);
+      return;
+    }
+    enterGame();
+  }
+  // The round is over for us: knocked out, or the last one standing.
+  if (state.mode === 'game' && (game.status === 'over' || (game.status === 'playing' && me && !me.alive))) {
+    showResultsSoon(game);
+    return;
+  }
   if (game.status === 'over') {
     const winner = game.players.find((player) => player.id === game.winner);
     const message = game.winner === state.myId ? 'You win!' : `${winner?.name ?? 'Someone'} wins!`;
-    if (previous?.status !== 'over') {
+    // Only for a round this phone saw running. The server keeps a finished round "over" until the
+    // next start, so joining, reloading or reconnecting afterwards (previous is null) must not
+    // replay its result.
+    if (previous?.status === 'countdown' || previous?.status === 'playing') {
       game.winner === state.myId ? sound.win() : sound.lose();
     }
     if (state.mode !== 'lobby') showLobby(message);

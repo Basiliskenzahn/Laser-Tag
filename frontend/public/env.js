@@ -11,6 +11,9 @@ import { parseZoomParam } from './camera-zoom.js';
 export const $ = (id) => document.getElementById(id);
 export const params = new URLSearchParams(location.search);
 export const DEBUG = params.has('debug');
+// Scan export is opt-in: ?export shows Import on every player in the lobby, and Export and a
+// delete (✕) button on each scanned one.
+export const SCAN_EXPORT = params.has('export');
 const motionMode = params.get('motion');
 // Phone-motion identity fusion is on by default; ?motion=off disables it (no sensor prompt, no
 // shared samples, appearance alone decides), and ?motion=strict makes a shot count only when

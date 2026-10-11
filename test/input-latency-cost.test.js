@@ -31,7 +31,7 @@ test('the anchors this test depends on are actually there', () => {
   assert.ok(sorted.at(-1).end <= SOURCE.length);
   // One of them is inside fire(), which is the new one and the easiest to lose in a refactor.
   const fireAt = SOURCE.indexOf('export function fire(');
-  const afterFire = SOURCE.indexOf('async function postHit(');
+  const afterFire = SOURCE.indexOf('async function postShot(');
   assert.ok(fireAt > 0 && afterFire > fireAt);
   assert.ok(
     BLOCKS.some((block) => block.start > fireAt && block.end < afterFire),
@@ -106,7 +106,7 @@ test('the shot path itself has no detection left on it', () => {
   // The behavioural proof is in test/shot-latency.test.js (the detector is never called); this is
   // the tripwire for someone re-adding the call and not noticing it is on the critical path.
   const fireAt = SOURCE.indexOf('export function fire(');
-  const afterFire = SOURCE.indexOf('async function postHit(');
+  const afterFire = SOURCE.indexOf('async function postShot(');
   const body = SOURCE.slice(fireAt, afterFire);
   assert.ok(fireAt > 0 && afterFire > fireAt);
   assert.doesNotMatch(body, /refreshGameDetection\(/, 'fire() forces a detection again');

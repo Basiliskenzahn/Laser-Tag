@@ -17,8 +17,9 @@ Read once at startup in `frontend/public/env.js`:
 | Parameter | Effect |
 | --- | --- |
 | `?debug` | [Debug mode](debug-mode.md): debug clone, stats overlay, extra drawing and logging |
-| `?room=<code>` | Pre-fills the room code on the join screen |
+| `?export` | Sets `SCAN_EXPORT`: each scanned player's lobby row gets an **Export** button that downloads their scan as JSON and a **✕** that deletes it for everyone, and every row gets an **Import** button that loads one back in. Off by default. See [Scanning → Exporting and importing a scan](../client/scanning.md#exporting-and-importing-a-scan). |
 | `?reid=<0-1>` | Overrides the re-identification accept threshold for this device (`REID_THRESHOLD` in `env.js`, applied by `setReidThreshold()` in `identify.js`). Defaults to `REID_DEFAULT_THRESHOLD` (0.65). See the re-identification table below. |
+| `?room=<code>` | Pre-fills the code in the **Join Room** pop-up (uppercased, letters and digits only, first 6 kept) |
 | `?motion=on` | Sets `MOTION_ENABLED`, so `identity.js` installs the motion provider: asks for motion-sensor access, shares samples with the room, and fuses phone motion with appearance identity. See [Identification → Fusing it with the classifier](../client/identification.md#fusing-it-with-the-classifier-fusemotion). |
 | `?motion=strict` | Sets `MOTION_ENABLED` and `REQUIRE_MOTION`: a shot only counts when the target's phone motion confirms who they are, never on the classifier alone. |
 | `?motion=off` or no motion parameter | The default. `identity.js` installs the appearance-only provider instead, so there is no motion permission prompt, no sample sharing and no motion fusion: targeting uses appearance identity + `isStableTarget()` only. |
@@ -38,6 +39,7 @@ Defined in `backend/models.py`.
 | `MAX_HP` | 100 | Starting HP |
 | `DAMAGE` | body 20, head 50 | Damage per hit zone |
 | `SHOT_COOLDOWN_MS` | 350 | Server-side minimum time between shots |
+| `SHOT_COOLDOWN_SLACK_MS` | 60 | How much early a shot may arrive and still pass the cooldown (network jitter) |
 | `COUNTDOWN_MS` | 3000 | Countdown before a round |
 
 The client has its own copies of two of these, used for display and local rate limiting: `FIRE_COOLDOWN_MS` (350, `frontend/public/screens/game.js`) and `GAME_LAUNCH_COUNTDOWN_MS` (3000, `frontend/public/screens/lobby.js`). Keep them equal to the server values.
@@ -261,33 +263,15 @@ them.
 
 | Constant | Default | Effect |
 | --- | --- | --- |
-| `MIN_MATCH_HEIGHT_RATIO` | 0.18 | Box height as a fraction of the frame, in game. **Deliberately unchanged** — the far band below relaxes it for one signal instead of moving it |
-| `MIN_BOX_WIDTH_RATIO` | 0.035 | Box width as a fraction of the frame, in game (scans use 0.025) |
+| `MIN_MATCH_HEIGHT_RATIO` | 0.065 | Box height as a fraction of the frame, in game; sets the range limit, about 20 m on a typical phone camera |
+| `MIN_BOX_WIDTH_RATIO` | 0.018 | Box width as a fraction of the frame, in game (scans use 0.025) |
 | `MIN_ASPECT` / `MAX_ASPECT` | 0.58 / 6.5 | Accepted height/width ratio in game |
 | `MIN_SCAN_ASPECT` / `MAX_SCAN_ASPECT` | 0.65 / 7.0 | Accepted height/width ratio while scanning |
 | `MIN_SCAN_HEIGHT_RATIO` | 0.18 | Box height as a fraction of the frame, while scanning |
 
-**The far re-identification band** (how far past `MIN_MATCH_HEIGHT_RATIO` signal 1 alone may still
-try — see [Box range and the far band](../client/identification.md#box-range-and-the-far-band)):
-
-| Constant | Default | Effect |
-| --- | --- | --- |
-| `FAR_REID_MIN_HEIGHT_RATIO` | 0.09 | Box height floor for the band. 256 px of OSNet input ÷ 4× upscale = 64 px, ÷ 720 |
-| `FAR_REID_MIN_WIDTH_RATIO` | 0.025 | Box width floor for the band. 128 px ÷ 4× = 32 px, ÷ 1280 |
-| `FAR_REID_MAX_PENALTY` | 0.11 | Added to the re-identification threshold at the floor, i.e. 0.76 there. Scales as the squared shortfall below 0.18, so it is ~0 just inside the band |
-
-These are the only range numbers that are open to tuning. `MIN_MATCH_HEIGHT_RATIO` is not: the
-whole point of the band is that at or above 0.18 nothing changed, and that property is what makes
-it safe at the ranges that already worked (`test/range-reid-gate.test.js` asserts the match object
-is identical to a pre-band one, and `npm run eval:shape` is byte-identical). Both floors are
-derived from OSNet's 128 × 256 input rather than picked, so if you move them, move them by changing
-the upscale factor you are willing to accept and say so — the arithmetic is in the comment beside
-them in `identify.js`. Raising `FAR_REID_MAX_PENALTY` makes the band stricter; setting it to 0
-removes the band's protection entirely and is how it would start naming bystanders.
-
-`rangeDiagnostics()` is how you tune them in the field: it counts, per live check, how many boxes
-passed, were rescued by the band (`farReid`), were refused inside it (`tooFar`), or were under the
-floor (`belowFloor`).
+`rangeDiagnostics()` is how you tune the range gate in the field: it counts, per live check, how many
+boxes passed it (`ok`), were too small (`tooFar`), or were refused for their shape (`partialBody`,
+`edgeClipped`). See [Box range](../client/identification.md#box-range).
 
 **Signature resolution:** `HUE_BINS` (12), `SAT_BINS` (4), `LUMA_BINS` (8), `SAT_DETAIL_BINS` (8), `GRID_W` (6), `GRID_H` (8), `GRID_FEATURES` (4), `EMBED_DIMS` (256), `EMBED_PRECISION` (10 000, i.e. 4 decimals). Changing any of these changes vector lengths: bump `SCAN_CACHE_VERSION` and check `GALLERY_FIELDS` limits on both servers.
 
