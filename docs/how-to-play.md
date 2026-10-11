@@ -58,7 +58,7 @@ If the scan fails, the message tells you why:
 | *turn a little slower* | Motion blur. |
 | *no person detected* | Nobody found in the frame. |
 
-Your phone also remembers your own scan for that room and name. If you leave and rejoin the same room with the same name, your old scan comes with you.
+Your phone also remembers your own scan for that room. If you leave and rejoin the same room, your old scan comes with you.
 
 ## Playing
 

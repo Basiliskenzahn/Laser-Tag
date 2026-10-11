@@ -55,9 +55,9 @@ Nothing on the client has to detect a gap or ask for a resend. The server tracks
 
 ### Leaving, as opposed to dropping
 
-`leaveRoom({notify})` is the one way out: it **cancels the pending reconnect**, closes the connection, nulls `state.conn` and stops the identity provider. The three paths that leave a room — `leaveLobby()`, `showJoinRejected()`, and the camera-failure path in `enterLobbyFromForm()` — all go through it, as does `pagehide`.
+`leaveRoom({notify})` is the one way out: it **cancels the pending reconnect**, closes the connection, nulls `state.conn` and stops the identity provider. The three paths that leave a room — `leaveLobby()`, `showJoinRejected()`, and the camera-failure path in `enterLobby()` — all go through it, as does `pagehide`.
 
-Cancelling matters because leaving deliberately keeps `name`/`room`/`resumePlayerId` so that a *blip* reconnects as the same player. A retry that outlived a leave therefore had everything `sendJoin()` needed, and would quietly put the player back in the room they had just left — a ghost nobody can scan or shoot, whose `welcome` then saved that room as the one to resume into on the next page load.
+Cancelling matters because leaving deliberately keeps `name`/`room`/`resumePlayerId` so that a *blip* reconnects as the same player. A retry that outlived a leave therefore had everything `sendJoin()` needed, and would quietly put the player back in the room they had just left — a ghost nobody can scan or shoot.
 
 Two things know the connection is no longer live:
 

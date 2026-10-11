@@ -1,4 +1,4 @@
-# Laser Tag documentation
+# Photo Tag documentation
 
 Laser tag that runs entirely in phone browsers: the camera is the gun, on-device image recognition decides who you hit, and a small server keeps score.
 

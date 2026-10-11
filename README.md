@@ -2,7 +2,7 @@
 
 Port 8080 (HTTP) will be exposed through the reverse proxy and is after deployment reachable here: https://22.hackathon.ethz.ch/
 
-# Laser Tag
+# Photo Tag
 
 Laser tag that runs entirely on phones. No vests, no guns, no extra hardware. Point your phone's camera at your opponent, tap the screen to fire, and the phone works out whether the crosshair was on them - including *who* it was, from a pre-match scan and an on-device appearance/re-identification model. An optional phone-motion cross-check (`?motion=on`) can confirm an identity but never change one.
 
