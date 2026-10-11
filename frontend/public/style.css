@@ -153,14 +153,36 @@ input {
   font-weight: 800;
 }
 
-#lobby-room {
-  display: block;
+#lobby-room-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-top: 2px;
+}
+
+#lobby-room {
   color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 28px;
   font-weight: 800;
   letter-spacing: 0.14em;
+}
+
+#copy-room-btn {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(232, 238, 245, 0.14);
+  color: var(--text);
+}
+
+#copy-room-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 #lobby-heading {

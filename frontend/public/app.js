@@ -19,7 +19,7 @@ import {
   setJoinStatus,
   updateJoinButton,
 } from './screens/join.js';
-import { launchGame, leaveLobby, showLobby } from './screens/lobby.js';
+import { copyRoomCode, launchGame, leaveLobby, showLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
 import { closeLeaveDialog, fire, openLeaveDialog } from './screens/game.js';
 import { rematch } from './screens/results.js';
@@ -87,6 +87,7 @@ window.addEventListener('pageshow', (event) => {
 
 $('launch-btn').addEventListener('click', launchGame);
 $('leave-lobby-btn').addEventListener('click', leaveLobby);
+$('copy-room-btn').addEventListener('click', copyRoomCode);
 
 // ---- Scan screen ----
 

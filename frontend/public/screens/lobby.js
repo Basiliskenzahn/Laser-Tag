@@ -97,6 +97,23 @@ export function renderLobby() {
   $('launch-btn').disabled = !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
 }
 
+// Copies the code as shown (uppercase) and flips the icon to a tick for a moment. The clipboard
+// needs a secure context, which the camera already requires, so a failure here is a refusal.
+let copyResetTimer = null;
+export async function copyRoomCode() {
+  const icon = $('copy-room-btn').querySelector('use');
+  try {
+    await navigator.clipboard.writeText($('lobby-room').textContent);
+  } catch (err) {
+    console.error(err);
+    $('lobby-status').textContent = "Couldn't copy the room code.";
+    return;
+  }
+  icon.setAttribute('href', '#icon-check');
+  clearTimeout(copyResetTimer);
+  copyResetTimer = setTimeout(() => icon.setAttribute('href', '#icon-copy'), 1_500);
+}
+
 function chooseScanFile(player) {
   const input = document.createElement('input');
   input.type = 'file';

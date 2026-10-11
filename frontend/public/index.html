@@ -18,6 +18,13 @@
         <path d="M10 8l-4 4 4 4" />
         <path d="M6 12h10" />
       </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12.5l4.5 4.5L19 7.5" />
+      </symbol>
     </svg>
 
     <!-- One camera stream, shared by the scan screen and the game screen so it's only requested once. -->
@@ -78,7 +85,15 @@
         <div id="lobby-heading">
           <div>
             <h1>Lobby</h1>
-            <p class="tagline">Room code <span id="lobby-room"></span></p>
+            <p class="tagline">
+              Room code
+              <span id="lobby-room-row">
+                <span id="lobby-room"></span>
+                <button id="copy-room-btn" type="button" title="Copy room code" aria-label="Copy room code">
+                  <svg aria-hidden="true"><use href="#icon-copy" /></svg>
+                </button>
+              </span>
+            </p>
           </div>
           <div id="lobby-actions">
             <button id="leave-lobby-btn" type="button">Leave</button>
