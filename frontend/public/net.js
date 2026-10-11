@@ -11,6 +11,7 @@ import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
 import { state, saveActiveLobby } from './state.js';
 import { localSelfId, mergeRoster, scannedGallery } from './roster.js';
+import { onMotionMessage, stopMotion } from './motion/index.js';
 import { showJoinRejected } from './screens/join.js';
 import { renderLobby, showLobby } from './screens/lobby.js';
 import { cancelScan } from './screens/scan.js';
@@ -37,12 +38,21 @@ function cancelReconnect() {
 }
 
 // Leaving a room for good, as opposed to riding out a blip: call off any pending retry first so
-// nothing dials back in behind the player, then drop the connection.
+// nothing dials back in behind the player, drop the connection, and give back the per-room
+// motion state - this phone's accelerometer listener, the 500 ms flush interval, and the
+// activity every other player id has reported.
+//
+// That last part is not housekeeping. None of it used to come back: the interval and the
+// devicemotion listener ran for the life of the page whatever screen was showing, so a phone
+// parked back on the join screen kept waking its accelerometer and sending to a room it had
+// left, and the activity map accumulated an entry for every player the phone had ever shared a
+// room with. stopMotion() is a no-op with motion off, so this costs nothing in the default case.
 export function leaveRoom({ notify = false } = {}) {
   cancelReconnect();
   state.conn?.close({ notify });
   state.conn = null;
   state.connected = false;
+  stopMotion();
 }
 
 // Game control/state messages use HTTP polling. Health/death notifications use SSE once the
@@ -175,11 +185,12 @@ function handleMessage(msg) {
       restartAnimation($('damage'), 'flash');
       break;
     default:
-      // Nothing on screen wants it, so it is ignored. This has to stay a silent no-op rather
-      // than a throw or a console error: a phone still running an older build can relay a
-      // `motion` message into a room (that subsystem was deleted, but a stale tab has not
-      // heard), and an unknown message must never be able to break the one handler every
-      // server message passes through.
+      // Nothing on screen wants it, so it is a signal for whatever is identifying people.
+      // Motion is the only one, and onMotionMessage ignores anything that is not its own
+      // `motion` relay - so this stays a silent no-op for an unknown type, which it has to be:
+      // an unrecognised message must never be able to break the one handler every server
+      // message passes through.
+      onMotionMessage(msg);
       break;
   }
 }
