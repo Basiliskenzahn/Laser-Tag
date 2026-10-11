@@ -94,7 +94,14 @@ export function renderLobby() {
     }
     list.append(row);
   }
-  $('launch-btn').disabled = !state.game || state.game.status === 'countdown' || state.game.status === 'playing';
+  $('launch-btn').disabled =
+    !state.game || state.game.status === 'countdown' || state.game.status === 'playing' || tooFewPlayers();
+  $('lobby-waiting').hidden = !state.game || !tooFewPlayers();
+}
+
+// The server's state carries the live player list (debug clones included), so this needs no round trip.
+function tooFewPlayers() {
+  return !state.game || state.game.players.length < state.game.minPlayers;
 }
 
 // Copies the code as shown (uppercase) and flips the icon to a tick for a moment. The clipboard
@@ -181,6 +188,11 @@ export function leaveLobby() {
 }
 
 export function launchGame() {
+  // Rematch calls this directly, and someone may have left since the round ended.
+  if (tooFewPlayers()) {
+    $('lobby-status').textContent = 'Need at least two players';
+    return;
+  }
   const missing = missingScanPlayers();
   if (missing.length) {
     $('lobby-status').textContent = `Scan everyone before launch: ${missing.map((p) => p.name).join(', ')}`;

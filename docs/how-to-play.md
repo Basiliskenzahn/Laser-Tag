@@ -31,7 +31,7 @@ The lobby lists everyone in the room with their scan status:
 
 Each player has a **Scan** (or **Rescan**) button. **Any phone can scan any player**, which is usually easiest: you hold your phone on a friend, then they scan you.
 
-**Launch** starts the round once there are at least 2 players and everyone is scanned. If someone isn't, the lobby tells you who: *"Scan everyone before launch: Alice, Bob"*.
+**Launch** starts the round once there are at least 2 players and everyone is scanned. If someone isn't, the lobby tells you who: *"Scan everyone before launch: Alice, Bob"*. On your own, Launch stays greyed out until someone else joins.
 
 **Leave** removes you from the room immediately.
 
