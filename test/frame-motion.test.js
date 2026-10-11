@@ -450,7 +450,11 @@ function runFor(ms, tracks = [], { moving = true } = {}) {
   const tiers = new Set();
   let painted = null;
   for (let i = 0; i < ms; i++) {
-    const step = moving ? (Math.floor(dom.now / 25) * 35) % 210 : 0;
+    // Both of these wrap on a period that is NOT a whole multiple of either detection interval.
+    // The first version of the small step alternated on parity, and since every interval here is a
+    // multiple of 25 ms, two consecutive samples always landed on the same parity and the block had
+    // not moved between them - a "moving" run in which nothing moved.
+    const step = moving === 'small' ? (Math.floor(dom.now / 25) * 15) % 45 : moving ? (Math.floor(dom.now / 25) * 35) % 210 : 0;
     // Repainted only when the block has actually stepped: the camera does not change between
     // animation frames here, so repainting every millisecond was 25x the work for no difference.
     if (step !== painted) {
@@ -575,6 +579,148 @@ test('the busiest tier pays nothing for movement at all', () => {
 
   assert.ok(settledReadbacks > 0, 'the settled tier must be sampling, or this proves nothing');
   assert.equal(lostReadbacks, 0);
+});
+
+test('the readback is paid for on far fewer cycles than it is allowed on', () => {
+  // "At most one readback per detection cycle" is the ceiling; the hold and the refractory are
+  // what make the usual case far below it. Counted against the cycles that could have taken one,
+  // because a ceiling nothing approaches is the claim worth holding down - without the gate the
+  // loop consults, every single cycle would pay a GPU readback to re-answer a question whose
+  // answer is already holding.
+  const motionCanvas = (() => {
+    paintFrame(dom.video, STILL);
+    motion.sampleFrameMotion(dom.video, dom.now, {});
+    return readbacks.at(-1);
+  })();
+  motion.resetFrameMotion();
+
+  const round = arrangeRound();
+  readbacks = [];
+  runFor(1000, []);
+  const own = readbacks.filter((canvas) => canvas === motionCanvas).length;
+
+  assert.ok(own > 0, 'it must be sampling at all, or this proves nothing');
+  assert.ok(own < round.detector.calls / 2, `${own} readbacks over ${round.detector.calls} detection cycles`);
+});
+
+test('a box accounting for the movement is matched in the right coordinate space', () => {
+  // The detector runs on a downscaled copy of the frame, so its boxes come back in that copy's
+  // coordinates, get scaled up into video coordinates for everything else, and have to be scaled
+  // back down before they can be compared against the movement cells. Getting that round trip
+  // wrong would put every box at the wrong place by the downscale factor - which fails open,
+  // hinting on people the detector has in hand.
+  // A *tight* box around a *small* step, on purpose. A generous box survives being misregistered
+  // by the downscale factor, and this test passed with the conversion deleted until it was this.
+  const covering = {
+    boundingBox: { originX: 258, originY: 92, width: 92, height: 100 },
+    categories: [{ score: 0.9 }],
+  };
+  arrangeRound({ detector: countingDetector([covering]) });
+  assert.ok(!runFor(600, [], { moving: 'small' }).has('motion'), 'a box over the movement must account for it');
+
+  // The control: the same movement with the box somewhere else does hint, so the line above is
+  // the coverage working and not the movement having gone missing.
+  motion.resetFrameMotion();
+  const elsewhere = { ...covering, boundingBox: { originX: 5, originY: 5, width: 60, height: 80 } };
+  arrangeRound({ detector: countingDetector([elsewhere]) });
+  assert.ok(runFor(600, [], { moving: 'small' }).has('motion'));
+});
+
+test('a scattering of single changed pixels is noise, not movement', () => {
+  // What the per-cell minimum is for. Sensor noise, compression and a trembling hand all change
+  // isolated pixels; a person changes pixels that are next to each other. Without a minimum, one
+  // changed pixel anywhere in the frame would hint, which on a real camera is every cycle.
+  //
+  // The fake canvas downscales nearest-neighbour, picking source pixel 5n+2 for output pixel n at
+  // this size, so these are the source pixels that actually survive into the diff - a test that
+  // changed arbitrary pixels would change ones the downscale throws away and pass for nothing.
+  paintFrame(dom.video, {});
+  motion.sampleFrameMotion(dom.video, dom.now, {});
+  dom.advance(SEARCHING_MS);
+
+  const sampled = (n) => 5 * n + 2;
+  let changed = 0;
+  for (const [ox, oy] of [
+    [10, 10],
+    [30, 20],
+    [50, 30],
+    [70, 40],
+    [90, 50],
+    [20, 60],
+    [60, 15],
+    [100, 35],
+  ]) {
+    const i = (sampled(oy) * dom.video.width + sampled(ox)) * 4;
+    dom.video.pixels[i] = 255;
+    dom.video.pixels[i + 1] = 255;
+    dom.video.pixels[i + 2] = 255;
+    changed++;
+  }
+  assert.equal(changed, 8, 'eight lone pixels, each in a different cell');
+  assert.equal(motion.sampleFrameMotion(dom.video, dom.now, {}).hint, false);
+});
+
+test('a box smaller than a movement cell still accounts for it', () => {
+  // A person far enough away to be the point of this module has a box a fraction of a cell wide:
+  // at 8% of the frame's height their box is about 1.3% of the frame across, and a cell is 8.3% of
+  // it. Asking what share of the *cell* such a box covers can never reach any threshold however
+  // exactly the two coincide, so a distant person the detector had in hand read as movement nobody
+  // had found - and spent the hint's refractory on somebody already in hand.
+  //
+  // A small mover confined to one cell, so the question is only about that cell, and a box smaller
+  // than the cell sitting inside it.
+  const cellWidth = dom.video.width / 12;
+  const cellHeight = dom.video.height / 9;
+  const before = { mover: { x: 390, y: 165, w: 30, h: 30 } };
+  const after = { mover: { x: 390, y: 165, w: 16, h: 30 } };
+  const small = { x: 400, y: 170, w: 13, h: 25 };
+  assert.ok(small.w < cellWidth && small.h < cellHeight, 'the box must be smaller than one cell');
+
+  const uncovered = twoFrames(before, after);
+  assert.equal(uncovered.hint, true, 'the movement must be visible at all, or this proves nothing');
+  assert.equal(uncovered.moving, 1, 'and confined to the one cell the box sits in');
+
+  motion.resetFrameMotion();
+  const covered = twoFrames(before, after, { boxes: [small] });
+  assert.equal(covered.hint, false);
+  assert.equal(covered.moving, 1, 'the movement was seen and attributed, not missed');
+});
+
+test('a cold start is silent whatever the clock says, and survives the camera resizing', () => {
+  // Two arms of the same guard. The first look has nothing to difference against, and the clock
+  // it happens at is not something this module gets to choose - a page whose clock is still small
+  // must not fall through to differencing against a frame that does not exist.
+  paintFrame(dom.video, STILL);
+  assert.equal(motion.sampleFrameMotion(dom.video, 3, {}).hint, false);
+
+  // And a frame of a different size than the last one is not comparable to it either, which is
+  // what an orientation change does mid-round.
+  dom.advance(SEARCHING_MS);
+  paintFrame(dom.video, MOVED);
+  motion.sampleFrameMotion(dom.video, dom.now, {});
+  dom.video.width = 360;
+  dom.video.height = 640;
+  dom.video.videoWidth = 360;
+  dom.video.videoHeight = 640;
+  paintFrame(dom.video, { mover: { x: 100, y: 200, w: 70, h: 120 } });
+  dom.advance(SEARCHING_MS);
+  assert.equal(motion.sampleFrameMotion(dom.video, dom.now, {}).hint, false);
+  dom.video.width = 640;
+  dom.video.height = 360;
+  dom.video.videoWidth = 640;
+  dom.video.videoHeight = 360;
+});
+
+test('a hint already holding still loses to a person who goes missing under it', () => {
+  // The tier order has to hold even when the hint came first. Movement is not sampled at all in
+  // the 'lost' tier, so a hint cannot *start* during one - but it can already be running when a
+  // track the detector had drops out from under it, and then 'lost' is the tier that matters: it
+  // is a person we know was there, against a guess that somebody might be.
+  arrangeRound();
+  assert.ok(runFor(400, []).has('motion'), 'the hint must be holding, or this proves nothing');
+
+  state.tracks = [namedTrack({ seenAt: dom.now, missedFrames: 2 })];
+  assert.equal(game.detectTier(dom.now), 'lost');
 });
 
 test('with differencing unavailable the cadence is exactly what it was before', () => {
