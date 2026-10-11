@@ -9,7 +9,7 @@
 import { openPolling } from './transport.js';
 import * as sound from './sound.js';
 import { DEBUG, $ } from './env.js';
-import { state, saveActiveLobby } from './state.js';
+import { state } from './state.js';
 import { localSelfId, scannedGallery } from './roster.js';
 import { identity } from './identity.js';
 import { showJoinRejected } from './screens/join.js';
@@ -102,7 +102,6 @@ function handleMessage(msg) {
       state.myId = msg.id;
       state.resumePlayerId = msg.id;
       state.bannerOverride = null;
-      saveActiveLobby();
       break;
     case 'error':
       if (!state.myId && [LOBBY_RUNNING_MESSAGE, 'Round already running'].includes(msg.message)) {

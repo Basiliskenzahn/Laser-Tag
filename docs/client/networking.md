@@ -35,9 +35,9 @@ Lifecycle:
 - Each new connection sends `join` again with `playerId` set to the id from the last `welcome`. If the server still has that player (it keeps them for 30 s without polls), the phone **takes over the same player**: same HP, same scan, same place in a running round.
 - If the player has expired and a round is running, the join is rejected with *"Lobby is already running."* and the phone returns to the title screen.
 
-## Resuming after a reload
+## Reloading the page
 
-When the server sends `welcome`, the client saves `{name, room, playerId, debug}` to `localStorage` as `activeLobby`. On page load, `resumeActiveLobby()` reads it and rejoins automatically with that `playerId`. This is what makes an accidental reload mid-game recoverable.
+The player id lives only in memory. A reload goes back to the title screen, and joining from there (including through a `?room=` link) creates a new player, so it is rejected with *"Lobby is already running."* until the round ends. The player left behind expires once the server stops seeing its polls.
 
 ## Hits
 

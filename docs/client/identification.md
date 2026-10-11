@@ -246,7 +246,7 @@ flowchart LR
 
 Timestamps are `Date.now()` so they line up across phones. 12 seconds of history is kept.
 
-`MotionSensor.requestPermission()` must run inside a user gesture on iOS; when motion is enabled, the client calls it from the **Create Room** and **Join** taps, and again on every tap on the game screen, in case the player arrived by automatic rejoin. If permission is refused, nothing breaks: motion checks simply all return `unknown` and appearance decides on its own.
+`MotionSensor.requestPermission()` must run inside a user gesture on iOS; when motion is enabled, the client calls it from the **Create Room** and **Join** taps, and again on every tap on the game screen. If permission is refused, nothing breaks: motion checks simply all return `unknown` and appearance decides on its own.
 
 `takeOutgoing()` returns the bins recorded since the last call; when enabled, `motion-identity.js` flushes them to the server every 500 ms as `{type: 'motion', s: [[t, v], ...]}`, and the server relays each phone's samples to everyone else in the room.
 

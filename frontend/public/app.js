@@ -2,8 +2,7 @@
 //
 // Everything that does any work lives in the modules imported below - env.js for the shared
 // elements, state.js for the one state object, a module per screen - so this file stays a wiring
-// diagram you can read in one go. The only thing it starts by itself is the attempt to resume a
-// lobby a refresh interrupted.
+// diagram you can read in one go.
 
 import { $ } from './env.js';
 import { keepScreenOn, resumeCamera } from './camera.js';
@@ -17,7 +16,6 @@ import {
   initJoinForm,
   normalizeRoomCode,
   requireName,
-  resumeActiveLobby,
   setJoinStatus,
   updateJoinButton,
 } from './screens/join.js';
@@ -136,5 +134,3 @@ $('leave-dialog').addEventListener('click', (event) => {
 
 $('results-done-btn').addEventListener('click', () => showLobby());
 $('results-rematch-btn').addEventListener('click', rematch);
-
-resumeActiveLobby();

@@ -165,7 +165,7 @@ One in-flight OSNet inference may still finish after a cancel — it is awaited,
 
 ## Local cache
 
-Every scan is cached under `laser-tag:scan:<room>:<lower-cased name>`. When you join, your own cached scan for that room and name is sent with the `join` message, so you are already scanned without rotating again after a reload.
+Every scan is cached under `laser-tag:scan:<room>:<lower-cased name>`. When you join, your own cached scan for that room and name is sent with the `join` message, so you are already scanned without rotating again when you rejoin.
 
 `validScanCache()` rejects a cache unless **all** of these hold:
 

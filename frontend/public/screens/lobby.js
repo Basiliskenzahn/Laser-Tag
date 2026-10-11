@@ -8,7 +8,7 @@
 
 import { canvas, SCAN_EXPORT, video, $ } from '../env.js';
 import { stopCamera } from '../camera.js';
-import { clearActiveLobby, state } from '../state.js';
+import { state } from '../state.js';
 import { cloneOwnerId, missingScanPlayers, playerName, scannedGallery } from '../roster.js';
 import { send, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, closeLeaveDialog, enterGame, updateCountdown } from './game.js';
@@ -136,7 +136,6 @@ export function leaveLobby() {
   state.conn = null;
   state.events?.close();
   state.events = null;
-  clearActiveLobby();
   hideScanCountdown();
   clearGameCountdown();
   closeLeaveDialog();

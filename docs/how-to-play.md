@@ -18,7 +18,7 @@ If the game was opened with `?motion=on` or `?motion=strict`, an iPhone will als
 
 - A room holds **2 to 8 players**.
 - You can't join a room while a round is running. You'll see *"Lobby is already running."* Wait for the round to finish and try again.
-- Your phone remembers your name and room. If you reload the page or briefly lose connection, it rejoins you automatically as the same player.
+- If you briefly lose connection, your phone reconnects you as the same player. Reloading the page takes you out of the game: you can join again once the round is over.
 
 ## The lobby
 

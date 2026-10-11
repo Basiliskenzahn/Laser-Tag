@@ -1,6 +1,6 @@
 # App flow and screens
 
-`frontend/public/app.js` is now just the entry point: it wires DOM events to the four screens and resumes an active lobby on load. Everything it used to own directly has moved into focused modules:
+`frontend/public/app.js` is now just the entry point: it wires DOM events to the four screens. Everything it used to own directly has moved into focused modules:
 
 | Module | Used for |
 | --- | --- |
@@ -55,7 +55,7 @@ stateDiagram-v2
 - Failures show a friendly message (`startupErrorMessage`): not HTTPS, permission denied, no camera, or the raw error.
 - On success: switches to the lobby, requests a screen wake lock, starts the render loop and opens the connection.
 - **Warm-up.** Loading a model and being able to *run* one are different things: MediaPipe compiles its WebGL shaders and ONNX Runtime builds its WASM kernels on a model's first inference, which costs far more than the ones after it. That cost used to land wherever the first real frame happened to fall — during the scan for a phone that scanned somebody, but during the *countdown* for a phone that was only ever scanned by others. So `prepareCameraAndDetector()` now fires one throwaway inference per freshly loaded model (`warmUpModels`), on a 512px-wide canvas matching the gameplay inference path. It is deliberately **not** awaited: it runs two frames later, on the lobby, which is the one screen with nothing else to do. A warm-up that fails is only logged — the models still work cold, which is where this started.
-- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on every tap on the game screen, which also covers an automatic rejoin where there was no join tap.
+- Refused motion access doesn't block anything when motion is enabled; `identity.start()` is retried on every tap on the game screen.
 
 ### Lobby (`#lobby-screen`)
 
@@ -147,7 +147,6 @@ All keys are prefixed with `laser-tag:`. Reads and writes are wrapped in `try/ca
 | Key | Contents |
 | --- | --- |
 | `name` | Last-used name |
-| `activeLobby` | `{version: 1, name, room, playerId, debug}`. Used on page load to rejoin automatically as the same player. Cleared on Leave or rejection. |
 | `scan:<room>:<name>` | Cached scan `{version, name, room, savedAt, gallery, thumbs}`. Your own cached scan is sent with your `join` message, so rejoining doesn't need a rescan. |
 
 The scan cache is versioned (`SCAN_CACHE_VERSION`, currently **11** — version 11 is the one whose samples carry a re-identification embedding). Bump it when the signature format changes so old caches are ignored.

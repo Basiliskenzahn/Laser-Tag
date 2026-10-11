@@ -2,14 +2,12 @@
 // Play, and everything that has to succeed before the lobby.
 //
 // Entering a room starts the camera and loads the models (camera.js), which is slow and can fail
-// for reasons the player can fix, so this screen doubles as the status line for those errors. It
-// also restores the lobby an accidental reload interrupted, deliberately through the same path as
-// a manual join so there is only one way into the lobby. showJoinRejected() is the way back here
-// when the server turns the player away.
+// for reasons the player can fix, so this screen doubles as the status line for those errors.
+// showJoinRejected() is the way back here when the server turns the player away.
 
 import { DEBUG, canvas, params, video, $ } from '../env.js';
 import { keepScreenOn, prepareCameraAndDetector, startupErrorMessage, stopCamera } from '../camera.js';
-import { clearActiveLobby, load, loadActiveLobby, save, state } from '../state.js';
+import { load, save, state } from '../state.js';
 import { connect, showConnectionProblem } from '../net.js';
 import { clearGameCountdown, loop } from './game.js';
 import { renderLobby } from './lobby.js';
@@ -61,10 +59,10 @@ export function setTitleBusy(busy) {
 
 // The server treats codes case-insensitively and keys rooms in lowercase, so that is what is
 // stored and sent; the screens show it in uppercase.
-export async function enterLobby({ room, resumePlayerId = null, auto = false }) {
+export async function enterLobby({ room }) {
   state.name = $('name').value.trim();
   state.room = room.trim().toLowerCase();
-  state.resumePlayerId = resumePlayerId;
+  state.resumePlayerId = null;
   state.localGallery = [];
   state.gallery = [];
   state.scanThumbs = [];
@@ -76,7 +74,7 @@ export async function enterLobby({ room, resumePlayerId = null, auto = false }) 
 
   if (!state.name || !state.room) return;
   setTitleBusy(true);
-  setJoinStatus(auto ? 'Rejoining lobby...' : 'Starting camera and loading the detector...');
+  setJoinStatus('Starting camera and loading the detector...');
   try {
     await prepareCameraAndDetector();
   } catch (err) {
@@ -112,7 +110,6 @@ export function showJoinRejected(message) {
   state.conn = null;
   state.events?.close();
   state.events = null;
-  clearActiveLobby();
   stopCamera();
   hideScanCountdown();
   clearGameCountdown();
@@ -128,11 +125,4 @@ export function showJoinRejected(message) {
   setTitleBusy(false);
   setJoinStatus(message);
   showConnectionProblem(null);
-}
-
-export function resumeActiveLobby() {
-  const lobby = loadActiveLobby();
-  if (!lobby) return;
-  $('name').value = lobby.name;
-  enterLobby({ room: lobby.room, resumePlayerId: lobby.playerId, auto: true });
 }
