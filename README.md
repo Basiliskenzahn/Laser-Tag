@@ -2,7 +2,7 @@
 
 Port 8080 (HTTP) will be exposed through the reverse proxy and is after deployment reachable here: https://22.hackathon.ethz.ch/
 
-# Laser Tag
+# Photo Tag
 
 > Full documentation lives in [`docs/`](docs/README.md).
 
