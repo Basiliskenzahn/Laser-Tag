@@ -71,19 +71,41 @@ contextProto.getImageData = function (...args) {
 // Texture matters. A flat frame would make the panning test vacuous - there would be nothing for
 // a pan to change - and it is also what makes a *static* frame diff to nothing, since the same
 // noise sampled twice at the same offsets is the same noise.
-function paintFrame(canvas, { shift = 0, bright = 0, mover = null } = {}) {
-  const { width: w, height: h, pixels } = canvas;
+const backgrounds = new Map();
+function background(w, h, shift, bright) {
+  const key = `${w}x${h}:${shift}:${bright}`;
+  let cached = backgrounds.get(key);
+  if (cached) return cached;
+  cached = new Uint8ClampedArray(w * h * 4);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const n = Math.sin(((x + shift) * 12.9898 + y * 78.233) * 43758.5453);
-      let v = 60 + (n - Math.floor(n)) * 90;
-      if (mover && x >= mover.x && x < mover.x + mover.w && y >= mover.y && y < mover.y + mover.h) v = 220;
-      const grey = Math.max(0, Math.min(255, v + bright));
+      const grey = Math.max(0, Math.min(255, 60 + (n - Math.floor(n)) * 90 + bright));
+      const i = (y * w + x) * 4;
+      cached[i] = grey;
+      cached[i + 1] = grey;
+      cached[i + 2] = grey;
+      cached[i + 3] = 255;
+    }
+  }
+  backgrounds.set(key, cached);
+  return cached;
+}
+
+function paintFrame(canvas, { shift = 0, bright = 0, mover = null } = {}) {
+  const { width: w, height: h, pixels } = canvas;
+  // The background is cached per (shift, brightness). The loop tests repaint hundreds of times,
+  // and a per-pixel Math.sin over a 640x360 frame made the *painting* the slowest thing in this
+  // file by a wide margin - 70 seconds for one test.
+  pixels.set(background(w, h, shift, bright));
+  if (!mover) return;
+  const grey = Math.max(0, Math.min(255, 220 + bright));
+  for (let y = mover.y; y < mover.y + mover.h; y++) {
+    for (let x = mover.x; x < mover.x + mover.w; x++) {
       const i = (y * w + x) * 4;
       pixels[i] = grey;
       pixels[i + 1] = grey;
       pixels[i + 2] = grey;
-      pixels[i + 3] = 255;
     }
   }
 }
@@ -116,6 +138,13 @@ beforeEach(() => {
   failingCanvas = null;
   dom.element('debug').textContent = '';
   dom.element('crosshair').classes.clear();
+  // Give the camera its backing store back. One test below discards it, as iOS does under memory
+  // pressure, and `dom.video` is shared by every test in the file - a discarded canvas paints
+  // nothing, so leaving it discarded silently rigs every later test into measuring a blank frame.
+  // Which is exactly what happened: six tests failed for that and not for anything they assert.
+  // Assigning the same width still re-runs the resize, which is what clears the flag.
+  dom.video.width = 640;
+  dom.video.height = 360;
 });
 
 // ---- what the differencing claims ----
@@ -272,7 +301,8 @@ test('a frame the device threw away is not read as the whole world moving', () =
   assert.equal(lost.reason, 'unusable-frame');
 
   // ...and the unusable frame was not stored, so the good frame before it is still the one the
-  // next cycle differences against.
+  // next cycle differences against - a lost frame costs no information beyond its own cycle.
+  dom.video.width = 640; // the camera comes back
   dom.advance(SEARCHING_MS);
   paintFrame(dom.video, { mover: mover(MOVER_HOME + 60) });
   assert.equal(motion.sampleFrameMotion(dom.video, dom.now, {}).hint, true);
@@ -418,14 +448,27 @@ function arrangeRound({ detector = countingDetector(), pose = null, tracks = [],
 // these tests passed or failed on where the run stopped before this was recorded per cycle.
 function runFor(ms, tracks = [], { moving = true } = {}) {
   const tiers = new Set();
+  let painted = null;
   for (let i = 0; i < ms; i++) {
     const step = moving ? (Math.floor(dom.now / 25) * 35) % 210 : 0;
-    paintFrame(dom.video, { mover: mover(MOVER_HOME + step) });
+    // Repainted only when the block has actually stepped: the camera does not change between
+    // animation frames here, so repainting every millisecond was 25x the work for no difference.
+    if (step !== painted) {
+      paintFrame(dom.video, { mover: mover(MOVER_HOME + step) });
+      painted = step;
+    }
     state.tracks = tracks.map((track) => ({ ...track, lastSeen: dom.now, lastUpdated: dom.now }));
     dom.video.currentTime += 0.001;
-    const before = state.lastGameDetectAt;
+    // The tier is read *before* the frame, which is where loop() reads it, and recorded only if
+    // that frame went on to detect. Reading it afterwards instead asks the wrong question: a
+    // detection replaces state.tracks with the tracker's own output, which with a detector that
+    // returns no boxes is empty - so the pinned track is gone by then and every tier that depends
+    // on one reads as absent. That is what the first version of this did, and it made the two
+    // ordering tests below disagree with a loop that was behaving correctly.
+    const tier = game.detectTier(dom.now);
+    const detectedAt = state.lastGameDetectAt;
     game.loop();
-    if (state.lastGameDetectAt !== before) tiers.add(game.detectTier(dom.now));
+    if (state.lastGameDetectAt !== detectedAt) tiers.add(tier);
     dom.advance(1);
   }
   return tiers;
