@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from .models import CLONE_SUFFIX, MAX_PLAYERS, Room
 from .sanitize import (
     clean_gallery,
+    clean_motion_samples,
     clean_name,
     clean_player_id,
     clean_room_code,
@@ -44,8 +45,14 @@ POLL_WAIT_MS = 20_000  # how long a poll request is parked before returning empt
 POLL_EXPIRY_MS = 30_000  # a session whose phone stopped polling for this long is dropped
 SWEEP_INTERVAL_S = 5  # how often sweep_pollers looks for expired mailboxes
 
-#: Hard ceiling on one mailbox, counted after the sheddable traffic has been
-#: dropped. Reaching it means the backlog is made of messages that may not
+#: Most ``motion`` relays one mailbox will hold. Motion is a best-effort feed of
+#: "whose phone is moving right now" and ``motion/matching.js`` only correlates
+#: the last six seconds of it, so a backlog deeper than this is worthless to the
+#: phone and the oldest entries are the ones to lose.
+MAX_QUEUED_MOTION = 64
+
+#: Hard ceiling on one mailbox, counted after the sheddable traffic above has
+#: been dropped. Reaching it means the backlog is made of messages that may not
 #: be silently dropped (``roster``, ``welcome``, ``error``, hit feedback), so the
 #: mailbox is evicted instead - see :meth:`Poller._shed`.
 MAX_QUEUED_MESSAGES = 512
@@ -123,21 +130,32 @@ class Poller:
         message addressed to it. At ~190 KB per gallery in a scan fan-out that is
         a real amount of memory per stalled phone, and nothing used to bound it.
 
-        Two tiers, in order of increasing harm:
+        Three tiers, in order of increasing harm:
 
         1. Superseded ``state`` snapshots. A ``state`` is the complete scoreboard
            and the client simply replaces what it holds, so only the newest one is
            worth keeping - and handing over only the newest also makes the
            countdown it carries *less* stale, not more.
-        2. Whatever is left cannot be dropped without lying to the phone, so the
+        2. The oldest ``motion`` relays beyond :data:`MAX_QUEUED_MOTION`. Stale
+           motion is worse than no motion (see that constant).
+        3. Whatever is left cannot be dropped without lying to the phone, so the
            mailbox is evicted instead of being trimmed. ``roster`` in particular
            is a *delta*: dropping one silently would leave the phone holding an
            old gallery while the server believed it had sent the new one. Eviction
            ends the conversation, and :func:`evict` drops the delivery record with
            it, so the phone's reconnect is sent the roster in full.
 
-        Tier 1 cannot evict anybody: a flood of state settles at one entry, so
-        reaching tier 2 takes hundreds of queued rosters or errors.
+        Tiers 1 and 2 cannot evict anybody: a flood of motion settles at
+        :data:`MAX_QUEUED_MOTION` entries and a flood of state at one, so reaching
+        tier 3 takes hundreds of queued rosters or errors.
+
+        The cheap exit below is deliberately ``< 2`` and not
+        ``<= MAX_QUEUED_MOTION``. Guarding the whole method behind the motion cap
+        is what the motion subsystem originally did, and it meant tier 1 did not
+        run at all until a mailbox held 65 messages: a phone holding sixty-odd
+        superseded scoreboards kept every one of them. Tier 1 is a single pass
+        over a list that is almost always one or two entries long, so there is
+        nothing to buy by skipping it.
         """
         if len(self.queue) < 2:
             return  # nothing to supersede and nothing to overflow
@@ -151,6 +169,11 @@ class Poller:
                 msg for i, msg in enumerate(self.queue)
                 if msg.get("type") != "state" or i == newest_state
             ]
+
+        motion = [i for i, msg in enumerate(self.queue) if msg.get("type") == "motion"]
+        if len(motion) > MAX_QUEUED_MOTION:
+            dropped = set(motion[: len(motion) - MAX_QUEUED_MOTION])
+            self.queue = [msg for i, msg in enumerate(self.queue) if i not in dropped]
 
         if len(self.queue) > MAX_QUEUED_MESSAGES:
             evict(self, "overflow")
@@ -460,6 +483,16 @@ class Session:
             await self.send({"type": "scanSaved", "targetId": target_id})
             await broadcast_roster(self.room)
             await broadcast_state(self.room)
+        elif msg.get("type") == "motion":
+            # This phone's motion activity, relayed to the others for motion matching
+            # (public/motion/). Every phone checks whose phone moves with whom it sees.
+            # The server keeps no history of it and never acts on it.
+            samples = clean_motion_samples(msg.get("s"))
+            if samples:
+                relay = {"type": "motion", "from": self.id, "s": samples}
+                for player_id in list(self.room.players.keys()):
+                    if player_id != self.id:
+                        await send_to(player_id, relay)
         elif msg.get("type") == "start":
             result = self.room.start()
             if not result["ok"]:

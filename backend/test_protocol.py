@@ -612,6 +612,24 @@ class ProtocolTests(AioHTTPTestCase):
         # two phones x two changed entries.
         self.assertEqual(sum(gallery_copies(c.since(marks[c])) for c in (debug, scanner)), 4)
 
+    async def test_motion_samples_are_cleaned_and_relayed_to_others_only(self):
+        a = self.track(await self.polling_client())
+        b = self.track(await self.polling_client())
+        room = unique_room("motion-relay")
+        await a.send({"type": "join", "name": "A", "room": room})
+        await b.send({"type": "join", "name": "B", "room": room})
+        await wait_for(lambda: any(m["type"] == "welcome" for m in a.messages) and any(m["type"] == "welcome" for m in b.messages))
+        a_id = a.welcome_id()
+
+        await a.send({"type": "motion", "s": [[1000, 1.234], [1100, "x"], [1200, -1], "bad", [1300, 0.5]]})
+        await wait_for(lambda: any(m["type"] == "motion" for m in b.messages))
+        relay = next(m for m in b.messages if m["type"] == "motion")
+        self.assertEqual(relay["from"], a_id)
+        self.assertEqual(relay["s"], [[1000, 1.23], [1300, 0.5]])
+
+        await asyncio.sleep(0.05)
+        self.assertFalse(any(m["type"] == "motion" for m in a.messages))
+
     async def test_posted_hit_with_a_non_object_body_is_a_clean_400(self):
         # Valid JSON is not necessarily an object. Each of these used to reach
         # msg.get("shooterId") and answer 500 with an AttributeError traceback;

@@ -115,9 +115,9 @@ Starts a round. Replies `state` to everyone (status `countdown`), or `error`.
 { "type": "motion", "s": [[1739812345600, 1.82], [1739812345700, 0.21]] }
 ```
 
-This phone's own motion activity. The server relays it, but no client ships code that sends it - see [Open items](../open-items.md). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
+This phone's own motion activity, sent about every 500 ms while the page is open with `?motion=on` or `?motion=strict` (off by default - see [Motion confirmation](../client/identification.md#phone-motion-confirmation-motion)). Each entry is `[t, v]`: a `Date.now()` timestamp at the end of a 100 ms bin, and the RMS of the phone's linear acceleration over that bin in m/s².
 
-The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `v >= 0`, `t` truncated to an integer and `v` rounded to 2 decimals. An empty result is dropped, not relayed.
+The server **relays** it to every other player in the room as a [`motion`](#server--client-messages) message and keeps nothing. It is never echoed back to the sender. Cleaning (`cleanMotionSamples` / `clean_motion_samples`): at most `MAX_MOTION_SAMPLES` (32) entries per message, each a pair of finite numbers with `0 <= v <= MAX_MOTION_ACTIVITY` (160 m/s^2), `t` truncated to an integer and `v` rounded to 2 decimals. The upper bound matters as much as finiteness: `1e300` is finite and non-negative, and squared inside the receiving phone's correlation it overflows to infinity, making the sender read as *contradicted* against everybody and, under `?motion=strict`, unshootable. An empty result is dropped, not relayed.
 
 There's no reply, and no error if the room has nobody else in it.
 

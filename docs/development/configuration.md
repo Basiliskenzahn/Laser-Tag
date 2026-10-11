@@ -45,6 +45,7 @@ In `backend/transport.py`:
 | `POLL_EXPIRY_MS` | 30 000 | A session with no activity for this long is dropped and its player leaves |
 | `MAX_BODY_BYTES` | 1 MB (`1024 * 1024`) | Request body limit. A 24-sample gallery with re-identification embeddings is ~210 KB; see [gallery size](../server/protocol.md#gallery-format). |
 | `MAX_MOTION_SAMPLES` | 32 | Motion samples accepted per relayed `motion` message (~3 s at 10 Hz) |
+| `MAX_MOTION_ACTIVITY` | 160.0 | Ceiling on one activity sample, m/s^2 (~16 g). Finiteness alone is not safe - see [Protocol](../server/protocol.md#motion) |
 | `GALLERY_FIELDS` | | Accepted signature fields and their maximum lengths |
 
 nginx has its own limit in `frontend/common-locations.conf`: `client_max_body_size 2m` on `/api/`. Raising `MAX_BODY_BYTES` above 2 MB means raising that too.
@@ -278,3 +279,41 @@ Changing `WIDTH`, `HEIGHT`, `MEAN` or `STD` without retraining will quietly degr
 - **Players stay "Person" too often:** check the [debug overlay](debug-mode.md) for the rejection reason before lowering the matching thresholds. If the overlay's delegate line has no `+ReID`, the re-identification model didn't load and matching is on the much weaker colour signature. A rescan in the playing area often fixes it without code changes.
 - **Identity flickers between two players:** raise `SWITCH_STREAK`.
 - **Slow phones:** lower `GAME_DETECT_MAX_WIDTH` or raise the detection intervals. The re-identification model runs asynchronously, so it costs latency to the first identification rather than frame rate.
+
+## Motion
+
+Off by default; `?motion=on` or `?motion=strict` turns it on. See
+[Motion confirmation](../client/identification.md#phone-motion-confirmation-motion), and read its
+"What is still unknown" before tuning anything here - every figure these defaults were chosen
+against came from a simulation, not a real accelerometer.
+
+`frontend/public/motion/sensor.js` (what this phone shares):
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `PANNING_DEG_PER_S` | 25 | Own rotation rate above which camera-image motion isn't trusted for that 100 ms bin. Earlier docs said 10; the code has always said 25, and 10 masks most of a hand-held phone's bins |
+| `HISTORY_MS` | 12 000 | How much of this phone's own history is kept |
+
+`frontend/public/motion/matching.js` (the comparison). `SAMPLE_MS` is exported; the rest are the
+`DEFAULTS` object, overridable per call:
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `SAMPLE_MS` | 100 | Grid both series are resampled onto (10 Hz). Also the sensor's bin size |
+| `MIN_BOX_H` | 8 | Box heights below this are skipped rather than divided by (same floor `poseBoxes` uses) |
+| `windowMs` | 6000 | How much history is correlated |
+| `maxLagMs` | 400 | Clock offset between phones that the search tolerates |
+| `minValidFraction` | 0.6 | Share of the window that must be usable (data present, shooter not panning) |
+| `minVisualSpread` | 0.08 | Box heights/s the person must actually vary by, or the answer is `unknown` |
+| `minRemoteSpread` | 0.25 | m/s^2 the player's phone must actually vary by, or the answer is `unknown` |
+| `consistentAt` | 0.75 | Correlation from which motion confirms the identity |
+| `inconsistentAt` | 0.30 | Correlation at or below which an active pair contradicts it (only `?motion=strict` acts on this) |
+| `gapMs` (in `resample`) | 350 | How far a sample may be from a grid point and still be interpolated |
+
+`frontend/public/motion/index.js`:
+
+| Constant | Default | Effect |
+| --- | --- | --- |
+| `MOTION_SEND_INTERVAL_MS` | 500 | How often this phone's new samples are sent to the room |
+| `MOTION_CHECK_MS` | 300 | How often a track's motion checks are recomputed |
+| `MOTION_HISTORY_MS` | 12 000 | How much box history and relayed activity is kept |

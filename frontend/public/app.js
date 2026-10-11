@@ -8,6 +8,7 @@
 import { $, REID_THRESHOLD } from './env.js';
 import { setReidThreshold } from './identify.js';
 import { keepScreenOn } from './camera.js';
+import { startMotion } from './motion/index.js';
 import { send } from './net.js';
 import { state } from './state.js';
 import * as sound from './sound.js';
@@ -33,6 +34,10 @@ for (const input of [$('name'), $('room')]) {
 $('join-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   sound.unlock();
+  // Inside the tap: the only place iOS will prompt for a sensor. A no-op without ?motion=.
+  // `send` is handed over rather than imported by motion/ so that target.js, which consults
+  // motion every frame, does not drag net.js's import graph in behind it.
+  startMotion(send);
   enterLobbyFromForm();
 });
 
@@ -58,6 +63,11 @@ $('start-btn').addEventListener('click', () => send({ type: 'start' }));
 $('fire-btn').addEventListener('pointerdown', (event) => {
   event.preventDefault();
   fire();
+  // In case a sensor was never granted at join, or there was no join tap (an automatic rejoin).
+  // AFTER fire(), not before: this listener is the measured input path, and the previous version
+  // of this subsystem sat ahead of the shot on it. It is still inside the gesture, so iOS will
+  // still show the prompt.
+  startMotion(send);
 });
 $('fire-btn').addEventListener('animationend', () => $('fire-btn').classList.remove('firing'));
 document.addEventListener('keydown', (event) => {

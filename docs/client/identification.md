@@ -5,8 +5,9 @@ Detection only says "there's a person here". With more than two players, a phone
 1. **Signatures**: a compact description of how a person looks in one frame (`identify.js`, plus the re-identification embedding from `reid.js`).
 2. **Gallery matching**: compare a signature against every player's scanned gallery (`identify.js`).
 3. **The tracker**: follow people across frames so identity is stable and matching doesn't run on every frame (`identify.js`).
+4. **Motion confirmation** (optional, off by default): check the person's on-screen movement against what each player's own phone reports, and *confirm* the answer appearance arrived at — never replace it ([`motion/`](#phone-motion-confirmation-motion)).
 
-Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once.
+Everything runs on the phone. Players' galleries come from the server's `roster` message — every phone holds everyone's signatures, which is why the roster is sent as a [delta](../server/protocol.md#the-roster-delta) rather than trimmed: each gallery still reaches each phone, just only once. With `?motion=on`, phones' motion activity arrives the same way, via the server's `motion` relay.
 
 ## The signals, in order of strength
 
@@ -343,3 +344,108 @@ Finally, if two tracks still carry the same player, the one seen this frame (the
 ## Tuning
 
 All thresholds and weights are module constants in `identify.js` and `reid.js`. See [Configuration → Identification](../development/configuration.md#identification). Use [debug mode](../development/debug-mode.md) to see live scores and rejection reasons while tuning.
+
+## Phone-motion confirmation (`motion/`)
+
+**Off by default. `?motion=on` or `?motion=strict` turns it on, and it has never been validated
+against a real accelerometer.** Treat every number below as the output of a simulation.
+
+Appearance can't tell apart two people in similar clothes, and it can put a player's name on a
+bystander who looks like them. Motion adds a signal with nothing to do with appearance: **every
+phone knows how much it is being moved, and the camera can see how much each person on screen is
+moving.** They should rise and fall together for the right pairing and be unrelated for a wrong one.
+
+### What each phone shares (`motion/sensor.js`)
+
+`MotionSensor` condenses `devicemotion` into one number per 100 ms bin:
+
+- **activity**: the RMS of linear acceleration (gravity removed, with a low-pass fallback on
+  devices that only report `accelerationIncludingGravity`), in m/s². Walking shows clearly;
+  holding the phone to aim barely does.
+- **ego**: `1` if the phone's own rotation rate exceeded `PANNING_DEG_PER_S` anywhere in the bin.
+  This is the *shooter's* panning flag — while you swing the camera to follow someone, image motion
+  says nothing about how they are moving, so those bins are masked out of the correlation.
+
+`PANNING_DEG_PER_S` is **25**. Earlier versions of this page and of the configuration table said
+10; the code always said 25. 10 is wrong in the direction that matters — an ordinary hand-held
+phone's aiming corrections exceed 10 °/s, so most bins get masked and motion almost never has
+enough window to say anything.
+
+`requestPermission()` must run inside a user gesture on iOS; `app.js` calls `startMotion(send)`
+from the join-form submit and again on FIRE (after `fire()`, since that listener is the measured
+input path). Refused permission breaks nothing: checks return `unknown` and appearance decides.
+
+Samples are flushed every 500 ms as `{type: 'motion', s: [[t, v], ...]}`; the server sanitises
+them (`clean_motion_samples`, bounded by `MAX_MOTION_ACTIVITY` as well as finite) and relays each
+phone's to everyone else in the room, keeping no history.
+
+### The check (`motionCheck`)
+
+`motionCheck({visual, remote, ego, now, ...options})` resamples both series onto a 100 ms grid over
+the last 6 s, then searches clock offsets from −400 to +400 ms for the best Pearson correlation,
+skipping bins where either series has no data or the shooter was panning. `visualActivity()` turns
+a track's box history into the comparable quantity: how fast the box centre moves in **box heights
+per second**, so it doesn't depend on distance. Boxes under 8 px high are skipped — their centre is
+detector jitter, and at `h = 0` the division produced `Infinity` and then `NaN`. (The old note here
+claimed `detectTrackedPeople` filtered boxes to `h > 8`; that filter is on the **pose** boxes only.)
+
+Returns `consistent`, `inconsistent` or `unknown`, and `unknown` is much the most common answer in
+practice: two people standing still produce no usable correlation at all.
+
+### What it is allowed to do (`target.js`)
+
+**`?motion=on` is additive only.** It may confirm — `targetConfirmedBy()` returns `'moves'`, which
+is how the overlay shows *"Name (moves)"* — and it may do nothing else. The id `targetPlayerId()`
+returns under `?motion=on` is identical to the id it returns with motion off, for every possible
+correlation.
+
+This is a deliberate reduction from the previous design, which the project's audit recorded as able
+to "veto or silently retarget a correct identification". Both are gone:
+
+- **Retargeting is gone in both modes.** Nothing in `motion/` can name a player;
+  `motionConfirmation()` only answers about the id handed to it. This was the half that could hurt
+  a third party who did nothing.
+- **Motion-only naming is gone** — a shot can no longer land on an identity that came from
+  correlation alone.
+- **Motion cannot raise an appearance threshold either.** A perfectly matching phone does not
+  shorten the target lock or excuse a low score, because that would let an unvalidated correlation
+  create a shot appearance refused.
+
+**`?motion=strict` keeps a veto, bounded to withholding**: a shot counts only when the target's own
+phone confirms them. It may refuse a target, never move one. It is kept because withholding is the
+entire content of the flag, and because it is the only way to find out in the field whether the
+signal is worth trusting — but note its cost, which `target-motion-strict.test.js` asserts: two
+people standing still is `unknown`, so in strict mode an ordinary stand-off makes everyone
+unshootable. It is an experiment, not a way to play.
+
+### Why there is no provider seam
+
+This used to be one of two interchangeable six-method "identity providers" behind `identity.js`.
+That indirection earned its keep only while motion could answer *differently* from appearance —
+which was the defect. Once motion may only agree, there is no second answer for a second provider
+to give, so motion consults from `target.js` in four lines and `targetPlayerId()` keeps its
+signature. `isStableTarget()` is untouched.
+
+### Per-room state and teardown
+
+`motion/index.js` holds everything privately: this phone's sensor, a player id → activity map, and
+`WeakMap`s from track to box history and to the last checks, all trimmed to 12 s. None of it is on
+the shared `state` object or written onto track objects. `leaveRoom()` calls `stopMotion()`, which
+clears the flush interval, stops the sensor and forgets every relayed player id. The function
+existed before the subsystem was deleted; **nothing called it**, which is what made it a leak for
+the life of the page — a phone back on the join screen kept waking its accelerometer.
+
+Box history is recorded at most once per detection (keyed on `track.lastSeen`, which the tracker
+advances only on a real association, never while a track coasts), so the frame loop asking several
+times per frame does not fill it at frame cadence.
+
+### What is still unknown
+
+Every accuracy figure this subsystem has ever had came from a synthetic random walk
+(`test/motion.test.js`): a scripted stand/walk pattern turned into a clean 10 Hz series and a box
+sliding across a frame with uniform jitter. Those tests are worth keeping — they are deterministic
+and statistical over 30 seeds, so they pin the maths against a fixed noise model — but they are not
+evidence about a real room. The simulation cannot produce a phone in a pocket or a swinging hand,
+clock drift beyond the ±400 ms searched, a backgrounded tab throttling its sensor, two players
+walking in step, or a bystander who paces the room like a player. Until those figures come from
+real hardware, `?motion=on` is an instrument for gathering them and nothing more.
